@@ -1,0 +1,38 @@
+{
+  "mv": "800 m/s",
+  "sight_height": "45 mm",
+  "zero": {
+    "range": "100 m",
+    "offset": "0 cm",
+    "atmosphere": {
+      "temperature": "15 C",
+      "pressure": "1013.25 hPa",
+      "pressure_kind": "station",
+      "humidity": 0,
+      "altitude": "0 m"
+    }
+  },
+  "atmosphere": {
+    "temperature": "15 C",
+    "pressure": "1013.25 hPa",
+    "pressure_kind": "station",
+    "humidity": 0,
+    "altitude": "0 m"
+  },
+  "bullet": {
+    "weight": "175 gr",
+    "diameter": "0.308 in",
+    "length": "1.24 in",
+    "drag": { "model": "G7", "bc": 0.243, "reference": "ICAO" }
+  },
+  "twist": "1:10in",
+  "twist_hand": "right",
+  "scope": { "click": "0.1 mrad", "tracking_factor": 1.0 },
+  "effects": {
+    "incline": true,
+    "spin_drift": false,
+    "coriolis": false,
+    "cant": false,
+    "aerodynamic_jump": false
+  }
+}

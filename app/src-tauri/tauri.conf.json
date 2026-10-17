@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Holdover",
+  "version": "0.1.0",
+  "identifier": "se.hallgren.holdover",
+  "build": {
+    "frontendDist": "../index.html"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Holdover",
+        "width": 1100,
+        "height": 720
+      }
+    ]
+  },
+  "bundle": {
+    "active": false
+  }
+}

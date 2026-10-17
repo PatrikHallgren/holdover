@@ -1,0 +1,8 @@
+#!/bin/sh
+# Optional Omarchy theme-set hook. Installed only when the user asks, at
+# ~/.config/omarchy/hooks/theme-set.d/holdover. It does not change Omarchy.
+# The argument is the new theme name.
+runtime="${XDG_RUNTIME_DIR:-/tmp}"
+mkdir -p "$runtime/holdover"
+date -Is > "$runtime/holdover/theme-changed"
+printf '%s\n' "${1:-}" > "$runtime/holdover/theme-name"

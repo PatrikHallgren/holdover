@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/PatrikHallgren/holdover/docs/schema/holdover.schema.json",
+  "title": "Holdover library and solve profile (draft, M0)",
+  "description": "Draft only. holdover-cli reads a solve profile and does not yet enforce this file. Every stored record carries the sync fields so Phase 2 does not migrate identity. Quantities in a solve profile are strings with a unit suffix, the same form the CLI parses. Stored records keep the SI value beside the original text.",
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "records": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/record" }
+    },
+    "solve_profile": { "$ref": "#/$defs/solveProfile" }
+  },
+  "$defs": {
+    "sync": {
+      "type": "object",
+      "required": ["id", "created_at", "updated_at", "revision", "device_id"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "revision": { "type": "integer", "minimum": 0, "description": "Per-device revision counter." },
+        "deleted_at": { "type": ["string", "null"], "format": "date-time" },
+        "device_id": { "type": "string" }
+      }
+    },
+    "quantity": {
+      "type": "object",
+      "required": ["si", "text"],
+      "properties": {
+        "si": { "type": "number" },
+        "text": { "type": "string", "description": "Original entry, including its unit suffix." },
+        "precision": { "type": ["integer", "null"] }
+      }
+    },
+    "record": {
+      "allOf": [
+        { "$ref": "#/$defs/sync" },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": ["rifle", "scope", "bullet", "load", "profile", "zero", "atmosphere", "target"]
+            },
+            "label": { "type": "string" },
+            "fields": { "type": "object" }
+          }
+        }
+      ]
+    },
+    "solveProfile": {
+      "type": "object",
+      "required": ["mv", "sight_height", "atmosphere", "bullet"],
+      "properties": {
+        "mv": { "type": "string" },
+        "mv_temperature": { "type": "string" },
+        "powder_temperature": { "type": "string" },
+        "temperature_sensitivity": { "type": "string" },
+        "sight_height": { "type": "string" },
+        "bore_angle": { "type": "string" },
+        "inclination": { "type": "string" },
+        "cant": { "type": "string" },
+        "twist": { "type": "string" },
+        "twist_hand": { "enum": ["right", "left"] },
+        "latitude": { "type": "string" },
+        "azimuth": { "type": "string" },
+        "wind": { "type": "string" },
+        "zero": { "$ref": "#/$defs/zero" },
+        "atmosphere": { "$ref": "#/$defs/atmosphere" },
+        "bullet": { "$ref": "#/$defs/bullet" },
+        "scope": { "$ref": "#/$defs/scope" },
+        "effects": { "$ref": "#/$defs/effects" }
+      }
+    },
+    "zero": {
+      "type": "object",
+      "required": ["range"],
+      "properties": {
+        "range": { "type": "string" },
+        "offset": { "type": "string" },
+        "atmosphere": { "$ref": "#/$defs/atmosphere" }
+      }
+    },
+    "atmosphere": {
+      "type": "object",
+      "required": ["temperature", "pressure"],
+      "properties": {
+        "temperature": { "type": "string" },
+        "pressure": { "type": "string" },
+        "pressure_kind": { "enum": ["station", "sea-level"] },
+        "humidity": { "type": "number" },
+        "altitude": { "type": "string" }
+      }
+    },
+    "bullet": {
+      "type": "object",
+      "required": ["weight", "diameter", "drag"],
+      "properties": {
+        "weight": { "type": "string" },
+        "diameter": { "type": "string" },
+        "length": { "type": "string" },
+        "drag": { "$ref": "#/$defs/drag" }
+      }
+    },
+    "drag": {
+      "type": "object",
+      "properties": {
+        "model": { "enum": ["G1", "G2", "G5", "G6", "G7", "G8"] },
+        "bc": { "type": "number" },
+        "reference": { "enum": ["ICAO", "Army"] },
+        "bands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["bc"],
+            "properties": {
+              "bc": { "type": "number" },
+              "min": { "type": "string" },
+              "reference": { "enum": ["ICAO", "Army"] }
+            }
+          }
+        },
+        "custom": {
+          "type": "array",
+          "description": "Cd–Mach pairs.",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "number" }
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "required": ["click"],
+      "properties": {
+        "click": { "type": "string" },
+        "tracking_factor": { "type": "number" },
+        "travel_up": { "type": "string" },
+        "travel_down": { "type": "string" },
+        "travel_right": { "type": "string" },
+        "travel_left": { "type": "string" }
+      }
+    },
+    "effects": {
+      "type": "object",
+      "properties": {
+        "incline": { "type": "boolean" },
+        "spin_drift": { "type": "boolean" },
+        "coriolis": { "type": "boolean" },
+        "cant": { "type": "boolean" },
+        "aerodynamic_jump": { "type": "boolean" }
+      }
+    }
+  }
+}
