@@ -1,0 +1,51 @@
+# Personal reference photos and measurements. Copyrighted target artwork
+# lives here and must not be published. See docs/PLAN.md §17.6.
+/holdover-refs/
+
+# Android signing material and other secrets. A leaked keystore cannot be
+# rotated into an update of an already-sideloaded APK.
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+keystore.properties
+*.keystore.properties
+local.properties
+secrets/
+.env
+.env.*
+*.secret
+
+# Rust
+/target/
+**/target/
+
+# Node / Tauri / frontend build output
+node_modules/
+dist/
+.svelte-kit/
+app/src-tauri/gen/
+*.apk
+*.aab
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+
+# Python oracle (installed in CI; not vendored)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editor and OS
+.DS_Store
+*.swp
+*~
+
+# Local tool caches
+.firecrawl/
+/build/
+/out/

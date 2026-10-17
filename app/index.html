@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Holdover</title>
+    <style>
+      :root {
+        --background: #1a1916;
+        --surface: #252219;
+        --text: #f3efe6;
+        --text-secondary: #8a8478;
+        --border: #312e27;
+        --accent: #d4763a;
+        --focus: #d4763a;
+      }
+      html, body { margin: 0; background: var(--background); color: var(--text); }
+      body {
+        font: 16px/1.45 "IBM Plex Sans", "Noto Sans", sans-serif;
+        padding: 2.5rem 1.5rem;
+      }
+      main { max-width: 36rem; }
+      h1 { font-weight: 560; font-size: 1.4rem; letter-spacing: 0; }
+      .hold {
+        margin: 1.5rem 0;
+        padding: 1rem 1.1rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        font-variant-numeric: tabular-nums;
+      }
+      .hold b { font-weight: 560; }
+      p { color: var(--text-secondary); }
+      code { color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Holdover</h1>
+      <p>Personal ballistic calculator. This page is the M0 shell scaffold. The solver is <code>holdover-cli</code>.</p>
+      <div class="hold">
+        <div><b>Solve</b></div>
+        <code>holdover-cli solve --profile examples/308-g7.json --range 437m --wind 3mps@9oc --json</code>
+      </div>
+      <p>All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.</p>
+    </main>
+  </body>
+</html>

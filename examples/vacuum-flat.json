@@ -1,0 +1,24 @@
+{
+  "mv": "800 m/s",
+  "sight_height": "0 mm",
+  "bore_angle": "0 mrad",
+  "atmosphere": {
+    "temperature": "15 C",
+    "pressure": "0 Pa",
+    "pressure_kind": "station",
+    "humidity": 0,
+    "altitude": "0 m"
+  },
+  "bullet": {
+    "weight": "175 gr",
+    "diameter": "0.308 in",
+    "drag": { "model": "G1", "bc": 0.5, "reference": "ICAO" }
+  },
+  "effects": {
+    "incline": true,
+    "spin_drift": false,
+    "coriolis": false,
+    "cant": false,
+    "aerodynamic_jump": false
+  }
+}

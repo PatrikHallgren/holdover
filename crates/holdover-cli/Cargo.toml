@@ -1,0 +1,23 @@
+[package]
+name = "holdover-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command-line interface for the Holdover ballistic solver"
+publish = false
+
+[[bin]]
+name = "holdover-cli"
+path = "src/main.rs"
+
+[dependencies]
+holdover-core = { path = "../holdover-core" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
