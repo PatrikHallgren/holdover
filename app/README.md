@@ -1,9 +1,13 @@
-# Holdover app shell
+# Holdover desktop shell
 
-Tauri 2 is still the preferred shell (plan §26.2). This directory is the scaffold only.
+Tauri 2 window used for the Omarchy spike. The solver is `holdover-core`. This is not the Milestone 2 solve screen.
 
-`src-tauri/Cargo.toml.scaffold` is not a Cargo workspace member, and CI does not compile it. This environment has no WebKitGTK and no Omarchy session, so the spike criteria that need a live window are open. See `docs/M0-SPIKE.md`.
+Build and theme-switch check, on Omarchy:
 
-`index.html` is a static token page: the disclaimer, the bundled dark palette, and the command that produces a solve. It is not the product UI.
+```sh
+tools/desktop-spike.sh
+```
 
-Qt 6 Quick remains the fallback if the Tauri spike fails on Omarchy 4. It has not been started.
+See `docs/M1-DESKTOP.md` for the scaling, theme, text-size, and tiling checklist, and for the `sudo pacman` line. The script does not install packages unless you pass `--install`.
+
+CI compiles this crate. It does not open a window. Qt 6 Quick stays the fallback if the checklist fails.

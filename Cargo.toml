@@ -4,6 +4,7 @@ members = [
     "crates/holdover-core",
     "crates/holdover-cli",
     "crates/holdover-theme",
+    "app/src-tauri",
 ]
 
 [workspace.package]

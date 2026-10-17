@@ -4,16 +4,22 @@
   "version": "0.1.0",
   "identifier": "se.hallgren.holdover",
   "build": {
-    "frontendDist": "../index.html"
+    "frontendDist": "../ui"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "Holdover",
-        "width": 1100,
-        "height": 720
+        "width": 960,
+        "height": 720,
+        "resizable": true
       }
-    ]
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self'"
+    }
   },
   "bundle": {
     "active": false

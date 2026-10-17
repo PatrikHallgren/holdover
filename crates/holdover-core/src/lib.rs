@@ -23,6 +23,7 @@ pub use solve::{
     Click, Direction, Effects, Integrator, Shot, Solution, TableSpec, TrajectoryPoint, Warning,
     ZeroSolution,
 };
+pub use stability::SPIN_DRIFT_PROVENANCE;
 pub use targets::{SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM};
 pub use units::{parse_quantity, parse_twist, parse_wind, Dimension, Twist, TwistHand, Wind};
 

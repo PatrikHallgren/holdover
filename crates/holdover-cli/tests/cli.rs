@@ -56,3 +56,25 @@ fn wind_flag_overrides_the_profile() {
     assert_eq!(json["points"][0]["windage_direction"], "LEFT");
     assert!(json["points"][0]["windage_m"].as_f64().unwrap() > 0.0);
 }
+
+#[test]
+fn table_without_a_unit_suffix_names_an_example() {
+    let profile = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/308-g7.json");
+    let output = bin()
+        .args([
+            "table",
+            "--profile",
+            profile,
+            "--from",
+            "100",
+            "--to",
+            "300m",
+            "--step",
+            "100m",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("100m"), "{err}");
+}

@@ -51,4 +51,15 @@ Profile `examples/308-g7.json`: 175 gr, 0.308 in, G7 BC 0.243, 800 m/s, sight he
 
 Plan §27.2 asks for ≤ 0.05 mrad supersonic and ≤ 0.1 mrad through the transonic region, and ≤ 0.5% on velocity and time of flight. The largest elevation difference in this set is 0.0017 mrad, at Mach 0.93. The largest velocity difference is about 0.03% (317.19 vs 317.10 m/s at 1000 m).
 
-A release `holdover-cli solve` of this profile to 2000 m returned 60.1437 mrad, 224.70 m/s, 5.8587 s, Mach 0.660, in 0.91 ms median of five runs on the M0 build machine, including process start.
+A release `holdover-cli solve` of this profile to 2000 m returned 60.1437 mrad, 224.70 m/s, 5.8587 s, Mach 0.660, in 0.91 ms median of five runs on the M0 build machine, including process start. Milestone 1 gates the in-process solve, after one warmup, at under 20 ms (`cargo test --release -p holdover-core --test timing`).
+
+## Spin drift
+
+`SD[in] = 1.25·(SG+1.2)·TOF^1.83` is cited as equation 6.1 of Bryan Litz, *Applied Ballistics for Long Range Shooting*, 3rd ed. (2015). The book is not in this repository, so the coefficient is **not marked verified against the primary text**. A page that quotes that equation number (<https://stonerphysics.net/spin-drift>, retrieved 2026-10-17) gives Sg 1.91 and 1.714 s as 10.4 inches. The formula returns 10.421 inches, which rounds to 10.4. Litz's own 2021 note gives about 8–9 inches at 1000 yards and a ceiling of 10–12, and does not print the closed form.
+
+## Maker tables
+
+| # | Source | Assumptions | Check |
+| --- | --- | --- | --- |
+| 31 | Berger Bullets, 7mm PRC 175 gr Elite Hunter product page (retrieved 2026-10-17). G7 BC 0.336, 2920 fps, 175 gr, 0.284 in. Drop at 100–600 yd: +1.5, 0, −6.48, −18.5, −36.66, −61.68 in. Velocity: 2779, 2641, 2507, 2377, 2251, 2129 fps. "24 inch barrel and sea level." | Sight height and temperature are not on the page. The test uses 1.5 in and 59 °F / 29.92 inHg dry, the pair that puts the 100-yard path on the published +1.5 in. Zero 200 yd. Spin drift off. Profile `examples/berger-7prc-175.json`. | Path within 0.02 mrad (measured about 0.005 mrad at 600 yd). Velocity within 0.3% (measured about 0.11%). |
+| 32 | Federal Gold Medal .308 Win 175 gr SMK, GM308M2, velocity column as quoted with G1 BC 0.505: 2427, 2262, 2102, 1949, 1803 fps at 100–500 yd from 2600 fps. | Army Standard Metro (59 °F, 29.5275 inHg, 78% RH). Bore angle 0. The Federal page was not re-fetched; the column is the secondary quotation. Profile `examples/federal-gm308m2.json`. | Within 3 fps (measured 1.6 fps at 500 yd). |

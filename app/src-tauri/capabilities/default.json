@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Spike window. Solve and theme events only.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-solve"
+  ]
+}
