@@ -1,10 +1,24 @@
 {
   "identifier": "default",
-  "description": "Spike window. Solve and theme events only.",
+  "description": "Holdover's main window",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "core:event:default",
-    "allow-solve"
+    "allow-bootstrap",
+    "allow-set-preferences",
+    "allow-complete-onboarding",
+    "allow-save-rifle",
+    "allow-save-scope",
+    "allow-save-bullet",
+    "allow-save-load",
+    "allow-save-profile",
+    "allow-delete-record",
+    "allow-set-active-profile",
+    "allow-solve",
+    "allow-range-card",
+    "allow-chart",
+    "allow-export-library",
+    "allow-import-library"
   ]
 }

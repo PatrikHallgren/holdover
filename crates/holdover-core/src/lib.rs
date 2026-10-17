@@ -25,6 +25,9 @@ pub use solve::{
 };
 pub use stability::SPIN_DRIFT_PROVENANCE;
 pub use targets::{SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM};
-pub use units::{parse_quantity, parse_twist, parse_wind, Dimension, Twist, TwistHand, Wind};
+pub use units::{
+    convert_from_si, format_number, format_quantity, parse_quantity, parse_twist, parse_wind,
+    parse_wind_direction, Dimension, Twist, TwistHand, Wind,
+};
 
 pub const DISCLAIMER: &str = "All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.";

@@ -1,22 +1,51 @@
-//! Tauri 2 spike shell. The solver stays in `holdover-core`.
+//! Holdover's Tauri 2 window. The solver stays in `holdover-core`.
 //!
-//! This is the window used to decide between Tauri and Qt on Omarchy 4.
-//! It is not the Milestone 2 solve screen.
+//! This is the Milestone 2 solve screen: profiles, a separate zero atmosphere,
+//! current conditions, and the hold. SQLite lives in this crate because the
+//! core library does no I/O.
+
+mod session;
+mod store;
+mod strings;
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::Duration;
 
-use holdover_core::{
-    parse_quantity, parse_wind, Atmosphere, BcBand, BcReference, Bullet, Dimension, DragModel,
-    DragSpec, Effects, Shot, Twist, TwistHand, DISCLAIMER,
-};
-use holdover_theme::{text_scale_factor, Palette, ThemeFollower, ThemePaths};
+use holdover_theme::{bundled_palette, text_scale_factor, Palette, ThemeFollower, ThemePaths};
+use serde_json::{json, Value};
+use store::Store;
 use tauri::Emitter;
+use tauri::Manager;
+
+struct AppState {
+    store: Mutex<Store>,
+}
 
 fn main() {
+    let store = Store::open(&database_path()).expect("Holdover could not open its database");
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![solve])
+        .manage(AppState {
+            store: Mutex::new(store),
+        })
+        .invoke_handler(tauri::generate_handler![
+            bootstrap,
+            set_preferences,
+            complete_onboarding,
+            save_rifle,
+            save_scope,
+            save_bullet,
+            save_load,
+            save_profile,
+            delete_record,
+            set_active_profile,
+            solve,
+            range_card,
+            chart,
+            export_library,
+            import_library
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             std::thread::spawn(move || theme_loop(handle));
@@ -26,78 +55,136 @@ fn main() {
         .expect("Holdover window failed to start");
 }
 
-#[tauri::command]
-fn solve(range: String, wind: Option<String>) -> Result<serde_json::Value, String> {
-    let mut shot = spike_shot();
-    if let Some(wind) = wind.filter(|wind| !wind.trim().is_empty()) {
-        shot.wind = parse_wind(&wind).map_err(|err| err.to_string())?;
+fn database_path() -> PathBuf {
+    if let Ok(path) = std::env::var("HOLDOVER_DB") {
+        return PathBuf::from(path);
     }
-    let range_m = parse_quantity(&range, Dimension::Length, None).map_err(|err| err.to_string())?;
-    let solution = holdover_core::solve(&shot, range_m).map_err(|err| err.to_string())?;
-    let point = solution
-        .points
-        .first()
-        .ok_or("the solver returned no point")?;
-    Ok(serde_json::json!({
-        "range_m": point.range_m,
-        "elevation_mrad": point.elevation.mrad,
-        "elevation_moa": point.elevation.moa,
-        "elevation_iphy": point.elevation.iphy,
-        "elevation_cm_per_100m": point.elevation.cm_per_100m,
-        "elevation_direction": direction_name(point.elevation.direction),
-        "elevation_clicks": point.elevation.clicks,
-        "windage_m": point.windage_m,
-        "windage_mrad": point.windage.mrad,
-        "windage_direction": direction_name(point.windage.direction),
-        "velocity_mps": point.velocity_mps,
-        "energy_j": point.energy_j,
-        "tof_s": point.tof_s,
-        "mach": point.mach,
-        "disclaimer": DISCLAIMER,
-    }))
-}
-
-fn direction_name(direction: holdover_core::Direction) -> &'static str {
-    match direction {
-        holdover_core::Direction::Up => "UP",
-        holdover_core::Direction::Down => "DOWN",
-        holdover_core::Direction::Left => "LEFT",
-        holdover_core::Direction::Right => "RIGHT",
-        holdover_core::Direction::None => "—",
-    }
-}
-
-fn spike_shot() -> Shot {
-    let atmo = Atmosphere::icao();
-    let mut shot = Shot::basic(
-        800.0,
-        Bullet {
-            weight_kg: 175.0 / 7000.0 * 0.45359237,
-            diameter_m: 0.308 * 0.0254,
-            length_m: Some(1.24 * 0.0254),
-            drag: DragSpec::Standard {
-                model: DragModel::G7,
-                bands: vec![BcBand {
-                    bc_lb_per_in2: 0.243,
-                    min_mps: 0.0,
-                    reference: BcReference::Icao,
-                }],
-            },
-        },
-        atmo,
-    );
-    shot.sight_height_m = 0.045;
-    shot.zero_range_m = Some(100.0);
-    shot.zero_atmosphere = Some(atmo);
-    shot.twist = Some(Twist {
-        metres_per_turn: 10.0 * 0.0254,
-        hand: TwistHand::Right,
+    let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        format!("{home}/.local/share")
     });
-    shot.effects = Effects {
-        spin_drift: false,
-        ..Effects::default()
-    };
-    shot
+    PathBuf::from(base).join("holdover/holdover.db")
+}
+
+fn with_store<T>(
+    state: tauri::State<'_, AppState>,
+    f: impl FnOnce(&Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| "the library is busy".to_string())?;
+    f(&store)
+}
+
+#[tauri::command]
+fn bootstrap(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    with_store(state, Store::bootstrap)
+}
+
+#[tauri::command]
+fn set_preferences(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        store.set_preferences(&body)?;
+        store.bootstrap()
+    })
+}
+
+#[tauri::command]
+fn complete_onboarding(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        store.complete_onboarding(&body)?;
+        store.bootstrap()
+    })
+}
+
+#[tauri::command]
+fn save_rifle(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_rifle(&body))
+}
+
+#[tauri::command]
+fn save_scope(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_scope(&body))
+}
+
+#[tauri::command]
+fn save_bullet(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_bullet(&body))
+}
+
+#[tauri::command]
+fn save_load(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_load(&body))
+}
+
+#[tauri::command]
+fn save_profile(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_profile(&body))
+}
+
+#[tauri::command]
+fn delete_record(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    id: String,
+) -> Result<(), String> {
+    with_store(state, |store| store.delete_record(&kind, &id))
+}
+
+#[tauri::command]
+fn set_active_profile(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    with_store(state, |store| store.set_active(&id))
+}
+
+#[tauri::command]
+fn solve(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::solve(store, &body))
+}
+
+#[tauri::command]
+fn range_card(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::range_card(store, &body))
+}
+
+#[tauri::command]
+fn chart(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::chart(store, &body))
+}
+
+#[tauri::command]
+fn export_library(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    with_store(state, |store| {
+        let doc = store.export_library()?;
+        let path = backup_dir()?.join(format!(
+            "holdover-{}.json",
+            store::now_iso().replace(':', "")
+        ));
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&doc).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(json!({ "path": path, "document": doc }))
+    })
+}
+
+#[tauri::command]
+fn import_library(
+    state: tauri::State<'_, AppState>,
+    document: Value,
+    commit: bool,
+) -> Result<Value, String> {
+    with_store(state, |store| store.import_library(&document, commit))
+}
+
+fn backup_dir() -> Result<PathBuf, String> {
+    let dir = database_path()
+        .parent()
+        .unwrap_or(std::path::Path::new("/tmp"))
+        .join("backups");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    Ok(dir)
 }
 
 fn theme_dir() -> PathBuf {
@@ -120,7 +207,19 @@ fn theme_loop(handle: tauri::AppHandle) {
     let mut follower = ThemeFollower::new();
     let paths = ThemePaths::new(theme_dir());
     loop {
-        let palette = follower.reload(&paths);
+        let appearance = if let Some(state) = handle.try_state::<AppState>() {
+            match state.store.lock() {
+                Ok(store) => store.appearance().unwrap_or_else(|_| "follow".into()),
+                Err(_) => "follow".into(),
+            }
+        } else {
+            "follow".into()
+        };
+        let palette = if appearance == "light" || appearance == "dark" {
+            bundled_palette(&appearance)
+        } else {
+            follower.reload(&paths)
+        };
         let body = palette_body(&palette);
         let _ = write_status(&body);
         if handle.emit("theme", &body).is_err() {
@@ -130,9 +229,9 @@ fn theme_loop(handle: tauri::AppHandle) {
     }
 }
 
-fn palette_body(palette: &Palette) -> serde_json::Value {
+fn palette_body(palette: &Palette) -> Value {
     let tokens = &palette.tokens;
-    serde_json::json!({
+    json!({
         "mode": tokens.mode,
         "background": tokens.background,
         "surface": tokens.surface,
@@ -140,12 +239,16 @@ fn palette_body(palette: &Palette) -> serde_json::Value {
         "text_secondary": tokens.text_secondary,
         "border": tokens.border,
         "accent": tokens.accent,
+        "focus": tokens.focus,
+        "warning": tokens.warning,
+        "error": tokens.error,
+        "chart": tokens.chart,
         "source": format!("{:?}", palette.source),
         "text_scale": text_scale_factor(),
     })
 }
 
-fn write_status(body: &serde_json::Value) -> std::io::Result<()> {
+fn write_status(body: &Value) -> std::io::Result<()> {
     let path = status_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

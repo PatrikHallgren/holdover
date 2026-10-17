@@ -244,6 +244,83 @@ pub fn pa_to_inhg(pa: f64) -> f64 {
     pa / PASCAL_PER_INHG
 }
 
+/// Convert a stored SI quantity into `unit` for display.
+///
+/// Temperature is an offset conversion. The caller keeps the original text
+/// and the SI value; this result is not written back.
+pub fn convert_from_si(si: f64, unit: &str) -> Result<f64> {
+    let unit = normalize_unit(unit);
+    let shown = match unit.as_str() {
+        "m" | "kg" | "m/s" | "mps" | "c" | "celsius" | "pa" | "rad" | "radian" | "radians"
+        | "j" => si,
+        "mm" => si * 1.0e3,
+        "cm" => si * 1.0e2,
+        "in" | "inch" | "inches" => si / INCH_M,
+        "ft" | "foot" | "feet" => si / FOOT_M,
+        "yd" | "yard" | "yards" => si / YARD_M,
+        "g" => si * 1.0e3,
+        "gr" | "grain" | "grains" => si / GRAIN_KG,
+        "lb" | "lbs" => si / POUND_KG,
+        "oz" => si / OUNCE_KG,
+        "fps" | "ft/s" => si / FOOT_M,
+        "km/h" | "kph" => si / KMH_MPS,
+        "mph" => si / MPH_MPS,
+        "kn" | "kt" => si / KN_MPS,
+        "f" | "fahrenheit" => celsius_to_fahrenheit(si),
+        "k" | "kelvin" => si + 273.15,
+        "hpa" | "mbar" | "mb" => si / 100.0,
+        "bar" => si / 100_000.0,
+        "inhg" => si / PASCAL_PER_INHG,
+        "mmhg" => si / PASCAL_PER_MMHG,
+        "psi" => si / PASCAL_PER_PSI,
+        "deg" | "degree" | "degrees" => si.to_degrees(),
+        "mrad" | "mil" => si / MRAD_RAD,
+        "moa" => si / MOA_RAD,
+        "iphy" => si / IPHY_RAD,
+        "cm@100m" => si / CM_PER_100M_RAD,
+        "ftlbf" | "ft-lbf" | "ftlb" => si / JOULE_PER_FT_LBF,
+        _ => {
+            return Err(Error::Parse {
+                what: "unit",
+                input: unit,
+                reason: "unknown unit suffix",
+            });
+        }
+    };
+    Ok(shown)
+}
+
+/// Display form of `convert_from_si`, trimmed so trailing zeros do not look like extra precision.
+pub fn format_quantity(si: f64, unit: &str) -> Result<String> {
+    Ok(format_number(convert_from_si(si, unit)?))
+}
+
+pub fn format_number(value: f64) -> String {
+    if !value.is_finite() {
+        return "—".to_string();
+    }
+    let scale = if value.abs() >= 100.0 {
+        100.0
+    } else {
+        10_000.0
+    };
+    let rounded = (value * scale).round() / scale;
+    let mut text = format!("{rounded:.4}");
+    if text.contains('.') {
+        while text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+    }
+    if text == "-0" {
+        "0".to_string()
+    } else {
+        text
+    }
+}
+
 fn apply_unit(value: f64, unit_raw: &str, dim: Dimension, input: &str) -> Result<f64> {
     let unit = normalize_unit(unit_raw);
     let (got, si) = match unit.as_str() {
@@ -496,6 +573,17 @@ mod tests {
         let one_moa_iphy = rad_to_iphy(MOA_RAD);
         assert!((one_moa_iphy - std::f64::consts::PI / 3.0).abs() < 1e-12);
         assert!((one_moa_iphy * 10_000.0).round() as i32 == 10_472);
+    }
+
+    #[test]
+    fn display_conversion_does_not_replace_the_stored_value() {
+        let si = parse_quantity("45 mm", Dimension::Length, None).unwrap();
+        let shown = format_quantity(si, "in").unwrap();
+        assert_eq!(shown, "1.7717");
+        let parsed_again = parse_quantity("45 mm", Dimension::Length, None).unwrap();
+        assert_eq!(si.to_bits(), parsed_again.to_bits());
+        assert!((convert_from_si(15.0, "F").unwrap() - 59.0).abs() < 1e-12);
+        assert_eq!(format_quantity(15.0, "C").unwrap(), "15");
     }
 
     #[test]

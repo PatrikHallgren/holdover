@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-bullet"
+description = "Enables the save_bullet command without any pre-configured scope."
+commands.allow = ["save_bullet"]
+
+[[permission]]
+identifier = "deny-save-bullet"
+description = "Denies the save_bullet command without any pre-configured scope."
+commands.deny = ["save_bullet"]

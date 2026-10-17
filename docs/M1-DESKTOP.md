@@ -1,6 +1,6 @@
 # Desktop spike checklist
 
-This checklist was the Tauri 2 versus Qt 6 Quick decision. The result is below: keep Tauri 2. The shell in `app/` is a small window on `holdover-core`, not the Milestone 2 solve screen. CI compiles it. It does not launch a window.
+This checklist was the Tauri 2 versus Qt 6 Quick decision. The result is below: keep Tauri 2. The same window is now the Milestone 2 solve screen. Use [`docs/M2-DESKTOP.md`](M2-DESKTOP.md) for that checklist. CI compiles the app. It does not launch a window.
 
 ## Command
 

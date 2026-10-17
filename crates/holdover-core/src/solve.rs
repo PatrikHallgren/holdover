@@ -71,6 +71,8 @@ pub struct Shot {
     pub mv_mps: f64,
     pub mv_temperature_c: Option<f64>,
     pub powder_temperature_c: Option<f64>,
+    /// Powder temperature used only while solving the zero. `None` uses the zero atmosphere's air temperature.
+    pub zero_powder_temperature_c: Option<f64>,
     /// Added to muzzle velocity per degree Celsius above the measurement temperature.
     pub temperature_sensitivity_mps_per_c: Option<f64>,
     pub bullet: Bullet,
@@ -100,6 +102,7 @@ impl Shot {
             mv_mps,
             mv_temperature_c: None,
             powder_temperature_c: None,
+            zero_powder_temperature_c: None,
             temperature_sensitivity_mps_per_c: None,
             bullet,
             sight_height_m: 0.0,
@@ -278,7 +281,11 @@ fn solve_ranges(shot: &Shot, ranges: &[f64]) -> Result<Solution> {
     if shot.effects.aerodynamic_jump {
         warnings.push(Warning::AerodynamicJumpNotApplied);
     }
-    let mv = adjusted_mv(shot, shot.atmosphere.temperature_c);
+    let mv = adjusted_mv_with(
+        shot,
+        shot.atmosphere.temperature_c,
+        shot.powder_temperature_c,
+    );
     let flight = integrate_shot(shot, bore, mv, &air, ranges)?;
     if flight.drag_clamped {
         warnings.push(Warning::DragClamped);
@@ -414,7 +421,8 @@ fn bore_angle(shot: &Shot) -> Result<(f64, Option<f64>, Vec<Warning>)> {
         }
     };
     let air = zero_atmo.state()?;
-    let mv = adjusted_mv(shot, zero_atmo.temperature_c);
+    let powder = shot.zero_powder_temperature_c.or(shot.powder_temperature_c);
+    let mv = adjusted_mv_with(shot, zero_atmo.temperature_c, powder);
     let drag = prepare(shot)?;
     let objective = |theta: f64| -> Result<f64> {
         let flight = fly(shot, theta, mv, &air, &drag, &[zero_range])?;
@@ -563,12 +571,12 @@ fn prepare(shot: &Shot) -> Result<PreparedDrag> {
     )
 }
 
-fn adjusted_mv(shot: &Shot, air_c: f64) -> f64 {
+fn adjusted_mv_with(shot: &Shot, air_c: f64, powder: Option<f64>) -> f64 {
     let Some(sens) = shot.temperature_sensitivity_mps_per_c else {
         return shot.mv_mps;
     };
     let measured = shot.mv_temperature_c.unwrap_or(air_c);
-    let powder = shot.powder_temperature_c.unwrap_or(air_c);
+    let powder = powder.unwrap_or(air_c);
     shot.mv_mps + sens * (powder - measured)
 }
 

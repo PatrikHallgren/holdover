@@ -4,7 +4,7 @@ Holdover is a personal, non-commercial, local-first ballistic calculator for the
 
 > All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.
 
-The product plan is [`docs/PLAN.md`](docs/PLAN.md). This repository is Milestone 0: the solver library, its command-line front end, reference tests, and an Omarchy 4 theme-adapter proof. What the spike could and could not show on this machine is in [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 2 is the Solve window: profiles, a separate zero atmosphere, the unit switch, the range card, and charts. Build and check it with [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Layout
 
@@ -14,7 +14,7 @@ The product plan is [`docs/PLAN.md`](docs/PLAN.md). This repository is Milestone
 | `crates/holdover-cli` | `holdover-cli`. Same JSON the later export will use. |
 | `crates/holdover-theme` | Omarchy 4 template and `colors.toml` adapter. |
 | `share/holdover` | `holdover.json.tpl` and the optional theme-set hook. |
-| `app/` | Tauri 2 scaffold. Not compiled in CI. |
+| `app/` | Tauri 2 window. Solve, range card, charts, equipment, settings. |
 | `locales/en.ftl` | English strings. The only shipped locale. |
 | `docs/references/vectors.md` | Documented reference vectors. |
 | `docs/schema/holdover.schema.json` | Draft library schema, including sync fields. |
@@ -44,13 +44,17 @@ The toolchain pin is Rust 1.98.1, the same version as `mise exec rust@1.98.1` on
 
 ## Desktop window
 
-The Tauri shell is `holdover`. On Omarchy:
+The Tauri app is `holdover`. On Omarchy, from the repo root:
 
 ```sh
-tools/desktop-spike.sh
+sudo pacman -S --needed webkit2gtk-4.1 base-devel librsvg openssl
+mise exec rust@1.98.1 -- cargo build --release -p holdover
+./target/release/holdover
 ```
 
-That checks the Arch packages, prints the `sudo pacman` line without running it, builds the window, and checks a theme-directory rename. `wget` is not required; a missing copy is a warning. The human checklist and the 2026-10-16 result (keep Tauri 2) are in [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Pass `--install` only if you want the script to install the required packages.
+`wget` is not required. The human checklist for this Solve screen is [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md). A throwaway library is `HOLDOVER_DB=/tmp/holdover-m2.db ./target/release/holdover`.
+
+`tools/desktop-spike.sh` is the earlier theme-rename check. It prints the same pacman line and does not run `sudo` unless you pass `--install`. The 2026-10-16 result (keep Tauri 2) is in [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md).
 
 ## Command line
 
