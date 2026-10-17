@@ -68,7 +68,7 @@ pub fn parse_quantity(input: &str, dim: Dimension, default_unit: Option<&str>) -
                 return Err(Error::Parse {
                     what: "unit",
                     input: input.to_string(),
-                    reason: "a unit suffix is required",
+                    reason: missing_unit_reason(dim),
                 });
             }
         }
@@ -299,6 +299,18 @@ fn apply_unit(value: f64, unit_raw: &str, dim: Dimension, input: &str) -> Result
     Ok(si)
 }
 
+fn missing_unit_reason(dim: Dimension) -> &'static str {
+    match dim {
+        Dimension::Length => "a unit suffix is required, for example 100m",
+        Dimension::Velocity => "a unit suffix is required, for example 800mps",
+        Dimension::Mass => "a unit suffix is required, for example 175gr",
+        Dimension::Temperature => "a unit suffix is required, for example 15C",
+        Dimension::Pressure => "a unit suffix is required, for example 1013.25hPa",
+        Dimension::Angle => "a unit suffix is required, for example 0.1mrad",
+        Dimension::Energy => "a unit suffix is required, for example 3600J",
+    }
+}
+
 fn normalize_unit(unit: &str) -> String {
     unit.trim()
         .trim_matches('"')
@@ -463,6 +475,14 @@ mod tests {
         assert!(err.to_string().contains("ambiguous"));
         let err = parse_quantity("10 g", Dimension::Length, None).unwrap_err();
         assert!(err.to_string().contains("dimension"));
+    }
+
+    #[test]
+    fn a_bare_length_suggests_an_example_suffix() {
+        let err = parse_quantity("100", Dimension::Length, None).unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("100m"), "{text}");
+        assert!(text.contains("100"), "{text}");
     }
 
     #[test]

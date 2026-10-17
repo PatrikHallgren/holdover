@@ -1,0 +1,24 @@
+{
+  "mv": "2600 fps",
+  "sight_height": "1.5 in",
+  "bore_angle": "0 mrad",
+  "atmosphere": {
+    "temperature": "59 F",
+    "pressure": "29.5275 inhg",
+    "pressure_kind": "station",
+    "humidity": 78,
+    "altitude": "0 m"
+  },
+  "bullet": {
+    "weight": "175 gr",
+    "diameter": "0.308 in",
+    "drag": { "model": "G1", "bc": 0.505, "reference": "Army" }
+  },
+  "effects": {
+    "incline": true,
+    "spin_drift": false,
+    "coriolis": false,
+    "cant": false,
+    "aerodynamic_jump": false
+  }
+}

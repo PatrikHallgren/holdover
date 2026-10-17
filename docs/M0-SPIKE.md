@@ -24,8 +24,8 @@ Exit criteria from plan §30, and what this repository actually shows.
 
 ## Gaps carried forward
 
-1. Tauri 2 on Omarchy 4: scaling, GPU, print/PDF and automatic GTK text scaling. Qt 6 Quick is the fallback if that spike fails on a real Omarchy machine.
-2. A live theme switch on Omarchy ≥ 4.0, with the template installed under `~/.config/omarchy/themed/`.
+1. Closed 2026-10-16. The M1 checklist on Patrik's Omarchy 4 machine passed, and the shell is Tauri 2 (`docs/M1-DESKTOP.md`). Range-card print and PDF were not part of that check. The spike still does not claim that WebKitGTK follows GTK text scale by itself.
+2. Closed 2026-10-16 for the live theme directory. The window followed an Omarchy theme switch with `HOLDOVER_THEME_DIR` unset. The template under `~/.config/omarchy/themed/` is still optional; without it the adapter reads `colors.toml`.
 3. Aerodynamic-jump coefficients, and a check of the spin-drift coefficient against Litz's primary text.
 4. GL as a Cd–Mach curve, if a trustworthy table turns up. The JBM GL download is not that table.
 5. A CI timing gate for the 20 ms M1 budget. A local release measurement is already under that budget (0.91 ms median); the workflow does not record it.

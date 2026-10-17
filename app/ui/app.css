@@ -1,0 +1,104 @@
+:root {
+  --background: #1a1916;
+  --surface: #252219;
+  --text: #f3efe6;
+  --text-secondary: #8a8478;
+  --border: #312e27;
+  --accent: #d4763a;
+  --text-scale: 1;
+  color-scheme: dark;
+}
+
+html, body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+}
+
+body {
+  font: calc(16px * var(--text-scale)) / 1.45 "IBM Plex Sans", "Noto Sans", sans-serif;
+  padding: 2.2rem 1.4rem 3rem;
+}
+
+main {
+  max-width: 40rem;
+}
+
+h1 {
+  font-size: 1.35rem;
+  font-weight: 560;
+  margin: 0;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+}
+
+.meta, .lede, .disclaimer, .detail {
+  color: var(--text-secondary);
+}
+
+.lede code {
+  color: var(--text);
+}
+
+form {
+  display: flex;
+  gap: 1rem;
+  margin: 1.2rem 0;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  flex: 1;
+}
+
+input {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.45rem 0.55rem;
+}
+
+input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.hold {
+  margin: 0.4rem 0 1rem;
+  padding: 1rem 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+}
+
+.figure {
+  margin: 0;
+  font-size: 1.8rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 560;
+}
+
+.detail {
+  margin: 0.4rem 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.error {
+  color: #e15a4a;
+}
+
+.disclaimer {
+  font-size: 0.92rem;
+}

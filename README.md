@@ -38,7 +38,19 @@ pip install py-ballisticcalc==3.1.1
 python3 tools/oracle_check.py target/release/holdover-cli
 ```
 
-GitHub Actions runs the same build, tests, clippy and oracle. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+GitHub Actions runs the same build, tests, clippy, the oracle, and a release timing gate (a full solve to 2000 m in under 20 ms). It also compiles the Tauri shell. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+The toolchain pin is Rust 1.98.1, the same version as `mise exec rust@1.98.1` on Omarchy.
+
+## Desktop window
+
+The Tauri shell is `holdover`. On Omarchy:
+
+```sh
+tools/desktop-spike.sh
+```
+
+That checks the Arch packages, prints the `sudo pacman` line without running it, builds the window, and checks a theme-directory rename. `wget` is not required; a missing copy is a warning. The human checklist and the 2026-10-16 result (keep Tauri 2) are in [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Pass `--install` only if you want the script to install the required packages.
 
 ## Command line
 
