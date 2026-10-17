@@ -52,3 +52,19 @@ The product plan is `docs/PLAN.md`. Where that plan left a choice open, M0 resol
 - The desktop binary is `holdover`. The CLI stays `holdover-cli`. A length without a suffix still fails, and the error names `100m`.
 - `tools/desktop-spike.sh` treats `webkit2gtk-4.1`, `base-devel`, `librsvg`, and `openssl` as required. `wget` and the rest of Tauri's published Arch list are warnings. A missing `wget` does not abort the build.
 - CI and this machine's toolchain pin are Rust 1.98.1, matching Omarchy's `mise exec rust@1.98.1`.
+
+## Milestone 2
+
+- The desktop window is the Solve screen, the range card, charts, equipment forms, settings, and first-run onboarding. The checklist is `docs/M2-DESKTOP.md`. Qt 6 Quick stays closed.
+- The UI is one HTML page, `app/ui/app.js`, and `app/ui/app.css`. It is not Svelte or React, and it does not use Node. CI stays a Cargo workflow. English strings are `locales/en.ftl`, parsed as `key = value` and sent with bootstrap. That is the translation file; a second locale can be added later without a new parser.
+- SQLite, via bundled `rusqlite`, lives only in the Tauri crate. `holdover-core` still does no I/O. Schema `user_version` 1 stores each rifle, scope, bullet, load, atmosphere, and profile as a JSON document, with `id`, `created_at`, `updated_at`, `revision`, `deleted_at`, and `device_id` on the row. There is no earlier schema to migrate. The database is `$XDG_DATA_HOME/holdover/holdover.db`, or `HOLDOVER_DB`.
+- A quantity is stored as an SI number plus the original text. The header preset and the per-field chip change what is shown. They do not rewrite a clean field. Display conversion starts from the stored SI value. A typed suffix wins over the chip. `gr` is grains and `g` is grams.
+- The profile owns the zero atmosphere. Solve edits current air and does not write that zero record. Powder temperature at zero is `Shot.zero_powder_temperature_c` when the profile sets one. The current solve uses the load's powder temperature when that is set, otherwise the current air, and only when a temperature sensitivity is set.
+- The range card's elevation column is a no-wind solve. Wind brackets are crosswinds from 9 o'clock. Print is the WebKit print dialog. True-scale A6, A5, A4, Letter, PDF, PNG, and CSV stay in M3 and M5.
+- Charts draw path and windage for the selected profile plus at most two overlays, under the current air, each with its own zero. The plan's later chart set (six overlays, transonic shading, a cursor, impact view) is not in M2.
+- Swedish rings on Settings are the official diameters only: moose `15 / 25 / 33 / 41.5` cm and roe buck `10 / 15 / 20` cm. The plan's MVP line also mentions them as PBR and impact-view targets, and then puts PBR and the impact view in v1.0 rather than the MVP. M2 shows the diameters and does not draw targets or run PBR.
+- Backup and restore are the library JSON. A rifle serial is cleared on export. Restore previews, then replaces records and settings and keeps `device_id`. CSV library files are M5.
+- Aerodynamic jump can be requested and is still not applied. The truing badge stays "Not trued". The atmosphere badge stays "Manual". Coriolis and cant default off. Incline and spin drift default on.
+- Spin drift is still the cited equation and is still not marked verified against Bryan Litz's book. See the Milestone 1 note.
+- The command palette switches page, preset, field mode, and copies the hold. Letter shortcuts do not run while a field is focused.
+- The optional example profile matches `examples/308-g7.json` and is labelled as a repository example, not a catalogue. The Solve screen still starts with the plan's effect defaults, so spin drift is on until it is turned off. The file used by the oracle keeps spin drift off.

@@ -4,6 +4,7 @@
 //! are model predictions. Confirm them with live fire before relying on them.
 
 mod atmosphere;
+mod chart_axis;
 mod constants;
 mod drag;
 mod error;
@@ -15,6 +16,7 @@ mod traj;
 mod units;
 
 pub use atmosphere::{AirState, Atmosphere, PressureKind};
+pub use chart_axis::{chart_axis, chart_tick_step, format_tick, ChartAxis};
 pub use constants::BC_LB_PER_IN2_TO_KG_PER_M2;
 pub use drag::{BcBand, BcReference, CdSample, DragModel, DragSpec};
 pub use error::{Error, Result};
@@ -25,6 +27,9 @@ pub use solve::{
 };
 pub use stability::SPIN_DRIFT_PROVENANCE;
 pub use targets::{SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM};
-pub use units::{parse_quantity, parse_twist, parse_wind, Dimension, Twist, TwistHand, Wind};
+pub use units::{
+    convert_from_si, format_number, format_quantity, parse_quantity, parse_twist, parse_wind,
+    parse_wind_direction, Dimension, Twist, TwistHand, Wind,
+};
 
 pub const DISCLAIMER: &str = "All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.";

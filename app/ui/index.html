@@ -7,23 +7,7 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <main>
-      <header>
-        <h1>Holdover</h1>
-        <p class="meta" id="scale">Text scale 1.00</p>
-      </header>
-      <p class="lede">175 gr .308, G7 BC 0.243, 800 m/s, 45 mm sight, zero 100 m, dry ICAO. Spin drift is off in this spike so the hold matches <code>examples/308-g7.json</code>.</p>
-      <form id="solve">
-        <label>Range <input id="range" value="300m" autocomplete="off" spellcheck="false" /></label>
-        <label>Wind <input id="wind" placeholder="3mps@9oc" autocomplete="off" spellcheck="false" /></label>
-      </form>
-      <section class="hold" id="hold" aria-live="polite">
-        <p class="figure" id="elevation">—</p>
-        <p class="detail" id="detail"></p>
-      </section>
-      <p class="error" id="error" hidden></p>
-      <p class="disclaimer" id="disclaimer">All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.</p>
-    </main>
+    <div id="app"></div>
     <script src="app.js"></script>
   </body>
 </html>

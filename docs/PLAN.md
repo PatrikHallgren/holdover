@@ -742,7 +742,7 @@ Phone-specific risks to verify in the Phase 2 spike:
    - text scaling passed,
    - tiling and float resize passed.
    
-   Qt 6 Quick is not the shell. Range-card print and PDF were not part of that check; they stay later work on this same shell.
+   Qt 6 Quick is not the shell. Range-card print and PDF were not part of that check; they stay later work on this same shell. The Milestone 2 window is this shell: Solve, the range card, charts, equipment, and settings. Its UI is `app/ui` (HTML, CSS, and one script) with strings in `locales/en.ftl`. See `docs/M2-DESKTOP.md`.
 3. **Storage:** SQLite with WAL and versioned migrations, with an automatic backup before each migration. Data lives at `$XDG_DATA_HOME/holdover` (config at `$XDG_CONFIG_HOME/holdover`), never inside Omarchy directories. Attachments are content-addressed. UUID and revision fields are present from the first schema (for sync).
 4. **Packaging (personal):**
    - a `PKGBUILD` in the repo, built and installed with `makepkg -si`;

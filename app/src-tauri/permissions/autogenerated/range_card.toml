@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-range-card"
+description = "Enables the range_card command without any pre-configured scope."
+commands.allow = ["range_card"]
+
+[[permission]]
+identifier = "deny-range-card"
+description = "Denies the range_card command without any pre-configured scope."
+commands.deny = ["range_card"]

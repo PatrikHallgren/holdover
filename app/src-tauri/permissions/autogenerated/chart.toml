@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-chart"
+description = "Enables the chart command without any pre-configured scope."
+commands.allow = ["chart"]
+
+[[permission]]
+identifier = "deny-chart"
+description = "Denies the chart command without any pre-configured scope."
+commands.deny = ["chart"]
