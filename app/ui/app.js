@@ -25,6 +25,11 @@ let restoreDoc = null;
 let restorePreview = null;
 let card = null;
 let chartData = null;
+let chartCursor = null;
+let chartPaintWidth = 0;
+let chartGeom = {};
+let chartObserver = null;
+let chartPainting = false;
 let solveTimer = 0;
 let equipNotice = "";
 
@@ -599,6 +604,14 @@ async function buildCard() {
 
 function bindChart() {
   document.getElementById("chart-build").addEventListener("click", buildChart);
+  const host = document.getElementById("chart-body");
+  if (window.ResizeObserver) {
+    if (chartObserver) chartObserver.disconnect();
+    chartObserver = new ResizeObserver(() => {
+      if (page === "charts" && chartData) paintCharts();
+    });
+    chartObserver.observe(host);
+  }
   buildChart();
 }
 
@@ -612,40 +625,230 @@ async function buildChart() {
   body.step = { text: "50 m", unit: "m" };
   const host = document.getElementById("chart-body");
   if (!ids.length) {
+    chartData = null;
     host.innerHTML = `<p>${esc(t("chart-empty"))}</p>`;
     return;
   }
   try {
     chartData = await call("chart", { body });
-    const note = checked.length > 3 ? `<p class="hint">${esc(t("chart-limit"))}</p>` : "";
-    host.innerHTML = note + drawChart(t("chart-drop"), "path_m") + drawChart(t("chart-wind"), "windage_m");
+    chartCursor = null;
+    chartPaintWidth = 0;
+    host.dataset.limit = checked.length > 3 ? "1" : "";
+    paintCharts();
   } catch (error) {
     host.innerHTML = `<p class="error">${esc(error)}</p>`;
   }
 }
 
-function drawChart(title, key) {
-  const series = (chartData && chartData.series) || [];
-  const width = 640;
-  const height = 220;
-  const pad = 28;
-  let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
-  series.forEach((item) => item.points.forEach((point) => {
-    minX = Math.min(minX, point.range_m);
-    maxX = Math.max(maxX, point.range_m);
-    minY = Math.min(minY, point[key]);
-    maxY = Math.max(maxY, point[key]);
-  }));
-  if (!Number.isFinite(minX)) return "";
-  if (minY === maxY) { minY -= 1; maxY += 1; }
-  const x = (value) => pad + (value - minX) / (maxX - minX || 1) * (width - pad * 2);
-  const y = (value) => height - pad - (value - minY) / (maxY - minY || 1) * (height - pad * 2);
-  const paths = series.map((item, index) => {
-    const d = item.points.map((point, i) => `${i ? "L" : "M"}${x(point.range_m).toFixed(1)},${y(point[key]).toFixed(1)}`).join(" ");
-    return `<path d="${d}" fill="none" stroke="var(--chart-${index})" stroke-width="2" />`;
+function paintCharts() {
+  const host = document.getElementById("chart-body");
+  if (!host || !chartData || chartPainting) return;
+  const width = Math.max(280, host.clientWidth || 640);
+  if (width === chartPaintWidth && host.querySelector("svg")) return;
+  chartPainting = true;
+  chartPaintWidth = width;
+  const note = host.dataset.limit === "1" ? `<p class="hint">${esc(t("chart-limit"))}</p>` : "";
+  host.innerHTML = note + drawScaledChart("drop") + drawScaledChart("wind");
+  bindChartPointers();
+  positionCursor();
+  writeReadouts();
+  chartPainting = false;
+}
+
+function legendItems() {
+  return (chartData.series || []).map((item, index) =>
+    `<span><i class="swatch swatch-${index}"></i>${esc(item.label)}</span>`).join("");
+}
+
+function xLabelStride(count, plotW) {
+  if (count <= 2) return 1;
+  return Math.max(1, Math.ceil(52 / (plotW / (count - 1))));
+}
+
+function drawScaledChart(kind) {
+  const spec = chartData[kind];
+  const xAxis = chartData.x;
+  const yAxis = spec.axis;
+  const width = chartPaintWidth;
+  const height = width < 520 ? 248 : 286;
+  const padL = width < 420 ? 50 : 62;
+  const padR = 12;
+  const padT = 16;
+  const padB = 26;
+  const plotW = Math.max(40, width - padL - padR);
+  const plotH = Math.max(40, height - padT - padB);
+  const xSpan = (xAxis.max - xAxis.min) || 1;
+  const ySpan = (yAxis.max - yAxis.min) || 1;
+  const xOf = (value) => padL + (value - xAxis.min) / xSpan * plotW;
+  const yOf = (value) => padT + (yAxis.max - value) / ySpan * plotH;
+  chartGeom[kind] = {
+    padL, padT, plotW, plotH, width, height,
+    xMin: xAxis.min, xMax: xAxis.max, yMin: yAxis.min, yMax: yAxis.max,
+  };
+  const yKey = kind === "drop" ? "path" : "windage";
+  const stride = xLabelStride(xAxis.ticks.length, plotW);
+  const last = xAxis.ticks.length - 1;
+  let marks = `<rect class="frame" x="${padL}" y="${padT}" width="${plotW.toFixed(1)}" height="${plotH.toFixed(1)}" fill="none" />`;
+  yAxis.ticks.forEach((tick, index) => {
+    const y = yOf(tick);
+    marks += `<line class="grid" x1="${padL}" x2="${(width - padR).toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`;
+    marks += `<text class="tick" x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(yAxis.labels[index])}</text>`;
+  });
+  xAxis.ticks.forEach((tick, index) => {
+    const x = xOf(tick);
+    marks += `<line class="grid" y1="${padT}" y2="${(height - padB).toFixed(1)}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" />`;
+    const crowded = index === last - 1 && last % stride !== 0 && stride > 1;
+    if ((index % stride === 0 || index === last) && !crowded) {
+      const anchor = index === last ? "end" : index === 0 ? "start" : "middle";
+      const labelX = index === 0 ? padL : index === last ? width - padR : x;
+      marks += `<text class="tick" x="${labelX.toFixed(1)}" y="${height - 6}" text-anchor="${anchor}">${esc(xAxis.labels[index])}</text>`;
+    }
+  });
+  const zeroY = yOf(0);
+  if (zeroY >= padT - 1 && zeroY <= height - padB + 1) {
+    marks += `<line class="zero" x1="${padL}" x2="${(width - padR).toFixed(1)}" y1="${zeroY.toFixed(1)}" y2="${zeroY.toFixed(1)}" />`;
+    if (spec.zero === "los" && width >= 420) {
+      marks += `<text class="zero-label" x="${(width - padR - 4).toFixed(1)}" y="${Math.max(padT + 12, zeroY - 5).toFixed(1)}" text-anchor="end">${esc(t("chart-los"))}</text>`;
+    }
+  }
+  const paths = (chartData.series || []).map((item, index) => {
+    const d = (item.points || []).map((point, i) =>
+      `${i ? "L" : "M"}${xOf(point.range).toFixed(1)},${yOf(point[yKey]).toFixed(1)}`).join(" ");
+    return `<path d="${d}" fill="none" stroke="var(--chart-${index})" stroke-width="2" /><circle class="dot hidden" data-dot="${index}" r="3.5" fill="var(--chart-${index})" cx="0" cy="0" />`;
   }).join("");
-  const legend = series.map((item, index) => `<span><i class="swatch swatch-${index}"></i>${esc(item.label)}</span>`).join("");
-  return `<h3>${esc(title)}</h3><svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${paths}</svg><p class="legend">${legend}</p>`;
+  const title = kind === "drop" ? t("chart-drop") : t("chart-wind");
+  const yTitle = kind === "drop"
+    ? `${spec.unit}, ${t("chart-above-los")}`
+    : `${spec.unit}, ${t("chart-wind-sign")}`;
+  const clicks = spec.clicks_axis ? `<p class="hint">${esc(t("chart-clicks-axis"))}</p>` : "";
+  return `<section class="chart-block">
+    <h3>${esc(title)}</h3>
+    <p class="legend">${legendItems()}</p>
+    <p class="axis-title">${esc(yTitle)}</p>
+    <svg class="chart" data-chart="${kind}" viewBox="0 0 ${width} ${height}" role="img" tabindex="0" aria-label="${esc(title)}, ${esc(yTitle)}">
+      ${marks}${paths}<line class="cursor hidden" x1="0" x2="0" y1="${padT}" y2="${padT + plotH}" />
+    </svg>
+    <p class="axis-title">${esc(t("range"))} (${esc(xAxis.unit)})</p>
+    ${clicks}
+    <p class="readout" data-readout="${kind}"></p>
+  </section>`;
+}
+
+function bindChartPointers() {
+  document.querySelectorAll("svg[data-chart]").forEach((svg) => {
+    svg.addEventListener("pointermove", (event) => {
+      const index = indexFromClient(svg, event.clientX);
+      if (index !== null) setCursor(index);
+    });
+    svg.addEventListener("pointerdown", (event) => {
+      svg.focus();
+      const index = indexFromClient(svg, event.clientX);
+      if (index !== null) setCursor(index);
+    });
+    svg.addEventListener("keydown", (event) => {
+      const count = chartPointCount();
+      if (!count) return;
+      if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        const delta = event.key === "ArrowRight" ? 1 : -1;
+        const next = chartCursor === null ? 0 : chartCursor + delta;
+        setCursor(Math.max(0, Math.min(count - 1, next)));
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        setCursor(0);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        setCursor(count - 1);
+      }
+    });
+  });
+}
+
+function chartPointCount() {
+  const series = chartData && chartData.series && chartData.series[0];
+  return series && series.points ? series.points.length : 0;
+}
+
+function indexFromClient(svg, clientX) {
+  const geom = chartGeom[svg.dataset.chart];
+  const series = chartData && chartData.series && chartData.series[0];
+  if (!geom || !series || !series.points.length) return null;
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width) return null;
+  const x = (clientX - rect.left) * (geom.width / rect.width);
+  const range = geom.xMin + (x - geom.padL) / geom.plotW * (geom.xMax - geom.xMin);
+  let best = 0;
+  let bestDist = Infinity;
+  series.points.forEach((point, index) => {
+    const dist = Math.abs(point.range - range);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = index;
+    }
+  });
+  return best;
+}
+
+function setCursor(index) {
+  chartCursor = index;
+  positionCursor();
+  writeReadouts();
+}
+
+function positionCursor() {
+  if (!chartData || chartCursor === null) return;
+  const sample = chartData.series[0] && chartData.series[0].points[chartCursor];
+  if (!sample) return;
+  document.querySelectorAll("svg[data-chart]").forEach((svg) => {
+    const geom = chartGeom[svg.dataset.chart];
+    const line = svg.querySelector(".cursor");
+    if (!geom || !line) return;
+    const x = geom.padL + (sample.range - geom.xMin) / ((geom.xMax - geom.xMin) || 1) * geom.plotW;
+    line.setAttribute("x1", x.toFixed(1));
+    line.setAttribute("x2", x.toFixed(1));
+    line.setAttribute("y1", String(geom.padT));
+    line.setAttribute("y2", String(geom.padT + geom.plotH));
+    line.classList.remove("hidden");
+    const key = svg.dataset.chart === "drop" ? "path" : "windage";
+    svg.querySelectorAll(".dot").forEach((dot) => {
+      const series = chartData.series[Number(dot.dataset.dot)];
+      const point = series && series.points[chartCursor];
+      if (!point) return;
+      const y = geom.padT + (geom.yMax - point[key]) / ((geom.yMax - geom.yMin) || 1) * geom.plotH;
+      dot.setAttribute("cx", x.toFixed(1));
+      dot.setAttribute("cy", y.toFixed(1));
+      dot.classList.remove("hidden");
+    });
+  });
+}
+
+function writeReadouts() {
+  ["drop", "wind"].forEach((kind) => {
+    const node = document.querySelector(`[data-readout="${kind}"]`);
+    if (!node || !chartData) return;
+    if (chartCursor === null) {
+      node.textContent = t("chart-cursor");
+      return;
+    }
+    const range = chartData.series[0].points[chartCursor].range;
+    const parts = chartData.series.map((item) => {
+      const point = item.points[chartCursor];
+      if (!point) return "";
+      if (kind === "drop") {
+        return `${item.label}: ${signed(point.path)} ${chartData.drop.unit} · ${signed(point.elevation)} ${chartData.drop.hold_unit}`;
+      }
+      return `${item.label}: ${signed(point.windage)} ${chartData.wind.unit} · ${signed(point.wind_linear)} ${chartData.wind.linear_unit}`;
+    }).filter(Boolean);
+    node.textContent = `${signed(range)} ${chartData.x.unit} — ${parts.join("  ·  ")}`;
+  });
+}
+
+function signed(value) {
+  if (!Number.isFinite(Number(value))) return "—";
+  const number = Number(value);
+  const abs = Math.abs(number);
+  const text = abs >= 100 ? String(Math.round(abs * 10) / 10) : String(Math.round(abs * 1000) / 1000);
+  return number < -1e-9 ? `−${text}` : text;
 }
 
 function bindEquipment() {

@@ -219,17 +219,71 @@ th:first-child, td:first-child {
   text-align: left;
 }
 
+.chart-block {
+  margin: 0 0 1.4rem;
+}
+
+.chart-block h3 {
+  margin: 0 0 0.2rem;
+  font-size: 1rem;
+}
+
+.axis-title {
+  margin: 0.15rem 0;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
 .chart {
   width: 100%;
-  height: 220px;
+  height: auto;
+  display: block;
   background: var(--background);
   border: 1px solid var(--border);
+  touch-action: none;
+}
+
+.chart:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.chart .frame,
+.chart .grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart .zero {
+  stroke: var(--text-secondary);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+}
+
+.chart .tick,
+.chart .zero-label {
+  fill: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.chart .cursor {
+  stroke: var(--accent);
+  stroke-width: 1.25;
+}
+
+.readout {
+  min-height: 2.6rem;
+  margin: 0.3rem 0 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .legend {
   display: flex;
-  gap: 1rem;
-  margin: 0.4rem 0 0.8rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin: 0.2rem 0 0.45rem;
+  color: var(--text);
 }
 
 .swatch {

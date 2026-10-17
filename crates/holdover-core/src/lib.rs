@@ -4,6 +4,7 @@
 //! are model predictions. Confirm them with live fire before relying on them.
 
 mod atmosphere;
+mod chart_axis;
 mod constants;
 mod drag;
 mod error;
@@ -15,6 +16,7 @@ mod traj;
 mod units;
 
 pub use atmosphere::{AirState, Atmosphere, PressureKind};
+pub use chart_axis::{chart_axis, chart_tick_step, format_tick, ChartAxis};
 pub use constants::BC_LB_PER_IN2_TO_KG_PER_M2;
 pub use drag::{BcBand, BcReference, CdSample, DragModel, DragSpec};
 pub use error::{Error, Result};

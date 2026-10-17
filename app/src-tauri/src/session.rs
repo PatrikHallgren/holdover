@@ -4,9 +4,9 @@
 //! Solve screen sent. They are not the same record.
 
 use holdover_core::{
-    format_number, parse_quantity, parse_twist, parse_wind_direction, table, Atmosphere, BcBand,
-    BcReference, Bullet, Click, Dimension, DragModel, DragSpec, Effects, Shot, TableSpec, Twist,
-    TwistHand, Warning, Wind,
+    chart_axis, convert_from_si, format_number, parse_quantity, parse_twist, parse_wind_direction,
+    table, Atmosphere, BcBand, BcReference, Bullet, ChartAxis, Click, Dimension, DragModel,
+    DragSpec, Effects, Shot, TableSpec, Twist, TwistHand, Warning, Wind,
 };
 use serde_json::{json, Value};
 
@@ -181,6 +181,12 @@ pub fn chart(store: &Store, body: &Value) -> Result<Value, String> {
     let start = qty(body, "from", Dimension::Length, "m").unwrap_or(0.0);
     let end = qty(body, "to", Dimension::Length, "m").unwrap_or(1000.0);
     let step = qty(body, "step", Dimension::Length, "m").unwrap_or(50.0);
+    let units = store.units()?;
+    let angular = body
+        .get("angular")
+        .and_then(|v| v.as_str())
+        .unwrap_or(units.angular.as_str());
+    let (hold_unit, hold_label, clicks_axis) = hold_scale(angular);
     let mut series = Vec::new();
     for id in ids {
         let id = id.as_str().unwrap_or("");
@@ -202,9 +208,11 @@ pub fn chart(store: &Store, body: &Value) -> Result<Value, String> {
             .map(|point| {
                 json!({
                     "range_m": point.range_m,
-                    "path_m": point.path_m,
-                    "windage_m": point.windage_m,
-                    "drop_m": point.drop_m,
+                    "range": shown_value(point.range_m, &units.length),
+                    "path": shown_value(point.path_m, &units.small),
+                    "wind_linear": shown_value(point.windage_m, &units.small),
+                    "elevation": shown_value(point.elevation.rad, &hold_unit),
+                    "windage": shown_value(point.windage.rad, &hold_unit),
                 })
             })
             .collect();
@@ -215,7 +223,73 @@ pub fn chart(store: &Store, body: &Value) -> Result<Value, String> {
             "transonic_range_m": solved.transonic_range_m,
         }));
     }
-    Ok(json!({ "series": series }))
+    let (range_lo, range_hi) = extent(&series, "range");
+    let (path_lo, path_hi) = extent(&series, "path");
+    let (wind_lo, wind_hi) = extent(&series, "windage");
+    Ok(json!({
+        "x": axis_json(&chart_axis(range_lo, range_hi, 6, true), &units.length),
+        "drop": {
+            "unit": units.small,
+            "hold_unit": hold_label,
+            "axis": axis_json(&chart_axis(path_lo, path_hi, 5, true), &units.small),
+            "zero": "los",
+        },
+        "wind": {
+            "unit": hold_label,
+            "linear_unit": units.small,
+            "hold_unit": hold_label,
+            "clicks_axis": clicks_axis,
+            "axis": axis_json(&chart_axis(wind_lo, wind_hi, 5, true), &hold_label),
+            "zero": "zero",
+        },
+        "series": series,
+    }))
+}
+
+fn hold_scale(angular: &str) -> (String, String, bool) {
+    match angular.to_ascii_lowercase().as_str() {
+        "moa" => ("MOA".into(), "MOA".into(), false),
+        "iphy" => ("IPHY".into(), "IPHY".into(), false),
+        "cm@100m" | "cm/100m" => ("cm@100m".into(), "cm/100 m".into(), false),
+        "clicks" => ("mrad".into(), "mrad".into(), true),
+        _ => ("mrad".into(), "mrad".into(), false),
+    }
+}
+
+fn shown_value(si: f64, unit: &str) -> f64 {
+    convert_from_si(si, unit).unwrap_or(si)
+}
+
+fn extent(series: &[Value], key: &str) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for item in series {
+        let Some(points) = item.get("points").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        for point in points {
+            if let Some(value) = point.get(key).and_then(|value| value.as_f64()) {
+                lo = lo.min(value);
+                hi = hi.max(value);
+            }
+        }
+    }
+    if lo.is_finite() && hi.is_finite() {
+        (lo, hi)
+    } else {
+        (0.0, 1.0)
+    }
+}
+
+fn axis_json(axis: &ChartAxis, unit: &str) -> Value {
+    json!({
+        "unit": unit,
+        "min": axis.min,
+        "max": axis.max,
+        "step": axis.step,
+        "ticks": axis.ticks,
+        "labels": axis.labels,
+    })
 }
 
 struct Meta {
@@ -739,5 +813,58 @@ mod tests {
         .unwrap();
         let card_mrad = card["rows"][0]["elevation"]["mrad"].as_f64().unwrap();
         assert!((card_mrad - mrad).abs() < 0.002, "{card_mrad} vs {mrad}");
+    }
+
+    #[test]
+    fn chart_axes_follow_the_preset_and_include_zero() {
+        let store = store();
+        let id = store.bootstrap().unwrap()["settings"]["active_profile_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let plotted = chart(
+            &store,
+            &json!({
+                "profile_ids": [id],
+                "from": {"text": "0 m", "unit": "m"},
+                "to": {"text": "300 m", "unit": "m"},
+                "step": {"text": "100 m", "unit": "m"},
+                "wind_speed": {"text": "3 mps", "unit": "mps"},
+                "wind_direction": "9oc",
+                "inclination": {"text": "0 deg", "unit": "deg"},
+                "current_air": {
+                    "temperature": {"text": "15 C", "unit": "C"},
+                    "pressure": {"text": "1013.25 hPa", "unit": "hPa"},
+                    "pressure_kind": "station",
+                    "humidity": "0%",
+                    "altitude": {"text": "0 m", "unit": "m"}
+                },
+                "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": false},
+                "angular": "MOA"
+            }),
+        )
+        .unwrap();
+        assert_eq!(plotted["x"]["unit"], "m");
+        assert_eq!(plotted["drop"]["unit"], "cm");
+        assert_eq!(plotted["wind"]["unit"], "MOA");
+        assert_eq!(plotted["x"]["step"].as_f64().unwrap(), 50.0);
+        let x_labels = plotted["x"]["labels"].as_array().unwrap();
+        assert!(x_labels.iter().any(|label| label == "0"));
+        assert!(x_labels.iter().any(|label| label == "300"));
+        assert!(plotted["drop"]["axis"]["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|label| label == "0"));
+        assert!(plotted["wind"]["axis"]["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|label| label == "0"));
+        let points = plotted["series"][0]["points"].as_array().unwrap();
+        assert!(points.len() >= 3);
+        assert!(!plotted["series"][0]["label"].as_str().unwrap().is_empty());
+        let last_wind = points.last().unwrap()["windage"].as_f64().unwrap();
+        assert!(last_wind.abs() > 0.0, "{last_wind}");
     }
 }
