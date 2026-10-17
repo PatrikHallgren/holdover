@@ -33,7 +33,7 @@ The product plan is `docs/PLAN.md`. Where that plan left a choice open, M0 resol
 
 - `holdover-core` does no file or network I/O. `holdover-cli` is the I/O boundary and prints the same JSON shape a later export can use.
 - English strings live in `locales/en.ftl` from this milestone. The solver disclaimer is that file's `disclaimer` message.
-- Tauri 2 remains the preferred shell. Milestone 1 makes it a workspace member and CI compiles it. A window is not launched in CI. Qt 6 Quick stays the fallback until the Omarchy checklist in `docs/M1-DESKTOP.md` passes.
+- The desktop shell is Tauri 2. On 2026-10-16 the checklist in `docs/M1-DESKTOP.md` passed on Patrik's Omarchy 4 machine: the release build with mise Rust 1.98.1, a window on the live theme directory, live theme switch, display scaling, text scaling, tiling and float resize, and typing with the unit-suffix error. Qt 6 Quick is not the fallback. CI compiles the shell and does not launch a window.
 - SQLite begins in M2. M0 only drafts the JSON schema, including the sync fields.
 - The theme adapter reimplements the Omarchy v4.0.4 colour mix (`int(a·(1−t) + b·t + 0.5)` in straight RGB). It does not shell out to Omarchy.
 - py-ballisticcalc 3.1.1 is a CI oracle only.
@@ -50,4 +50,5 @@ The product plan is `docs/PLAN.md`. Where that plan left a choice open, M0 resol
 - Maker vectors are the Berger 7mm PRC 175 gr Elite Hunter drop and velocity columns (product page, sea level, G7 0.336, 2920 fps) and the Federal GM308M2 velocity column (G1 0.505, Army Standard Metro). Sight height and temperature are not printed on the Berger page; the test uses 1.5 in and 59 °F / 29.92 inHg because that is what reproduces the published +1.5 in path at 100 yards. The Federal column was taken from a secondary quotation of Federal's table, not re-fetched from Federal.
 - Spin drift stays on the cited equation 6.1 (`1.25`, `+1.2`, exponent `1.83`). The book is not in the repo. A secondary page quotes that equation number, and Litz's 2021 Applied Ballistics note gives the typical inches at 1000 yards without the closed form. `SPIN_DRIFT_PROVENANCE` says the coefficient is not marked verified against the primary text. An Sg of 1.91 at 1.714 s rounds to the quoted 10.4 inches.
 - The desktop binary is `holdover`. The CLI stays `holdover-cli`. A length without a suffix still fails, and the error names `100m`.
+- `tools/desktop-spike.sh` treats `webkit2gtk-4.1`, `base-devel`, `librsvg`, and `openssl` as required. `wget` and the rest of Tauri's published Arch list are warnings. A missing `wget` does not abort the build.
 - CI and this machine's toolchain pin are Rust 1.98.1, matching Omarchy's `mise exec rust@1.98.1`.

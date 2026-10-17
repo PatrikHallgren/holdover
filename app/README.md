@@ -8,6 +8,6 @@ Build and theme-switch check, on Omarchy:
 tools/desktop-spike.sh
 ```
 
-See `docs/M1-DESKTOP.md` for the scaling, theme, text-size, and tiling checklist, and for the `sudo pacman` line. The script does not install packages unless you pass `--install`.
+See `docs/M1-DESKTOP.md` for the checklist and the result. On 2026-10-16 that checklist passed on Omarchy 4, so the shell stays Tauri 2. The script does not install packages unless you pass `--install`, and a missing `wget` does not stop the build.
 
-CI compiles this crate. It does not open a window. Qt 6 Quick stays the fallback if the checklist fails.
+CI compiles this crate. It does not open a window.

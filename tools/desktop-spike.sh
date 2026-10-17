@@ -22,31 +22,48 @@ if [ "${1:-}" = "--install" ]; then
   install=1
 fi
 
-packages="webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg xdotool"
+# Required to compile and launch this window. wget, curl, file, the GTK
+# app-menu and indicator modules, and xdotool are on Tauri's Arch prerequisite
+# list and are not needed to build or run this spike.
+required="webkit2gtk-4.1 base-devel librsvg openssl"
+optional="curl wget file appmenu-gtk-module libappindicator-gtk3 xdotool"
 
-echo "Arch packages this shell needs (Tauri 2 prerequisites, 2026-08-20):"
-echo "  $packages"
-echo "Install command, not run unless you passed --install:"
-echo "  sudo pacman -S --needed $packages"
+echo "Packages required to build and run this shell:"
+echo "  $required"
+echo "On Tauri's Arch prerequisite list (2026-08-20), not required here. A missing one is a warning:"
+echo "  $optional"
+echo "Install command for the required packages, not run unless you passed --install:"
+echo "  sudo pacman -S --needed $required"
 
 if ! command -v pacman >/dev/null 2>&1; then
   echo "pacman is not on PATH. Run this script on Omarchy (Arch)." >&2
   exit 1
 fi
 
-missing=""
-for package in $packages; do
+missing_required=""
+for package in $required; do
   if ! pacman -Q "$package" >/dev/null 2>&1; then
-    missing="$missing $package"
+    missing_required="$missing_required $package"
   fi
 done
 
-if [ -n "$missing" ]; then
-  echo "Missing:$missing" >&2
+missing_optional=""
+for package in $optional; do
+  if ! pacman -Q "$package" >/dev/null 2>&1; then
+    missing_optional="$missing_optional $package"
+  fi
+done
+
+if [ -n "$missing_optional" ]; then
+  echo "Not required for this spike, still missing:$missing_optional" >&2
+fi
+
+if [ -n "$missing_required" ]; then
+  echo "Missing required packages:$missing_required" >&2
   if [ "$install" -eq 1 ]; then
-    echo "Running: sudo pacman -S --needed$missing"
+    echo "Running: sudo pacman -S --needed$missing_required"
     # The sudo password prompt is visible. Nothing here is a silent install.
-    sudo pacman -S --needed $missing
+    sudo pacman -S --needed $missing_required
   else
     echo "Re-run with --install to run that pacman command, or install the packages yourself." >&2
     exit 1

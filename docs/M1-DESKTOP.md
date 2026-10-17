@@ -1,6 +1,6 @@
 # Desktop spike checklist
 
-This is the Tauri 2 versus Qt 6 Quick decision. The shell in `app/` is a small window on `holdover-core`, not the Milestone 2 solve screen. CI compiles it. It does not launch a window.
+This checklist was the Tauri 2 versus Qt 6 Quick decision. The result is below: keep Tauri 2. The shell in `app/` is a small window on `holdover-core`, not the Milestone 2 solve screen. CI compiles it. It does not launch a window.
 
 ## Command
 
@@ -12,18 +12,18 @@ tools/desktop-spike.sh
 
 Rust is mise's `rust@1.98.1` with no global default. The script runs `mise exec rust@1.98.1 -- cargo build --release -p holdover`.
 
-The script prints the Arch packages and this install command. It does not run `sudo` unless you pass `--install`:
+The script prints the packages and this install command. It does not run `sudo` unless you pass `--install`:
 
 ```sh
-sudo pacman -S --needed webkit2gtk-4.1 base-devel curl wget file openssl appmenu-gtk-module libappindicator-gtk3 librsvg xdotool
+sudo pacman -S --needed webkit2gtk-4.1 base-devel librsvg openssl
 tools/desktop-spike.sh --install
 ```
 
-The package list is the Tauri 2 Arch prerequisite list (checked 2026-08-20).
+Those four are what this spike needs to build and run. `curl`, `wget`, `file`, `appmenu-gtk-module`, `libappindicator-gtk3`, and `xdotool` are on the Tauri 2 Arch prerequisite list (checked 2026-08-20) and are not required here. A missing one is a warning. The script keeps going. On 2026-10-16 it stopped because `wget` was missing; that check no longer aborts the build.
 
 What the script does:
 
-1. Checks those packages with `pacman -Q`.
+1. Checks the required packages with `pacman -Q`. A missing optional package, including `wget`, is a warning and does not stop the script.
 2. Builds `target/release/holdover`.
 3. Launches that binary against a temporary theme directory, writes accent `#112233`, then renames `next-theme` to `theme` with accent `#abcdef`, and waits until the process writes the new accent to its palette status file.
 4. Leaves a second window running on the real `~/.local/state/omarchy/current` directory.
@@ -43,6 +43,16 @@ cp share/holdover/holdover.json.tpl ~/.config/omarchy/themed/
 - **Tiling.** Tile the window left and right, then float it and drag the edges. The range field and the hold should stay visible. Nothing should clip.
 - **Typing.** Change the range (`400m`, `500m`) and a wind (`3mps@9oc`). The hold should update on each change. `300` without a suffix should show an error that mentions `100m`.
 
-## Decision
+## Result
 
-If scaling, the live theme switch, text scaling, and tiling resize all look right, keep Tauri 2. If one of them fails on this machine, the fallback in the plan is Qt 6 Quick on the same `holdover-core`. Write the result next to this list before Milestone 2 starts building the solve screen.
+Checked on Patrik's Omarchy 4 machine on 2026-10-16 (Arch, Hyprland). `cargo build --release -p holdover` succeeded with mise Rust 1.98.1. The window launched on the live theme directory (`HOLDOVER_THEME_DIR` unset).
+
+Every item in this checklist passed:
+
+- live Omarchy theme switch
+- display scaling
+- text scaling
+- tiling and float resize
+- typing and hold updates, including the unit-suffix error
+
+**Decision: keep Tauri 2.** Qt 6 Quick is not the shell. Range-card print and PDF were not part of this check.

@@ -727,22 +727,22 @@ Phone-specific risks to verify in the Phase 2 spike:
 
 | Option | For | Against |
 | --- | --- | --- |
-| **Rust core + Tauri 2** (WebKitGTK) | Same core and UI on desktop **and Android** (Phase 2), so one codebase. SVG/canvas suits reticles, targets, charts, print and group-photo annotation. CSS variables suit theme tokens. Fast iteration with coding agents | Must prove WebKitGTK quality on Hyprland (scaling, GPU, text scaling) |
+| **Rust core + Tauri 2** (WebKitGTK) | Same core and UI on desktop **and Android** (Phase 2), so one codebase. SVG/canvas suits reticles, targets, charts, print and group-photo annotation. CSS variables suit theme tokens. Fast iteration with coding agents | WebKitGTK on Hyprland was the open question. The M1 checklist closed it (§26.2) |
 | Qt 6 Quick/QML | Mature and fast. Omarchy 4's own shell is Qt Quick (Quickshell), so the platform is well exercised | Mobile is possible but a separate, heavier path. C++/cxx-qt friction |
 | GTK4/libadwaita | Native GNOME feel | Limited custom theming; no mobile path |
 | Slint | Light, Rust-native | Smaller chart/print ecosystem |
 
-### 26.2 Recommendation (unchanged, now stronger)
+### 26.2 Decision
 
 1. **`holdover-core`** (Rust): solver, atmosphere, units, statistics and group analysis. No I/O. Plus **`holdover-cli`**.
-2. **UI: Tauri 2 + TypeScript** (Svelte or React), gated by the M0 spike:
-   - recalculation while typing feels instant,
-   - rendering is crisp at 1.0/1.5/2.0 scaling,
-   - range-card print/PDF is correct,
-   - live theme switch works via the v4 template,
-   - Omarchy text size is respected.
+2. **UI: Tauri 2.** Settled on 2026-10-16, when the checklist in `docs/M1-DESKTOP.md` passed on Patrik's Omarchy 4 machine (mise Rust 1.98.1):
+   - recalculation while typing feels instant, and a missing unit suffix names an example such as `100m`,
+   - rendering stayed sharp across the display scales he tried,
+   - live Omarchy theme switch worked on the real `~/.local/state/omarchy/current` directory,
+   - text scaling passed,
+   - tiling and float resize passed.
    
-   **Fallback:** Qt 6 Quick on the same core.
+   Qt 6 Quick is not the shell. Range-card print and PDF were not part of that check; they stay later work on this same shell.
 3. **Storage:** SQLite with WAL and versioned migrations, with an automatic backup before each migration. Data lives at `$XDG_DATA_HOME/holdover` (config at `$XDG_CONFIG_HOME/holdover`), never inside Omarchy directories. Attachments are content-addressed. UUID and revision fields are present from the first schema (for sync).
 4. **Packaging (personal):**
    - a `PKGBUILD` in the repo, built and installed with `makepkg -si`;
@@ -880,6 +880,7 @@ The phases are ordered by dependency. Effort is estimated after M0.
 | 11 | Phone platform | **Android only,** sideloaded self-signed APK; **iOS out of scope for now** | §1, §23, §30 |
 | 12 | Licence | **MIT,** `Copyright (c) 2026 Patrik Hallgren`; `LICENSE` added in M0 | Header, §26.2, §30 |
 | 13 | Moose preset rings | **Official SJF 15/25/33/41.5 cm** (5¹/5/4/3) as the moose preset. The older Swedish 15/25/35/45 cm set is not a preset. T1 closed 2026-10-17 | §17.2, §17.6, §29, §33 |
+| 14 | Desktop shell | **Tauri 2.** The M1 checklist passed on Omarchy 4 on 2026-10-16. Qt 6 Quick is not the fallback | §26.2, `docs/M1-DESKTOP.md` |
 
 ---
 

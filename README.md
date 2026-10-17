@@ -50,7 +50,7 @@ The Tauri shell is `holdover`. On Omarchy:
 tools/desktop-spike.sh
 ```
 
-That checks the Arch packages, prints the `sudo pacman` line without running it, builds the window, and checks a theme-directory rename. The human checklist (scaling, live theme, text size, tiling) is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Pass `--install` only if you want the script to run that pacman command.
+That checks the Arch packages, prints the `sudo pacman` line without running it, builds the window, and checks a theme-directory rename. `wget` is not required; a missing copy is a warning. The human checklist and the 2026-10-16 result (keep Tauri 2) are in [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Pass `--install` only if you want the script to install the required packages.
 
 ## Command line
 
