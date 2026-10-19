@@ -32,6 +32,23 @@ let chartObserver = null;
 let chartPainting = false;
 let solveTimer = 0;
 let equipNotice = "";
+let moving = { preset: "", speedText: "", speedUnit: "", direction: "3oc", reaction: "0", open: false };
+let cardPageId = "a4";
+let cardConditions = "";
+let cardBrackets = "2 mps, 4 mps, 6 mps";
+let chartKinds = { drop: true, wind: true, velocity: false, energy: false, tof: false, mach: false };
+let pbrResult = null;
+let pbrPreview = null;
+let pbrZonePreset = "moose";
+let truingKind = "mv";
+let truingPreview = null;
+let truingForm = { range: "400 m", elevation: "", shots: "", group: "", lines: "", advertised: "10 mrad", observed: "", piecewise: false };
+let impactData = null;
+let chronoResult = null;
+let chronoForm = { shots: "", temperature: "15 C", label: "Chronograph", loadId: "", confirmSave: false, confirmMv: false };
+let recoilForm = null;
+let recoilResult = null;
+const DASH = ["none", "7 4", "2 3", "9 3 2 3", "12 4", "1 3"];
 
 function t(key) {
   return (boot && boot.strings && boot.strings[key]) || key;
@@ -111,7 +128,7 @@ function shellHtml() {
   return `<div class="shell"><header class="top">
     <span class="brand">${esc(t("app-name"))}</span>
     <nav>
-      ${nav("solve")}${nav("card")}${nav("charts")}${nav("equipment")}${nav("settings")}
+      ${nav("solve")}${nav("card")}${nav("charts")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("settings")}
     </nav>
     <div class="presets">
       ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
@@ -119,7 +136,8 @@ function shellHtml() {
     </div>
   </header>`;
   function nav(id) {
-    const key = id === "card" ? "nav-card" : id === "charts" ? "nav-charts" : id === "equipment" ? "nav-equipment" : id === "settings" ? "nav-settings" : "nav-solve";
+    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", settings: "nav-settings" };
+    const key = keys[id] || "nav-solve";
     return `<button type="button" data-page="${id}" class="${page === id ? "active" : ""}">${esc(t(key))}</button>`;
   }
   function presetButton(id) {
@@ -154,6 +172,8 @@ function unitsPopover(includeApply = true) {
 function pageHtml() {
   if (page === "card") return cardHtml();
   if (page === "charts") return chartHtml();
+  if (page === "pbr") return pbrHtml();
+  if (page === "truing") return truingHtml();
   if (page === "equipment") return equipmentHtml();
   if (page === "settings") return settingsHtml();
   return solveHtml();
@@ -170,7 +190,7 @@ function solveHtml() {
         <select id="profile">${options || `<option value="">${esc(t("no-profile"))}</option>`}</select>
       </label>
       <p class="meta" id="zero-summary">${active ? esc(active.summary || "") : esc(t("no-profile"))}</p>
-      <p class="meta">${esc(t("atmosphere-manual"))} · ${esc(t("truing-none"))}</p>
+      <p class="meta">${esc(t("atmosphere-manual"))} · ${esc((lastSolve && lastSolve.truing) || t("truing-none"))}</p>
       <p class="banner hidden" id="differs">${esc(t("air-differs"))}</p>
       ${qtyField("range", t("range"), s.last_range, s.last_range_unit || units().length, "length", s.last_range_si, s.last_range_display)}
       ${qtyField("wind_speed", t("wind-speed"), s.last_wind_speed, s.last_wind_speed_unit || units().velocity, "velocity", s.last_wind_speed_si, s.last_wind_speed_display)}
@@ -192,7 +212,25 @@ function solveHtml() {
       <p class="hint">${esc(t("field-suffix-hint"))}</p>
       <p class="hint">${esc(t("spin-note"))}</p>
       <p class="hint">${esc(t("jump-note"))}</p>
-      <p class="hint">${esc(t("lead-later"))}</p>
+      <details class="noprint" id="lead-box" ${moving.open ? "open" : ""}>
+        <summary>${esc(t("lead-title"))}</summary>
+        <label class="field">${esc(t("lead-preset"))}
+          <select id="lead-preset">
+            <option value="">${esc(t("overlay-none"))}</option>
+            ${(boot.running || []).map((item) => `<option value="${esc(item.id)}" ${moving.preset === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}
+          </select>
+        </label>
+        <p class="hint" id="lead-note">${esc(leadNote())}</p>
+        ${qtyField("target_speed", t("target-speed"), moving.speedText, moving.speedUnit || units().velocity, "velocity")}
+        <label class="field">${esc(t("lead-direction"))}
+          <input id="target_direction" value="${esc(moving.direction || "3oc")}" />
+          <span class="hint">${esc(t("lead-clock"))}</span>
+        </label>
+        <label class="field">${esc(t("lead-reaction"))}
+          <input id="reaction_s" value="${esc(moving.reaction || "0")}" inputmode="decimal" />
+          <span class="hint">${esc(t("lead-reaction-note"))}</span>
+        </label>
+      </details>
     </section>
     <section>
       <div id="hold" class="hold" aria-live="polite">${holdInner()}</div>
@@ -301,28 +339,50 @@ function holdInner() {
     ${line(wind && wind.direction, wind && wind.primary, wind && wind.clicks)}
     <p class="secondary">${esc(secondary)}</p>
     <p class="sensitivity">${esc(near)}</p>
-    <p class="warning" id="warns">${lastSolve ? esc([].concat(lastSolve.warnings || [], lastSolve.station_pressure_note || []).join(" ")) : ""}</p>`;
+    <p class="warning" id="warns">${lastSolve ? esc([].concat(lastSolve.warnings || [], lastSolve.station_pressure_note || []).join(" ")) : ""}</p>
+    ${leadHold()}`;
+}
+
+function leadNote() {
+  const preset = (boot.running || []).find((item) => item.id === moving.preset);
+  return preset ? preset.note : t("lead-clock");
+}
+
+function leadHold() {
+  const lead = lastSolve && lastSolve.lead;
+  if (!lead || !lead.lead) return "";
+  const flight = `${lead.flight_lead.direction} ${lead.flight_lead.primary}`;
+  const combined = `${lead.combined.direction} ${lead.combined.primary}`;
+  return `<p class="secondary">${esc(t("lead"))} ${esc(flight)} · ${Number(lead.lead_m).toFixed(3)} m · ${esc(t("lead-combined"))} ${esc(combined)}</p>
+    <p class="hint">${esc(lead.reaction_note || t("lead-reaction-note"))}</p>`;
 }
 
 function cardHtml() {
   const s = boot.settings;
+  const pages = (boot.card_pages || []).map((item) =>
+    `<option value="${esc(item.id)}" ${item.id === cardPageId ? "selected" : ""}>${esc(item.name)}</option>`).join("");
   return `<section class="card">
     <div class="row noprint">
       ${qtyField("from", t("card-from"), "100 m", units().length, "length", 100)}
       ${qtyField("to", t("card-to"), "600 m", units().length, "length", 600)}
       ${qtyField("step", t("card-step"), "50 m", units().length, "length", 50)}
-      <label class="field">${esc(t("card-winds"))}<input id="brackets" value="2 mps, 4 mps, 6 mps" /></label>
+      <label class="field">${esc(t("card-winds"))}<input id="brackets" value="${esc(cardBrackets)}" /></label>
+      <label class="field">${esc(t("card-size"))}<select id="card-page">${pages}</select></label>
+      <label class="field">${esc(t("card-conditions"))}<input id="conditions" value="${esc(cardConditions)}" placeholder="-10 C, 30 C" /></label>
       <button type="button" id="card-build">${esc(t("apply"))}</button>
       <button type="button" id="card-print">${esc(t("card-print"))}</button>
+      <button type="button" id="card-csv">${esc(t("card-csv"))}</button>
+      <button type="button" id="card-json">${esc(t("card-json"))}</button>
       <label><input type="checkbox" id="card-pin" ${s.card_pinned ? "checked" : ""} /> ${esc(t("card-pin"))}</label>
     </div>
-    <p class="hint noprint">${esc(t("page-pin-note"))}</p>
+    <p class="hint noprint">${esc(t("page-pin-note"))} ${esc(t("card-print-note"))}</p>
     <div id="card-body">${card && card.rows ? cardTable(card) : `<p>${esc(t("card-empty"))}</p>`}</div>
   </section>`;
 }
 
 function cardTable(data) {
   const heads = data.brackets.map((label) => `<th>${esc(label)}</th>`).join("");
+  const conditionHeads = (data.conditions || []).map((label) => `<th>${esc(label)}</th>`).join("");
   const rows = data.rows.map((row) => `<tr>
     <td>${esc(row.range_display)} ${esc(data.length_unit)}</td>
     <td>${esc(row.elevation.direction)} ${esc(row.elevation.primary)}</td>
@@ -332,36 +392,69 @@ function cardTable(data) {
     <td>${Number(row.tof_s).toFixed(3)}</td>
     <td>${Number(row.mach).toFixed(2)}</td>
     ${(row.winds || []).map((wind) => `<td>${esc(wind.windage.direction)} ${esc(wind.windage.primary)}</td>`).join("")}
+    ${(row.conditions || []).map((item) => `<td>${esc(item.elevation.direction)} ${esc(item.elevation.primary)}</td>`).join("")}
   </tr>`).join("");
+  const bar = data.scale_bar_mm
+    ? `<div class="scale-bar" style="width:${Number(data.scale_bar_mm)}mm"><span>${esc(data.scale_bar_label || "")}</span></div>`
+    : "";
   return `<h2>${esc(data.profile_label || "")}</h2>
     <p>${esc(data.zero_summary || "")}</p>
+    <p class="meta">${esc(t("truing"))}: ${esc(data.truing || t("truing-none"))} · ${esc(data.date || "")}</p>
     <p class="meta">${esc(t("from-zero"))}. ${esc(t("crosswind"))}.</p>
+    ${bar}
     <table><thead><tr>
       <th>${esc(t("range"))}</th><th>${esc(t("cards-elevation"))}</th><th>${esc(t("drop"))}</th>
       <th>${esc(t("velocity"))}</th><th>${esc(t("energy"))}</th><th>${esc(t("tof"))}</th><th>${esc(t("mach"))}</th>
-      ${heads}
+      ${heads}${conditionHeads}
     </tr></thead><tbody>${rows}</tbody></table>
+    <p class="disclaimer">${esc(data.footer || t("range-card-footer"))}</p>
     <p class="disclaimer">${esc(data.disclaimer || boot.disclaimer)}</p>`;
 }
 
 function chartHtml() {
   const profiles = boot.equipment.profiles;
   const boxes = profiles.map((item) => `<label><input type="checkbox" class="overlay" value="${esc(item.id)}" ${item.id === boot.settings.active_profile_id ? "checked" : ""} /> ${esc(item.label)}</label>`).join("");
+  const kinds = ["drop", "wind", "velocity", "energy", "tof", "mach"].map((kind) =>
+    `<label><input type="checkbox" class="chart-kind" value="${kind}" ${chartKinds[kind] ? "checked" : ""} /> ${esc(t(kind === "drop" ? "chart-drop" : kind === "wind" ? "chart-wind" : kind))}</label>`).join("");
   return `<section class="panel">
     <div class="checks noprint">${boxes}</div>
-    <button type="button" id="chart-build" class="noprint">${esc(t("apply"))}</button>
-    <p class="hint">${esc(t("charts-note"))} ${esc(t("same-conditions"))}</p>
+    <div class="checks noprint">${kinds}</div>
+    <div class="row noprint">
+      <button type="button" id="chart-build">${esc(t("apply"))}</button>
+      <button type="button" id="chart-svg">${esc(t("download-svg"))}</button>
+      <button type="button" id="chart-png">${esc(t("download-png"))}</button>
+      <button type="button" id="chart-csv">${esc(t("card-csv"))}</button>
+    </div>
+    <p class="hint">${esc(t("charts-note"))} ${esc(t("same-conditions"))} ${esc(t("chart-limit"))}</p>
     <div id="chart-body"></div>
+    <h3 class="noprint">${esc(t("impact-title"))}</h3>
+    <div class="row noprint">
+      <label class="field">${esc(t("impact-target"))}
+        <select id="impact-target">
+          <option value="moose">${esc(t("rings-moose"))}</option>
+          <option value="roe">${esc(t("rings-roe"))}</option>
+          <option value="custom">${esc(t("impact-custom"))}</option>
+        </select>
+      </label>
+      ${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length")}
+      ${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}
+      ${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}
+      <label class="field">${esc(t("card-winds"))}<input id="impact-brackets" value="2 mps, 4 mps" /></label>
+      ${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}
+    </div>
+    <div id="impact-body" class="noprint"></div>
   </section>`;
 }
 
 function equipmentHtml() {
-  const tabs = ["rifle", "scope", "bullet", "load", "profile"].map((kind) =>
+  const tabs = ["rifle", "scope", "bullet", "load", "profile", "chrono", "recoil"].map((kind) =>
     `<button type="button" data-kind="${kind}" class="${equipKind === kind ? "active" : ""}">${esc(t("equip-" + kind))}</button>`).join("");
   const items = (boot.equipment[equipKind + "s"] || boot.equipment[equipKind] || []).map((item) =>
     `<button type="button" data-pick="${esc(item.id)}">${esc(item.label)}</button>`).join("");
+  const library = equipKind === "recoil" ? "" : (items || `<p>${esc(t("equip-empty"))}</p>`);
+  const newer = equipKind === "recoil" || equipKind === "chrono" ? "" : `<button type="button" id="equip-new">${esc(t("new"))}</button>`;
   return `<div class="layout">
-    <section class="panel list"><div class="row">${tabs}</div><button type="button" id="equip-new">${esc(t("new"))}</button>${items || `<p>${esc(t("equip-empty"))}</p>`}</section>
+    <section class="panel list"><div class="row">${tabs}</div>${newer}${library}</section>
     <section class="panel" id="equip-form">${equipForm()}</section>
   </div>`;
 }
@@ -372,6 +465,8 @@ function currentRecord() {
 }
 
 function equipForm() {
+  if (equipKind === "chrono") return chronoHtml();
+  if (equipKind === "recoil") return recoilHtml();
   const record = currentRecord() || {};
   const id = record.id ? `<input type="hidden" id="record-id" value="${esc(record.id)}" />` : `<input type="hidden" id="record-id" value="" />`;
   let fields = "";
@@ -557,6 +652,8 @@ function bindPage() {
   if (page === "solve") bindSolve();
   if (page === "card") bindCard();
   if (page === "charts") bindChart();
+  if (page === "pbr") bindPbr();
+  if (page === "truing") bindTruing();
   if (page === "equipment") bindEquipment();
   if (page === "settings") bindSettings();
 }
@@ -571,6 +668,48 @@ function bindSolve() {
     scheduleSolve(0);
   }));
   document.getElementById("extra").classList.toggle("hidden", !needsExtra());
+  const preset = document.getElementById("lead-preset");
+  if (preset) preset.addEventListener("change", () => {
+    moving.preset = preset.value;
+    moving.open = true;
+    const item = (boot.running || []).find((row) => row.id === preset.value);
+    if (item && item.speed_known) {
+      moving.speedText = `${item.speed_mps} mps`;
+      moving.speedUnit = "mps";
+      const speed = document.getElementById("target_speed");
+      if (speed) {
+        speed.value = moving.speedText;
+        speed.dataset.unit = "mps";
+        speed.dataset.dirty = "1";
+        const chip = document.querySelector('[data-for="target_speed"]');
+        if (chip) chip.textContent = "mps";
+      }
+    }
+    if (item && !item.speed_known) {
+      moving.speedText = "";
+      const speed = document.getElementById("target_speed");
+      if (speed) speed.value = "";
+    }
+    const note = document.getElementById("lead-note");
+    if (note) note.textContent = leadNote();
+    scheduleSolve(0);
+  });
+  ["target_speed", "target_direction", "reaction_s"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener("input", () => {
+      moving.open = true;
+      if (id === "target_speed") {
+        moving.speedText = node.value;
+        moving.speedUnit = node.dataset.unit;
+        node.dataset.dirty = "1";
+      } else if (id === "target_direction") moving.direction = node.value;
+      else moving.reaction = node.value;
+      scheduleSolve(80);
+    });
+  });
+  const details = document.getElementById("lead-box");
+  if (details) details.addEventListener("toggle", () => { moving.open = details.open; });
 }
 
 function needsExtra() {
@@ -581,9 +720,21 @@ function needsExtra() {
 function bindCard() {
   document.getElementById("card-build").addEventListener("click", buildCard);
   document.getElementById("card-print").addEventListener("click", () => window.print());
+  document.getElementById("card-csv").addEventListener("click", () => {
+    if (card && card.csv) downloadText("holdover-card.csv", card.csv, "text/csv");
+  });
+  document.getElementById("card-json").addEventListener("click", () => {
+    if (card) downloadText("holdover-card.json", JSON.stringify(card, null, 2), "application/json");
+  });
   document.getElementById("card-pin").addEventListener("change", async (event) => {
     boot = await call("set_preferences", { body: preferencesBody({ card_pinned: event.target.checked }) });
   });
+  const pageSelect = document.getElementById("card-page");
+  if (pageSelect) pageSelect.addEventListener("change", () => { cardPageId = pageSelect.value; });
+  const conditions = document.getElementById("conditions");
+  if (conditions) conditions.addEventListener("input", () => { cardConditions = conditions.value; });
+  const brackets = document.getElementById("brackets");
+  if (brackets) brackets.addEventListener("input", () => { cardBrackets = brackets.value; });
 }
 
 async function buildCard() {
@@ -595,7 +746,13 @@ async function buildCard() {
     body.step = qtyPayload("step");
     body.brackets = document.getElementById("brackets").value;
     body.pinned_metric = document.getElementById("card-pin").checked;
+    body.page = document.getElementById("card-page").value;
+    body.conditions = document.getElementById("conditions").value;
+    cardPageId = body.page;
+    cardConditions = body.conditions;
+    cardBrackets = body.brackets;
     card = await call("range_card", { body });
+    applyCardPage(card);
     host.innerHTML = cardTable(card);
   } catch (error) {
     host.innerHTML = `<p class="error">${esc(error)}</p>`;
@@ -604,6 +761,15 @@ async function buildCard() {
 
 function bindChart() {
   document.getElementById("chart-build").addEventListener("click", buildChart);
+  document.querySelectorAll(".chart-kind").forEach((box) => box.addEventListener("change", () => {
+    chartKinds[box.value] = box.checked;
+    if (chartData) paintCharts();
+  }));
+  document.getElementById("chart-svg").addEventListener("click", () => downloadSvg("holdover-charts.svg"));
+  document.getElementById("chart-png").addEventListener("click", () => downloadPng("holdover-charts.png"));
+  document.getElementById("chart-csv").addEventListener("click", () => {
+    if (chartData) downloadText("holdover-chart.csv", chartCsv(), "text/csv");
+  });
   const host = document.getElementById("chart-body");
   if (window.ResizeObserver) {
     if (chartObserver) chartObserver.disconnect();
@@ -617,7 +783,7 @@ function bindChart() {
 
 async function buildChart() {
   const checked = [...document.querySelectorAll(".overlay:checked")].map((box) => box.value);
-  const ids = checked.slice(0, 3);
+  const ids = checked.slice(0, 6);
   const body = solveBody();
   body.profile_ids = ids;
   body.from = { text: "0 m", unit: "m" };
@@ -633,8 +799,9 @@ async function buildChart() {
     chartData = await call("chart", { body });
     chartCursor = null;
     chartPaintWidth = 0;
-    host.dataset.limit = checked.length > 3 ? "1" : "";
+    host.dataset.limit = checked.length > 6 ? "1" : "";
     paintCharts();
+    await buildImpact(ids);
   } catch (error) {
     host.innerHTML = `<p class="error">${esc(error)}</p>`;
   }
@@ -647,8 +814,9 @@ function paintCharts() {
   if (width === chartPaintWidth && host.querySelector("svg")) return;
   chartPainting = true;
   chartPaintWidth = width;
-  const note = host.dataset.limit === "1" ? `<p class="hint">${esc(t("chart-limit"))}</p>` : "";
-  host.innerHTML = note + drawScaledChart("drop") + drawScaledChart("wind");
+  const note = host.dataset.limit === "1" ? `<p class="hint">${esc(t("chart-six"))}</p>` : "";
+  const kinds = ["drop", "wind", "velocity", "energy", "tof", "mach"].filter((kind) => chartKinds[kind]);
+  host.innerHTML = note + (kinds.length ? kinds.map((kind) => drawScaledChart(kind)).join("") : `<p>${esc(t("chart-empty"))}</p>`);
   bindChartPointers();
   positionCursor();
   writeReadouts();
@@ -657,7 +825,7 @@ function paintCharts() {
 
 function legendItems() {
   return (chartData.series || []).map((item, index) =>
-    `<span><i class="swatch swatch-${index}"></i>${esc(item.label)}</span>`).join("");
+    `<span><i class="swatch swatch-${index % 6}"></i>${esc(item.label)}</span>`).join("");
 }
 
 function xLabelStride(count, plotW) {
@@ -685,10 +853,15 @@ function drawScaledChart(kind) {
     padL, padT, plotW, plotH, width, height,
     xMin: xAxis.min, xMax: xAxis.max, yMin: yAxis.min, yMax: yAxis.max,
   };
-  const yKey = kind === "drop" ? "path" : "windage";
+  const yKey = kind === "drop" ? "path" : kind === "wind" ? "windage" : kind;
   const stride = xLabelStride(xAxis.ticks.length, plotW);
   const last = xAxis.ticks.length - 1;
   let marks = `<rect class="frame" x="${padL}" y="${padT}" width="${plotW.toFixed(1)}" height="${plotH.toFixed(1)}" fill="none" />`;
+  const transonic = chartData.transonic;
+  if (transonic !== null && transonic !== undefined && Number.isFinite(Number(transonic))) {
+    const x0 = Math.min(width - padR, Math.max(padL, xOf(Number(transonic))));
+    marks += `<rect class="transonic" x="${x0.toFixed(1)}" y="${padT}" width="${Math.max(0, width - padR - x0).toFixed(1)}" height="${plotH.toFixed(1)}" />`;
+  }
   yAxis.ticks.forEach((tick, index) => {
     const y = yOf(tick);
     marks += `<line class="grid" x1="${padL}" x2="${(width - padR).toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`;
@@ -714,18 +887,20 @@ function drawScaledChart(kind) {
   const paths = (chartData.series || []).map((item, index) => {
     const d = (item.points || []).map((point, i) =>
       `${i ? "L" : "M"}${xOf(point.range).toFixed(1)},${yOf(point[yKey]).toFixed(1)}`).join(" ");
-    return `<path d="${d}" fill="none" stroke="var(--chart-${index})" stroke-width="2" /><circle class="dot hidden" data-dot="${index}" r="3.5" fill="var(--chart-${index})" cx="0" cy="0" />`;
+    return `<path d="${d}" fill="none" stroke="var(--chart-${index % 6})" stroke-width="2" stroke-dasharray="${DASH[index % DASH.length]}" /><circle class="dot hidden" data-dot="${index}" r="3.5" fill="var(--chart-${index % 6})" cx="0" cy="0" />`;
   }).join("");
-  const title = kind === "drop" ? t("chart-drop") : t("chart-wind");
+  const title = kind === "drop" ? t("chart-drop") : kind === "wind" ? t("chart-wind") : t(kind);
   const yTitle = kind === "drop"
     ? `${spec.unit}, ${t("chart-above-los")}`
-    : `${spec.unit}, ${t("chart-wind-sign")}`;
+    : kind === "wind"
+      ? `${spec.unit}, ${t("chart-wind-sign")}`
+      : `${spec.unit}`;
   const clicks = spec.clicks_axis ? `<p class="hint">${esc(t("chart-clicks-axis"))}</p>` : "";
   return `<section class="chart-block">
     <h3>${esc(title)}</h3>
     <p class="legend">${legendItems()}</p>
     <p class="axis-title">${esc(yTitle)}</p>
-    <svg class="chart" data-chart="${kind}" viewBox="0 0 ${width} ${height}" role="img" tabindex="0" aria-label="${esc(title)}, ${esc(yTitle)}">
+    <svg class="chart" data-chart="${kind}" data-ykey="${yKey}" viewBox="0 0 ${width} ${height}" role="img" tabindex="0" aria-label="${esc(title)}, ${esc(yTitle)}">
       ${marks}${paths}<line class="cursor hidden" x1="0" x2="0" y1="${padT}" y2="${padT + plotH}" />
     </svg>
     <p class="axis-title">${esc(t("range"))} (${esc(xAxis.unit)})</p>
@@ -809,7 +984,7 @@ function positionCursor() {
     line.setAttribute("y1", String(geom.padT));
     line.setAttribute("y2", String(geom.padT + geom.plotH));
     line.classList.remove("hidden");
-    const key = svg.dataset.chart === "drop" ? "path" : "windage";
+    const key = svg.dataset.ykey || "path";
     svg.querySelectorAll(".dot").forEach((dot) => {
       const series = chartData.series[Number(dot.dataset.dot)];
       const point = series && series.points[chartCursor];
@@ -823,13 +998,15 @@ function positionCursor() {
 }
 
 function writeReadouts() {
-  ["drop", "wind"].forEach((kind) => {
-    const node = document.querySelector(`[data-readout="${kind}"]`);
-    if (!node || !chartData) return;
+  document.querySelectorAll("[data-readout]").forEach((node) => {
+    const kind = node.dataset.readout;
+    if (!chartData) return;
     if (chartCursor === null) {
       node.textContent = t("chart-cursor");
       return;
     }
+    const spec = chartData[kind] || {};
+    const yKey = kind === "drop" ? "path" : kind === "wind" ? "windage" : kind;
     const range = chartData.series[0].points[chartCursor].range;
     const parts = chartData.series.map((item) => {
       const point = item.points[chartCursor];
@@ -837,7 +1014,10 @@ function writeReadouts() {
       if (kind === "drop") {
         return `${item.label}: ${signed(point.path)} ${chartData.drop.unit} · ${signed(point.elevation)} ${chartData.drop.hold_unit}`;
       }
-      return `${item.label}: ${signed(point.windage)} ${chartData.wind.unit} · ${signed(point.wind_linear)} ${chartData.wind.linear_unit}`;
+      if (kind === "wind") {
+        return `${item.label}: ${signed(point.windage)} ${chartData.wind.unit} · ${signed(point.wind_linear)} ${chartData.wind.linear_unit}`;
+      }
+      return `${item.label}: ${signed(point[yKey])} ${spec.unit || ""}`;
     }).filter(Boolean);
     node.textContent = `${signed(range)} ${chartData.x.unit} — ${parts.join("  ·  ")}`;
   });
@@ -867,6 +1047,8 @@ function bindEquipment() {
   if (save) save.addEventListener("click", saveEquipment);
   const remove = document.getElementById("equip-delete");
   if (remove) remove.addEventListener("click", deleteEquipment);
+  if (equipKind === "chrono") bindChrono();
+  if (equipKind === "recoil") bindRecoil();
 }
 
 async function saveEquipment() {
@@ -992,6 +1174,10 @@ function cycleChip(chip) {
     input.dataset.si = String(si);
     input.value = formatLocal(si, input.dataset.dim, next);
   }
+  if (input.id === "target_speed") {
+    moving.speedUnit = next;
+    moving.speedText = input.value;
+  }
   showPreview(input);
   if (page === "solve") scheduleSolve(0);
 }
@@ -1034,7 +1220,7 @@ function solveBody() {
   const profile = document.getElementById("profile");
   const s = boot.settings;
   const air = s.current_air || {};
-  return {
+  const body = {
     profile_id: profile && profile.value ? profile.value : s.active_profile_id,
     range: qtyPayload("range") || storedQuantity(s.last_range, units().length),
     wind_speed: qtyPayload("wind_speed") || storedQuantity(s.last_wind_speed, units().velocity),
@@ -1051,10 +1237,15 @@ function solveBody() {
       altitude: airPayload("altitude", units().length),
     },
     effects: document.querySelector("[data-effect]") ? effects() : (s.effects || effects()),
+    target_speed: moving.speedText ? { text: moving.speedText, unit: moving.speedUnit || units().velocity } : undefined,
+    target_direction: moving.direction || "3oc",
+    reaction_s: Number(String(moving.reaction || "0").replace(",", ".")) || 0,
     angular: s.angular || "mrad",
     range_step: storedQuantity(s.range_step || "10 m", units().length),
     wind_step: storedQuantity(s.wind_step || "1 mps", units().velocity),
   };
+  if (!body.target_speed) delete body.target_speed;
+  return body;
 }
 
 function effects() {
@@ -1257,6 +1448,8 @@ function fillPalette() {
     ["solve", t("nav-solve")],
     ["card", t("nav-card")],
     ["charts", t("nav-charts")],
+    ["pbr", t("nav-pbr")],
+    ["truing", t("nav-truing")],
     ["equipment", t("nav-equipment")],
     ["settings", t("nav-settings")],
     ["metric", t("command-metric")],
@@ -1276,6 +1469,594 @@ function runCommand(id) {
   else if (id === "copy") { copyHold(); render(); }
   else { page = id; render(); }
 }
+
+function activeProfile() {
+  const id = (document.getElementById("profile") && document.getElementById("profile").value) || boot.settings.active_profile_id;
+  return (boot.equipment.profiles || []).find((item) => item.id === id) || null;
+}
+
+function applyCardPage(data) {
+  if (!data || !data.page) return;
+  let style = document.getElementById("card-page-style");
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "card-page-style";
+    document.head.appendChild(style);
+  }
+  const width = Number(data.page.width_mm);
+  const height = Number(data.page.height_mm);
+  style.textContent = `@media print { @page { size: ${width}mm ${height}mm; margin: 8mm; } }`;
+}
+
+function downloadText(name, text, type) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadSvg(name) {
+  const host = document.getElementById("chart-body") || document.getElementById("impact-body");
+  if (!host) return;
+  const clone = host.cloneNode(true);
+  clone.querySelectorAll(".noprint").forEach((node) => node.remove());
+  downloadText(name, `<svg xmlns="http://www.w3.org/2000/svg">${clone.innerHTML}</svg>`, "image/svg+xml");
+}
+
+function downloadPng(name, selector) {
+  const svg = document.querySelector(selector || "#chart-body svg");
+  if (!svg) return;
+  const xml = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([xml], { type: "image/svg+xml" });
+  const url = URL.createObjectURL(blob);
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement("canvas");
+    const box = svg.viewBox.baseVal;
+    canvas.width = Math.max(1, box.width || svg.clientWidth || 800);
+    canvas.height = Math.max(1, box.height || svg.clientHeight || 400);
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    const link = document.createElement("a");
+    link.href = canvas.toDataURL("image/png");
+    link.download = name;
+    link.click();
+  };
+  image.src = url;
+}
+
+function chartCsv() {
+  const series = chartData.series || [];
+  const header = ["Range"];
+  series.forEach((item) => {
+    ["path", "windage", "velocity", "energy", "tof", "mach"].forEach((key) => header.push(`${item.label} ${key}`));
+  });
+  const count = series[0] && series[0].points ? series[0].points.length : 0;
+  const lines = [header.join(",")];
+  for (let index = 0; index < count; index += 1) {
+    const cells = [series[0].points[index].range];
+    series.forEach((item) => {
+      const point = item.points[index] || {};
+      cells.push(point.path, point.windage, point.velocity, point.energy, point.tof, point.mach);
+    });
+    lines.push(cells.join(","));
+  }
+  return lines.join("\n");
+}
+
+async function buildImpact(ids) {
+  const host = document.getElementById("impact-body");
+  if (!host) return;
+  try {
+    const body = solveBody();
+    body.profile_ids = ids;
+    body.range = qtyPayload("impact-range") || body.range;
+    body.target = document.getElementById("impact-target").value;
+    body.mv_sd = qtyPayload("mv_sd");
+    body.range_error = qtyPayload("range_error");
+    body.brackets = document.getElementById("impact-brackets").value;
+    if (body.target === "custom") body.zone = qtyPayload("impact-zone");
+    impactData = await call("impact", { body });
+    host.innerHTML = impactView(impactData);
+  } catch (error) {
+    host.innerHTML = `<p class="error">${esc(error)}</p>`;
+  }
+}
+
+function impactView(data) {
+  const rings = data.rings_cm || [];
+  const pois = data.pois || [];
+  let half = Math.max(5, ...rings.map((diameter) => diameter / 2));
+  pois.forEach((poi) => {
+    half = Math.max(half, Math.abs(poi.path_cm) + 2, Math.abs(poi.windage_cm) + 2);
+  });
+  const size = half * 2;
+  const circles = rings.map((diameter) => `<circle class="ring" cx="0" cy="0" r="${diameter / 2}" />`).join("");
+  const marks = pois.map((poi, index) => {
+    const x = poi.windage_cm;
+    const y = -poi.path_cm;
+    const color = `var(--chart-${index % 6})`;
+    const mv = `<line stroke="${color}" stroke-dasharray="0.4 0.3" x1="${x}" x2="${x}" y1="${-poi.mv_high_cm}" y2="${-poi.mv_low_cm}" />`;
+    const range = `<line stroke="${color}" x1="${x - 0.6}" x2="${x + 0.6}" y1="${-poi.range_low_cm}" y2="${-poi.range_low_cm}" /><line stroke="${color}" x1="${x - 0.6}" x2="${x + 0.6}" y1="${-poi.range_high_cm}" y2="${-poi.range_high_cm}" />`;
+    const wind = `<line stroke="${color}" stroke-dasharray="1.2 0.4" x1="${poi.wind_left_cm}" x2="${poi.wind_right_cm}" y1="${y}" y2="${y}" />`;
+    const brackets = (poi.brackets || []).map((item) => `<circle cx="${item.windage_cm}" cy="${y}" r="0.35" fill="none" stroke="${color}" />`).join("");
+    return `${mv}${range}${wind}${brackets}<circle class="poi" cx="${x}" cy="${y}" r="0.7" fill="${color}" />`;
+  }).join("");
+  const badge = data.placeholder ? `<p class="badge">${esc(t("impact-placeholder"))}</p><p class="hint">${esc(data.note || "")}</p>` : `<p class="hint">${esc(data.note || "")}</p>`;
+  return `${badge}
+    <svg class="impact" viewBox="${-half} ${-half} ${size} ${size}" style="width:${size}cm" role="img" aria-label="${esc(t("impact-title"))}">
+      <line x1="${-half}" x2="${half}" y1="0" y2="0" stroke="var(--border)" stroke-width="0.08" />
+      <line y1="${-half}" y2="${half}" x1="0" x2="0" stroke="var(--border)" stroke-width="0.08" />
+      ${circles}${marks}
+    </svg>
+    <p class="legend">${pois.map((poi, index) => `<span><i class="swatch swatch-${index % 6}"></i>${esc(poi.label)}</span>`).join("")}</p>
+    <div class="row"><button type="button" id="impact-svg">${esc(t("download-svg"))}</button><button type="button" id="impact-png">${esc(t("download-png"))}</button></div>`;
+}
+
+function pbrHtml() {
+  return `<section class="panel">
+    <label class="field">${esc(t("pbr-preset"))}
+      <select id="pbr-preset">
+        <option value="moose" ${pbrZonePreset === "moose" ? "selected" : ""}>${esc(t("pbr-moose"))}</option>
+        <option value="roe" ${pbrZonePreset === "roe" ? "selected" : ""}>${esc(t("pbr-roe"))}</option>
+        <option value="custom" ${pbrZonePreset === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
+      </select>
+    </label>
+    ${qtyField("zone", t("pbr-zone"), pbrZoneText(), pbrZoneUnit(), "length")}
+    <button type="button" id="pbr-build">${esc(t("apply"))}</button>
+    <p class="hint">${esc(t("pbr-note"))}</p>
+    <div id="pbr-body">${pbrResult ? pbrView(pbrResult) : ""}</div>
+  </section>`;
+}
+
+function pbrZoneText() {
+  if (pbrResult && pbrResult.zone_text) return pbrResult.zone_text;
+  if (pbrZonePreset === "roe") return "10 cm";
+  if (pbrZonePreset === "custom") return "12 cm";
+  return "15 cm";
+}
+
+function pbrZoneUnit() {
+  return pbrZonePreset === "custom" ? units().small : "cm";
+}
+
+function pbrView(data) {
+  const confirm = pbrPreview && !pbrPreview.applied
+    ? `<p>${esc(t("pbr-apply-preview"))} ${esc(pbrPreview.next_text)}. <button type="button" id="pbr-confirm">${esc(t("pbr-confirm"))}</button></p>`
+    : `<button type="button" id="pbr-apply">${esc(t("pbr-apply"))}</button>`;
+  return `<p>${esc(t("pbr-near"))} ${esc(data.near_display)} ${esc(data.length_unit)}</p>
+    <p>${esc(t("pbr-far"))} ${esc(data.far_display)} ${esc(data.length_unit)}</p>
+    <p>${esc(t("pbr-zero"))} ${esc(data.zero_display)} ${esc(data.length_unit)}</p>
+    <p>${esc(t("pbr-ordinate"))} ${esc(data.ordinate_display)} ${esc(t("pbr-at"))} ${esc(data.ordinate_range_display)} ${esc(data.length_unit)}</p>
+    ${pbrChart(data)}
+    <p class="hint">${esc(t("pbr-still-air"))}</p>
+    ${confirm}`;
+}
+
+function pbrChart(data) {
+  const samples = data.samples || [];
+  if (!samples.length) return "";
+  const radius = Number(data.radius_display) || 0;
+  let xMin = Infinity;
+  let xMax = -Infinity;
+  let yMin = -radius;
+  let yMax = radius;
+  samples.forEach((sample) => {
+    xMin = Math.min(xMin, sample.range);
+    xMax = Math.max(xMax, sample.range);
+    yMin = Math.min(yMin, sample.path, -radius);
+    yMax = Math.max(yMax, sample.path, radius);
+  });
+  const width = 640;
+  const height = 280;
+  const padL = 56;
+  const padR = 12;
+  const padT = 16;
+  const padB = 28;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const xOf = (value) => padL + (value - xMin) / ((xMax - xMin) || 1) * plotW;
+  const yOf = (value) => padT + (yMax - value) / ((yMax - yMin) || 1) * plotH;
+  const d = samples.map((sample, index) => `${index ? "L" : "M"}${xOf(sample.range).toFixed(1)},${yOf(sample.path).toFixed(1)}`).join(" ");
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("nav-pbr"))}">
+    <line class="zero" x1="${padL}" x2="${width - padR}" y1="${yOf(radius)}" y2="${yOf(radius)}" />
+    <line class="zero" x1="${padL}" x2="${width - padR}" y1="${yOf(-radius)}" y2="${yOf(-radius)}" />
+    <line class="grid" x1="${padL}" x2="${width - padR}" y1="${yOf(0)}" y2="${yOf(0)}" />
+    <path d="${d}" fill="none" stroke="var(--chart-0)" stroke-width="2" />
+  </svg>
+  <p class="hint">${esc(t("pbr-band"))}</p>`;
+}
+
+function bindPbr() {
+  const preset = document.getElementById("pbr-preset");
+  if (preset) preset.addEventListener("change", () => {
+    pbrZonePreset = preset.value;
+    pbrResult = null;
+    pbrPreview = null;
+    render();
+  });
+  const build = document.getElementById("pbr-build");
+  if (build) build.addEventListener("click", runPbr);
+  bindPbrActions();
+}
+
+function bindPbrActions() {
+  const apply = document.getElementById("pbr-apply");
+  if (apply) apply.addEventListener("click", () => runApplyZero(false));
+  const confirm = document.getElementById("pbr-confirm");
+  if (confirm) confirm.addEventListener("click", () => runApplyZero(true));
+}
+
+async function runPbr() {
+  const host = document.getElementById("pbr-body");
+  try {
+    const body = solveBody();
+    body.zone = qtyPayload("zone");
+    pbrResult = await call("point_blank", { body });
+    pbrResult.zone_text = body.zone.text;
+    pbrPreview = null;
+    if (host) host.innerHTML = pbrView(pbrResult);
+    bindPbrActions();
+  } catch (error) {
+    if (host) host.innerHTML = `<p class="error">${esc(error)}</p>`;
+  }
+}
+
+async function runApplyZero(confirm) {
+  const host = document.getElementById("pbr-body");
+  try {
+    const body = solveBody();
+    body.zone = qtyPayload("zone") || { text: pbrZoneText(), unit: pbrZoneUnit() };
+    body.confirm = confirm;
+    pbrPreview = await call("apply_zero", { body });
+    if (confirm) {
+      boot = await call("bootstrap");
+      pbrPreview = null;
+      render();
+      return;
+    }
+    if (host && pbrResult) {
+      host.innerHTML = pbrView(pbrResult);
+      bindPbrActions();
+    }
+  } catch (error) {
+    if (host) host.innerHTML = `<p class="error">${esc(error)}</p>`;
+  }
+}
+
+function truingHtml() {
+  const profile = activeProfile();
+  const history = (profile && profile.truing && profile.truing.history) || [];
+  const active = (profile && profile.truing && profile.truing.active && profile.truing.active.label) || t("truing-none");
+  const rows = history.map((entry) => `<li>${esc(entry.summary || "")}
+    <button type="button" data-history="${esc(entry.id)}" data-action="activate">${esc(t("truing-activate"))}</button>
+    <button type="button" data-history="${esc(entry.id)}" data-action="revert">${esc(t("truing-revert"))}</button>
+  </li>`).join("");
+  return `<section class="panel fields">
+    <p class="meta">${esc(t("truing-active"))}: ${esc(active)}</p>
+    <label class="field">${esc(t("truing-kind"))}
+      <select id="truing-kind">
+        <option value="mv" ${truingKind === "mv" ? "selected" : ""}>${esc(t("truing-mv"))}</option>
+        <option value="drag" ${truingKind === "drag" ? "selected" : ""}>${esc(t("truing-drag"))}</option>
+        <option value="tracking" ${truingKind === "tracking" ? "selected" : ""}>${esc(t("truing-tracking"))}</option>
+      </select>
+    </label>
+    <div id="truing-fields">${truingFields()}</div>
+    <button type="button" id="truing-preview">${esc(t("settings-preview"))}</button>
+    <div id="truing-result">${truingPreview ? truingDiff(truingPreview) : ""}</div>
+    <h3>${esc(t("truing-history"))}</h3>
+    <ul>${rows || `<li>${esc(t("truing-history-empty"))}</li>`}</ul>
+    <p class="hint">${esc(t("truing-confirm-note"))}</p>
+  </section>`;
+}
+
+function truingFields() {
+  if (truingKind === "drag") {
+    return `<label class="field">${esc(t("truing-lines"))}<textarea id="truing-lines" rows="5">${esc(truingForm.lines)}</textarea></label>
+      <p class="hint">${esc(t("truing-lines-hint"))}</p>
+      <label><input type="checkbox" id="truing-piecewise" ${truingForm.piecewise ? "checked" : ""} /> ${esc(t("truing-piecewise"))}</label>
+      <p class="hint">${esc(t("truing-drag-guidance"))}</p>`;
+  }
+  if (truingKind === "tracking") {
+    return `${qtyField("advertised", t("truing-advertised"), truingForm.advertised, "mrad", "angle")}
+      ${qtyField("observed", t("truing-observed"), truingForm.observed, "mrad", "angle")}
+      <p class="hint">${esc(t("truing-tracking-guidance"))}</p>`;
+  }
+  return `${qtyField("observe_range", t("range"), truingForm.range, units().length, "length")}
+    ${qtyField("observe_elevation", t("elevation"), truingForm.elevation, "mrad", "angle")}
+    <label class="field">${esc(t("truing-shots"))}<input id="truing-shots" value="${esc(truingForm.shots)}" /></label>
+    <label class="field">${esc(t("truing-group"))}<input id="truing-group" value="${esc(truingForm.group)}" /></label>
+    <p class="hint">${esc(t("truing-mv-guidance"))}</p>`;
+}
+
+function truingDiff(preview) {
+  const detail = preview.detail || {};
+  const warnings = [];
+  if (detail.large_change) warnings.push(t("truing-large"));
+  if (detail.before_transonic === false && preview.kind === "mv") warnings.push(t("truing-transonic"));
+  if (detail.guidance) warnings.push(detail.guidance);
+  const apply = preview.applied ? "" : `<button type="button" id="truing-apply">${esc(t("truing-apply"))}</button>`;
+  return `<p>${esc(preview.summary || preview.action || "")}</p>
+    <p class="warning">${esc(warnings.join(" "))}</p>
+    ${apply}`;
+}
+
+function readTruingForm() {
+  truingKind = (document.getElementById("truing-kind") || {}).value || truingKind;
+  const lines = document.getElementById("truing-lines");
+  if (lines) truingForm.lines = lines.value;
+  const piecewise = document.getElementById("truing-piecewise");
+  if (piecewise) truingForm.piecewise = piecewise.checked;
+  const range = document.getElementById("observe_range");
+  if (range) truingForm.range = range.value;
+  const elevation = document.getElementById("observe_elevation");
+  if (elevation) truingForm.elevation = elevation.value;
+  const shots = document.getElementById("truing-shots");
+  if (shots) truingForm.shots = shots.value;
+  const group = document.getElementById("truing-group");
+  if (group) truingForm.group = group.value;
+  const advertised = document.getElementById("advertised");
+  if (advertised) truingForm.advertised = advertised.value;
+  const observed = document.getElementById("observed");
+  if (observed) truingForm.observed = observed.value;
+}
+
+function truingBody(confirm) {
+  readTruingForm();
+  const body = solveBody();
+  body.kind = truingKind;
+  body.confirm = confirm;
+  body.shots = truingForm.shots;
+  body.group_text = truingForm.group;
+  if (truingKind === "mv") {
+    body.observe_range = qtyPayload("observe_range") || { text: truingForm.range, unit: units().length };
+    body.observe_elevation = qtyPayload("observe_elevation") || { text: truingForm.elevation, unit: "mrad" };
+  } else if (truingKind === "drag") {
+    body.piecewise = truingForm.piecewise;
+    body.observations = truingForm.lines.split("\n").map((line) => {
+      const parts = line.split(",").map((part) => part.trim()).filter(Boolean);
+      if (parts.length < 2) return null;
+      return {
+        range: { text: parts[0], unit: units().length },
+        elevation: { text: parts[1], unit: "mrad" },
+        shots: parts[2] || "",
+        group_text: parts[3] || "",
+      };
+    }).filter(Boolean);
+  } else {
+    body.advertised = qtyPayload("advertised") || { text: truingForm.advertised, unit: "mrad" };
+    body.observed = qtyPayload("observed") || { text: truingForm.observed, unit: "mrad" };
+  }
+  return body;
+}
+
+function bindTruing() {
+  const kind = document.getElementById("truing-kind");
+  if (kind) kind.addEventListener("change", () => {
+    truingKind = kind.value;
+    truingPreview = null;
+    const host = document.getElementById("truing-fields");
+    if (host) host.innerHTML = truingFields();
+  });
+  const preview = document.getElementById("truing-preview");
+  if (preview) preview.addEventListener("click", () => runTruing(false));
+  const apply = document.getElementById("truing-apply");
+  if (apply) apply.addEventListener("click", () => runTruing(true));
+  document.querySelectorAll("[data-history]").forEach((button) => button.addEventListener("click", () => runTruingHistory(button.dataset.action, button.dataset.history)));
+}
+
+async function runTruing(confirm) {
+  const host = document.getElementById("truing-result");
+  try {
+    truingPreview = await call("truing", { body: truingBody(confirm) });
+    if (confirm) {
+      boot = await call("bootstrap");
+      render();
+      return;
+    }
+    if (host) {
+      host.innerHTML = truingDiff(truingPreview);
+      const apply = document.getElementById("truing-apply");
+      if (apply) apply.addEventListener("click", () => runTruing(true));
+    }
+  } catch (error) {
+    if (host) host.innerHTML = `<p class="error">${esc(error)}</p>`;
+  }
+}
+
+async function runTruingHistory(action, historyId) {
+  const host = document.getElementById("truing-result");
+  try {
+    const profile = activeProfile();
+    const preview = await call("truing", { body: { profile_id: profile && profile.id, action, history_id: historyId, confirm: false } });
+    const accepted = window.confirm(`${preview.summary || action}`);
+    if (!accepted) {
+      if (host) host.innerHTML = truingDiff(preview);
+      return;
+    }
+    await call("truing", { body: { profile_id: profile.id, action, history_id: historyId, confirm: true } });
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    if (host) host.innerHTML = `<p class="error">${esc(error)}</p>`;
+  }
+}
+
+function chronoHtml() {
+  const loads = (boot.equipment.loads || []).map((item) => `<option value="${esc(item.id)}" ${item.id === chronoForm.loadId ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+  const stats = chronoResult ? `<p>${esc(t("chrono-count"))} ${esc(chronoResult.count)} · ${esc(t("chrono-mean"))} ${esc(chronoResult.mean_display)} ${esc(chronoResult.unit)}</p>
+    <p>${esc(t("chrono-sd"))} ${esc(chronoResult.sd_display)} · ${esc(t("chrono-es"))} ${esc(chronoResult.es_display)} · ${esc(chronoResult.min_display)}–${esc(chronoResult.max_display)}</p>
+    <p>${esc(t("chrono-outliers"))} ${esc((chronoResult.outliers || []).join(", ") || "—")}</p>
+    <p class="hint">${esc(chronoResult.outlier_note || t("chrono-keep"))}</p>` : "";
+  return `<div class="fields">
+    <label class="field">${esc(t("chrono-shots"))}<textarea id="chrono-shots" rows="5">${esc(chronoForm.shots)}</textarea></label>
+    <p class="hint">${esc(t("chrono-paste"))}</p>
+    ${qtyField("chrono-temperature", t("temperature"), chronoForm.temperature, units().temperature, "temperature")}
+    <label class="field">${esc(t("label"))}<input id="chrono-label" value="${esc(chronoForm.label)}" /></label>
+    <label class="field">${esc(t("load-link"))}<select id="chrono-load">${loads}</select></label>
+    <div class="row">
+      <button type="button" id="chrono-stats">${esc(t("chrono-stats"))}</button>
+      <button type="button" id="chrono-save">${esc(t("save"))}</button>
+      <button type="button" id="chrono-mv">${esc(t("chrono-set-mv"))}</button>
+      <button type="button" id="chrono-fit">${esc(t("chrono-fit"))}</button>
+      <button type="button" id="chrono-apply">${esc(t("chrono-apply-powder"))}</button>
+    </div>
+    <div id="chrono-result">${stats}</div>
+    <p id="chrono-msg" class="meta"></p>
+  </div>`;
+}
+
+function readChronoForm() {
+  const shots = document.getElementById("chrono-shots");
+  if (shots) chronoForm.shots = shots.value;
+  const temperature = document.getElementById("chrono-temperature");
+  if (temperature) chronoForm.temperature = temperature.value;
+  const label = document.getElementById("chrono-label");
+  if (label) chronoForm.label = label.value;
+  const load = document.getElementById("chrono-load");
+  if (load) chronoForm.loadId = load.value;
+}
+
+function bindChrono() {
+  ["chrono-stats", "chrono-save", "chrono-mv", "chrono-fit", "chrono-apply"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("click", () => runChrono(id));
+  });
+}
+
+async function runChrono(id) {
+  const msg = document.getElementById("chrono-msg");
+  const host = document.getElementById("chrono-result");
+  readChronoForm();
+  try {
+    if (id === "chrono-stats" || id === "chrono-save") {
+      const save = id === "chrono-save";
+      const confirm = save ? window.confirm(t("chrono-save-confirm")) : false;
+      if (save && !confirm) return;
+      chronoResult = await call("chrono_session", { body: {
+        op: save ? "save" : "stats",
+        shots: chronoForm.shots,
+        temperature: { text: chronoForm.temperature, unit: units().temperature },
+        label: chronoForm.label,
+        load_id: chronoForm.loadId,
+        confirm,
+      } });
+      if (save) boot = await call("bootstrap");
+      render();
+      return;
+    }
+    if (id === "chrono-mv") {
+      if (!chronoResult) return;
+      if (!window.confirm(t("chrono-mv-confirm"))) return;
+      await call("chrono_session", { body: {
+        op: "set_mv",
+        load_id: chronoForm.loadId,
+        mean_mps: chronoResult.mean_mps,
+        temperature_c: chronoResult.temperature_c,
+        confirm: true,
+      } });
+      boot = await call("bootstrap");
+      if (msg) msg.textContent = t("saved");
+      render();
+      return;
+    }
+    const apply = id === "chrono-apply";
+    if (apply && !window.confirm(t("chrono-powder-confirm"))) return;
+    const fit = await call("chrono_session", { body: {
+      op: apply ? "apply_powder" : "fit",
+      load_id: chronoForm.loadId,
+      confirm: apply,
+    } });
+    if (apply) boot = await call("bootstrap");
+    if (msg) msg.textContent = `${t("chrono-slope")} ${Number(fit.slope_mps_per_c).toFixed(3)} m/s/°C · R² ${Number(fit.r_squared).toFixed(3)} · n ${fit.n}`;
+  } catch (error) {
+    if (msg) msg.textContent = String(error);
+  }
+}
+
+function recoilDefaults() {
+  if (recoilForm) return recoilForm;
+  const profile = activeProfile();
+  const rifle = profile && (boot.equipment.rifles || []).find((item) => item.id === profile.rifle_id);
+  const load = profile && (boot.equipment.loads || []).find((item) => item.id === profile.load_id);
+  const bullet = load && (boot.equipment.bullets || []).find((item) => item.id === load.bullet_id);
+  recoilForm = {
+    rifle: (rifle && rifle.weight_text) || "",
+    bullet: (bullet && bullet.weight_text) || "",
+    charge: "",
+    mv: (load && load.mv_text) || "",
+    ejecta: `${Math.round((boot.ejecta_mps || 1219.2) * 10) / 10} mps`,
+    reduction: "0",
+  };
+  return recoilForm;
+}
+
+function recoilHtml() {
+  const form = recoilDefaults();
+  const result = recoilResult ? `<p>${esc(t("recoil-velocity"))} ${esc(recoilResult.velocity_display)} ${esc(recoilResult.velocity_unit)} · ${esc(t("energy"))} ${esc(recoilResult.energy_display)} ${esc(recoilResult.energy_unit)}</p>
+    <p>${esc(recoilResult.convention || boot.ejecta_convention || "")}</p>
+    ${recoilResult.reduction_is_estimate ? `<p class="hint">${esc(t("recoil-estimate"))}</p>` : ""}` : `<p>${esc(boot.ejecta_convention || "")}</p>`;
+  return `<div class="fields">
+    ${qtyField("recoil-rifle", t("recoil-rifle"), form.rifle, units().mass, "mass")}
+    ${qtyField("recoil-bullet", t("recoil-bullet"), form.bullet, units().mass, "mass")}
+    ${qtyField("recoil-charge", t("recoil-charge"), form.charge, units().mass, "mass")}
+    <p class="hint">${esc(t("recoil-charge-note"))}</p>
+    ${qtyField("recoil-mv", t("mv"), form.mv, units().velocity, "velocity")}
+    ${qtyField("recoil-ejecta", t("recoil-ejecta"), form.ejecta, "mps", "velocity")}
+    <label class="field">${esc(t("recoil-reduction"))}<input id="recoil-reduction" value="${esc(form.reduction)}" inputmode="decimal" /></label>
+    <p class="hint">${esc(t("recoil-estimate"))}</p>
+    <button type="button" id="recoil-calc">${esc(t("apply"))}</button>
+    <div id="recoil-result">${result}</div>
+    <p id="recoil-msg" class="error"></p>
+  </div>`;
+}
+
+function bindRecoil() {
+  const button = document.getElementById("recoil-calc");
+  if (button) button.addEventListener("click", runRecoil);
+}
+
+async function runRecoil() {
+  const msg = document.getElementById("recoil-msg");
+  const form = recoilDefaults();
+  form.rifle = (document.getElementById("recoil-rifle") || {}).value || form.rifle;
+  form.bullet = (document.getElementById("recoil-bullet") || {}).value || form.bullet;
+  form.charge = (document.getElementById("recoil-charge") || {}).value || "";
+  form.mv = (document.getElementById("recoil-mv") || {}).value || form.mv;
+  form.ejecta = (document.getElementById("recoil-ejecta") || {}).value || form.ejecta;
+  form.reduction = (document.getElementById("recoil-reduction") || {}).value || "0";
+  try {
+    recoilResult = await call("recoil_calc", { body: {
+      rifle: qtyPayload("recoil-rifle"),
+      bullet: qtyPayload("recoil-bullet"),
+      charge: qtyPayload("recoil-charge"),
+      mv: qtyPayload("recoil-mv"),
+      ejecta: qtyPayload("recoil-ejecta"),
+      reduction: Number(String(form.reduction).replace(",", ".")) || 0,
+    } });
+    const host = document.getElementById("recoil-result");
+    if (host) host.innerHTML = recoilHtml().includes("unused") ? "" : `<p>${esc(t("recoil-velocity"))} ${esc(recoilResult.velocity_display)} ${esc(recoilResult.velocity_unit)} · ${esc(t("energy"))} ${esc(recoilResult.energy_display)} ${esc(recoilResult.energy_unit)}</p><p>${esc(recoilResult.convention || "")}</p>${recoilResult.reduction_is_estimate ? `<p class="hint">${esc(t("recoil-estimate"))}</p>` : ""}`;
+  } catch (error) {
+    if (msg) msg.textContent = String(error);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const button = event.target.closest && event.target.closest("#impact-svg, #impact-png");
+  if (!button) return;
+  if (button.id === "impact-svg") {
+    const svg = document.querySelector("#impact-body svg");
+    if (svg) downloadText("holdover-impact.svg", new XMLSerializer().serializeToString(svg), "image/svg+xml");
+  } else {
+    downloadPng("holdover-impact.png", "#impact-body svg");
+  }
+});
 
 listenTheme();
 refresh().catch((error) => {

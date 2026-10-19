@@ -16,6 +16,12 @@ fn main() {
             "chart",
             "export_library",
             "import_library",
+            "point_blank",
+            "apply_zero",
+            "truing",
+            "chrono_session",
+            "recoil_calc",
+            "impact",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

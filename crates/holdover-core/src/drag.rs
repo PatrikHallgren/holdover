@@ -76,6 +76,17 @@ pub struct CdSample {
     pub clamped: bool,
 }
 
+/// A Mach band whose drag coefficient is multiplied while the bullet is inside it.
+///
+/// A multiplier above 1 is more drag (a lower effective BC). An empty list means
+/// the entered BC is used as-is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CdScale {
+    pub mach_min: f64,
+    pub mach_max: f64,
+    pub multiplier: f64,
+}
+
 pub fn standard_cd(model: DragModel, mach: f64) -> CdSample {
     let (cd, clamped) = spline(model).eval_clamped(mach);
     CdSample { cd, clamped }
@@ -83,6 +94,7 @@ pub fn standard_cd(model: DragModel, mach: f64) -> CdSample {
 
 pub(crate) struct PreparedDrag {
     kind: Kind,
+    scales: Vec<CdScale>,
 }
 
 enum Kind {
@@ -122,6 +134,7 @@ impl PreparedDrag {
                         model: *model,
                         bands,
                     },
+                    scales: Vec::new(),
                 })
             }
             DragSpec::Custom { points } => {
@@ -134,9 +147,25 @@ impl PreparedDrag {
                         spline,
                         sectional_density: mass_kg / (diameter_m * diameter_m),
                     },
+                    scales: Vec::new(),
                 })
             }
         }
+    }
+
+    pub(crate) fn set_scales(&mut self, scales: Vec<CdScale>) -> Result<()> {
+        for scale in &scales {
+            if !(scale.multiplier.is_finite() && scale.multiplier > 0.0) {
+                return Err(Error::Invalid("a drag scale must be positive"));
+            }
+            if !(scale.mach_min.is_finite() && scale.mach_max.is_finite())
+                || scale.mach_max < scale.mach_min
+            {
+                return Err(Error::Invalid("a drag-scale Mach band is reversed"));
+            }
+        }
+        self.scales = scales;
+        Ok(())
     }
 
     /// Drag factor k such that acceleration is `-k |v_rel| v_rel`.
@@ -159,9 +188,25 @@ impl PreparedDrag {
                 (cd, clamped, *sectional_density)
             }
         };
-        let k = density * cd * std::f64::consts::PI / (8.0 * bc_si);
+        let k =
+            density * cd * cd_multiplier(&self.scales, mach) * std::f64::consts::PI / (8.0 * bc_si);
         (k, clamped)
     }
+}
+
+fn cd_multiplier(scales: &[CdScale], mach: f64) -> f64 {
+    let mut chosen = 1.0;
+    let mut best_min = f64::NEG_INFINITY;
+    for scale in scales {
+        if mach + 1.0e-12 >= scale.mach_min
+            && mach <= scale.mach_max + 1.0e-12
+            && scale.mach_min >= best_min
+        {
+            chosen = scale.multiplier;
+            best_min = scale.mach_min;
+        }
+    }
+    chosen
 }
 
 fn select_bc(bands: &[BcBand], airspeed: f64) -> f64 {
@@ -248,5 +293,32 @@ mod tests {
         let (k_slow, _) = prepared.k(2.0, 300.0, 1.225);
         let (k_fast, _) = prepared.k(2.0, 500.0, 1.225);
         assert!((k_slow / k_fast - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_cd_scale_multiplies_drag_inside_its_band() {
+        let spec = DragSpec::Standard {
+            model: DragModel::G7,
+            bands: vec![BcBand {
+                bc_lb_per_in2: 0.3,
+                min_mps: 0.0,
+                reference: BcReference::Icao,
+            }],
+        };
+        let mut prepared = PreparedDrag::prepare(&spec, 0.01, 0.0078).unwrap();
+        let (base, _) = prepared.k(2.0, 700.0, 1.225);
+        prepared
+            .set_scales(vec![CdScale {
+                mach_min: 1.5,
+                mach_max: 3.0,
+                multiplier: 1.25,
+            }])
+            .unwrap();
+        let (scaled, _) = prepared.k(2.0, 700.0, 1.225);
+        let (outside, _) = prepared.k(1.0, 340.0, 1.225);
+        let plain = PreparedDrag::prepare(&spec, 0.01, 0.0078).unwrap();
+        let (plain_low, _) = plain.k(1.0, 340.0, 1.225);
+        assert!((scaled / base - 1.25).abs() < 1e-12);
+        assert!((outside - plain_low).abs() < 1e-12);
     }
 }

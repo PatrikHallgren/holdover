@@ -11,6 +11,9 @@
   --chart-0: #d4763a;
   --chart-1: #7aa2d4;
   --chart-2: #8fbf6a;
+  --chart-3: #d4b15a;
+  --chart-4: #c47ad4;
+  --chart-5: #6abfb0;
   --text-scale: 1;
   color-scheme: dark;
 }
@@ -296,6 +299,63 @@ th:first-child, td:first-child {
 
 .swatch-1 { background: var(--chart-1); }
 .swatch-2 { background: var(--chart-2); }
+.swatch-3 { background: var(--chart-3); }
+.swatch-4 { background: var(--chart-4); }
+.swatch-5 { background: var(--chart-5); }
+
+.chart .transonic {
+  fill: var(--warning);
+  opacity: 0.16;
+}
+
+.scale-bar {
+  box-sizing: border-box;
+  height: 6mm;
+  margin: 4mm 0 2mm;
+  border: 0.4mm solid currentColor;
+  border-top: none;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.scale-bar span {
+  display: block;
+  font-size: 9pt;
+  text-align: center;
+}
+
+.impact {
+  background: var(--background);
+  border: 1px solid var(--border);
+  max-width: 100%;
+  height: auto;
+}
+
+.impact .ring {
+  fill: none;
+  stroke: var(--text-secondary);
+  stroke-width: 0.15;
+}
+
+.impact .poi {
+  stroke: none;
+}
+
+.badge {
+  display: inline-block;
+  margin: 0.3rem 0;
+  padding: 0.15rem 0.4rem;
+  border: 1px solid var(--warning);
+  color: var(--warning);
+}
+
+details {
+  margin: 0.6rem 0;
+}
+
+summary {
+  cursor: pointer;
+}
 
 .onboard {
   max-width: 40rem;
@@ -364,14 +424,20 @@ body.field .figure {
 }
 
 @media print {
-  .top, .inputs, .noprint, .footer, .hint {
+  .top, .inputs, .noprint, .footer, .hint, .presets, nav {
     display: none !important;
   }
-  body, .card, .panel {
+  body, .card, .panel, .page {
     background: white;
     color: black;
   }
   .figure {
     font-size: 18pt;
+  }
+  .card {
+    border: none;
+  }
+  .scale-bar {
+    border-color: black;
   }
 }

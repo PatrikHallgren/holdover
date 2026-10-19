@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-truing"
+description = "Enables the truing command without any pre-configured scope."
+commands.allow = ["truing"]
+
+[[permission]]
+identifier = "deny-truing"
+description = "Denies the truing command without any pre-configured scope."
+commands.deny = ["truing"]

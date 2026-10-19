@@ -94,6 +94,8 @@ pub struct Shot {
     /// Standard gravity unless a test overrides it.
     pub gravity_mps2: f64,
     pub integrator: Integrator,
+    /// Piecewise Cd multipliers from drag truing. Empty leaves the entered BC alone.
+    pub cd_scales: Vec<crate::drag::CdScale>,
 }
 
 impl Shot {
@@ -121,6 +123,7 @@ impl Shot {
             azimuth_rad: 0.0,
             gravity_mps2: STANDARD_GRAVITY,
             integrator: Integrator::default(),
+            cd_scales: Vec::new(),
         }
     }
 }
@@ -237,34 +240,6 @@ pub fn table(shot: &Shot, spec: TableSpec) -> Result<Solution> {
     solve_ranges(shot, &ranges)
 }
 
-pub fn pbr() -> Result<()> {
-    Err(Error::NotInMilestone {
-        feature: "point-blank range",
-        milestone: "M3",
-    })
-}
-
-pub fn lead() -> Result<()> {
-    Err(Error::NotInMilestone {
-        feature: "moving-target lead",
-        milestone: "M3",
-    })
-}
-
-pub fn true_mv() -> Result<()> {
-    Err(Error::NotInMilestone {
-        feature: "muzzle-velocity truing",
-        milestone: "M3",
-    })
-}
-
-pub fn true_drag() -> Result<()> {
-    Err(Error::NotInMilestone {
-        feature: "drag truing",
-        milestone: "M3",
-    })
-}
-
 pub fn group_stats() -> Result<()> {
     Err(Error::NotInMilestone {
         feature: "group statistics",
@@ -366,7 +341,12 @@ fn exceeds(hold_rad: f64, positive_limit: Option<f64>, negative_limit: Option<f6
     }
 }
 
-fn hold(offset_m: f64, range_m: f64, elevation: bool, click: Option<&Click>) -> AngularHold {
+pub(crate) fn hold(
+    offset_m: f64,
+    range_m: f64,
+    elevation: bool,
+    click: Option<&Click>,
+) -> AngularHold {
     let rad = (offset_m / range_m).atan();
     let direction = if rad.abs() < 1e-9 {
         Direction::None
@@ -454,8 +434,15 @@ fn bore_angle(shot: &Shot) -> Result<(f64, Option<f64>, Vec<Warning>)> {
     Ok((angle, Some(error), warnings))
 }
 
-/// Brent's method. `tol` is on the function value (metres of line-of-sight error).
-fn brent<F>(mut a: f64, mut b: f64, mut fa: f64, mut fb: f64, mut f: F, tol: f64) -> Result<f64>
+/// Brent's method. `tol` is on the function value.
+pub(crate) fn brent<F>(
+    mut a: f64,
+    mut b: f64,
+    mut fa: f64,
+    mut fb: f64,
+    mut f: F,
+    tol: f64,
+) -> Result<f64>
 where
     F: FnMut(f64) -> Result<f64>,
 {
@@ -564,11 +551,13 @@ fn frame_for(shot: &Shot, bore: f64) -> Frame {
 }
 
 fn prepare(shot: &Shot) -> Result<PreparedDrag> {
-    PreparedDrag::prepare(
+    let mut drag = PreparedDrag::prepare(
         &shot.bullet.drag,
         shot.bullet.weight_kg,
         shot.bullet.diameter_m,
-    )
+    )?;
+    drag.set_scales(shot.cd_scales.clone())?;
+    Ok(drag)
 }
 
 fn adjusted_mv_with(shot: &Shot, air_c: f64, powder: Option<f64>) -> f64 {

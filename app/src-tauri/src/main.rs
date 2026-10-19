@@ -44,7 +44,13 @@ fn main() {
             range_card,
             chart,
             export_library,
-            import_library
+            import_library,
+            point_blank,
+            apply_zero,
+            truing,
+            chrono_session,
+            recoil_calc,
+            impact
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -167,6 +173,36 @@ fn export_library(state: tauri::State<'_, AppState>) -> Result<Value, String> {
         .map_err(|err| err.to_string())?;
         Ok(json!({ "path": path, "document": doc }))
     })
+}
+
+#[tauri::command]
+fn point_blank(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::point_blank(store, &body))
+}
+
+#[tauri::command]
+fn apply_zero(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::apply_zero(store, &body))
+}
+
+#[tauri::command]
+fn truing(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::truing(store, &body))
+}
+
+#[tauri::command]
+fn chrono_session(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::chrono_session(store, &body))
+}
+
+#[tauri::command]
+fn recoil_calc(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::recoil_calc(store, &body))
+}
+
+#[tauri::command]
+fn impact(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::impact(store, &body))
 }
 
 #[tauri::command]

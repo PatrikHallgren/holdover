@@ -293,20 +293,7 @@ fn a_full_solve_to_2000_m_stays_interactive() {
 }
 
 #[test]
-fn later_milestones_stay_explicitly_unavailable() {
-    assert!(holdover_core::pbr().unwrap_err().to_string().contains("M3"));
-    assert!(holdover_core::lead()
-        .unwrap_err()
-        .to_string()
-        .contains("M3"));
-    assert!(holdover_core::true_mv()
-        .unwrap_err()
-        .to_string()
-        .contains("M3"));
-    assert!(holdover_core::true_drag()
-        .unwrap_err()
-        .to_string()
-        .contains("M3"));
+fn group_statistics_stay_explicitly_unavailable() {
     assert!(holdover_core::group_stats()
         .unwrap_err()
         .to_string()
