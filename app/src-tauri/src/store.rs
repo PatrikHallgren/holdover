@@ -233,7 +233,12 @@ impl Store {
             "targets": {
                 "moose_cm": SJF_MOOSE_RING_DIAMETER_CM,
                 "roe_cm": SJF_ROE_BUCK_RING_DIAMETER_CM,
+                "library": holdover_core::library_value(),
             },
+            "reticles": holdover_core::generic_reticles()
+                .iter()
+                .map(holdover_core::reticle_json)
+                .collect::<Vec<_>>(),
             "running": running_presets()
                 .iter()
                 .map(|preset| {
@@ -709,6 +714,8 @@ impl Store {
             "atmospheres": self.kind_export("atmosphere")?,
             "profiles": self.kind_export("profile")?,
             "chronos": self.kind_export("chrono")?,
+            "reticles": self.kind_export("reticle")?,
+            "targets": self.kind_export("target")?,
         }))
     }
 
@@ -741,6 +748,8 @@ impl Store {
             "atmospheres": doc["atmospheres"].as_array().map(|v| v.len()).unwrap_or(0),
             "profiles": doc["profiles"].as_array().map(|v| v.len()).unwrap_or(0),
             "chronos": doc.get("chronos").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
+            "reticles": doc.get("reticles").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
+            "targets": doc.get("targets").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
         });
         if !commit {
             return Ok(preview);
@@ -767,6 +776,13 @@ impl Store {
         if let Some(items) = doc.get("chronos").and_then(|v| v.as_array()) {
             for item in items {
                 insert_raw(&tx, "chrono", item, &device)?;
+            }
+        }
+        for (key, kind) in [("reticles", "reticle"), ("targets", "target")] {
+            if let Some(items) = doc.get(key).and_then(|v| v.as_array()) {
+                for item in items {
+                    insert_raw(&tx, kind, item, &device)?;
+                }
             }
         }
         if let Some(settings) = doc.get("settings") {
@@ -870,6 +886,8 @@ impl Store {
             "loads": self.list_kind("load", units)?,
             "profiles": self.list_profiles(units)?,
             "chronos": self.list_kind("chrono", units)?,
+            "reticles": self.list_kind("reticle", units)?,
+            "targets": self.list_kind("target", units)?,
         }))
     }
 
@@ -1101,6 +1119,55 @@ impl Store {
         }
         self.write_record(kind, &json!({ "id": id }), value)?;
         Ok(())
+    }
+
+    pub fn save_reticle(&self, body: &Value) -> Result<Value, String> {
+        let mut reticle = holdover_core::parse_reticle(body).map_err(|err| err.to_string())?;
+        reticle.licence = "user-drawn".into();
+        if reticle.source.trim().is_empty() {
+            reticle.source = "User drawn in Holdover.".into();
+        }
+        let mut request = body.clone();
+        if holdover_core::generic_by_id(&reticle.id).is_some() {
+            if let Some(object) = request.as_object_mut() {
+                object.remove("id");
+            }
+        }
+        reticle.id = request
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mut stored = holdover_core::reticle_json(&reticle);
+        if let Some(object) = stored.as_object_mut() {
+            object.remove("id");
+        }
+        let id = self.write_record("reticle", &request, stored)?;
+        self.record_value("reticle", &id)
+    }
+
+    pub fn save_target_record(&self, body: &Value) -> Result<Value, String> {
+        let doc = holdover_core::apply_target_edit(body).map_err(|err| err.to_string())?;
+        let mut request = json!({});
+        if let Some(id) = body.get("id").and_then(|value| value.as_str()) {
+            if holdover_core::target_by_id(id).is_none() {
+                request["id"] = json!(id);
+            }
+        }
+        let mut stored = holdover_core::target_json(&doc);
+        if let Some(object) = stored.as_object_mut() {
+            object.insert(
+                "base_id".into(),
+                json!(body.get("base_id").and_then(|v| v.as_str()).unwrap_or("")),
+            );
+            object.remove("id");
+        }
+        let id = self.write_record("target", &request, stored)?;
+        self.record_value("target", &id)
+    }
+
+    pub fn saved_target(&self, id: &str) -> Result<Value, String> {
+        self.body("target", id)
     }
 
     pub fn save_chrono_record(&self, body: &Value) -> Result<String, String> {

@@ -26,6 +26,10 @@
     "allow-truing",
     "allow-chrono-session",
     "allow-recoil-calc",
-    "allow-impact"
+    "allow-impact",
+    "allow-reticle-scene",
+    "allow-reticle-save",
+    "allow-target-save",
+    "allow-target-pdf"
   ]
 }

@@ -10,7 +10,7 @@ use holdover_core::{
     true_tracking, vertical_mv_spread_m, Atmosphere, BcBand, BcReference, Bullet, CardSheet,
     CdScale, ChartAxis, Click, Dimension, DragMode, DragModel, DragSpec, Effects, RecoilInput,
     Shot, Solution, TableSpec, TrajectoryPoint, Twist, TwistHand, Warning, Wind, DRAG_GUIDANCE,
-    MV_GUIDANCE, SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM, TRACKING_GUIDANCE,
+    MV_GUIDANCE, TRACKING_GUIDANCE,
 };
 use serde_json::{json, Value};
 
@@ -904,8 +904,31 @@ fn lead_of(
         "lead": hold_json(&solved.with_reaction, angular),
         "flight_lead": hold_json(&solved.lead, angular),
         "combined": hold_json(&combined, angular),
-        "outline": "A target outline is not drawn. This is the numeric lead.",
+        "outline": lead_outline(body),
+        "target": lead_target_doc(body),
     }))
+}
+
+fn lead_outline(body: &Value) -> &'static str {
+    match body.get("lead_target").and_then(|value| value.as_str()) {
+        Some(id) if !id.is_empty() && holdover_core::target_by_id(id).is_some() => {
+            "The selected target is drawn at the impact range. Placeholder outlines are marked."
+        }
+        _ => "A target outline is not drawn. This is the numeric lead.",
+    }
+}
+
+fn lead_target_doc(body: &Value) -> Value {
+    let Some(id) = body.get("lead_target").and_then(|value| value.as_str()) else {
+        return Value::Null;
+    };
+    let Some(mut doc) = holdover_core::target_by_id(id) else {
+        return Value::Null;
+    };
+    if body.get("facing").and_then(|value| value.as_str()) == Some("right") {
+        doc.paths = holdover_core::mirror_paths(&doc.paths);
+    }
+    holdover_core::target_json(&doc)
 }
 
 fn condition_tables(
@@ -1607,25 +1630,33 @@ pub fn impact(store: &Store, body: &Value) -> Result<Value, String> {
         .get("target")
         .and_then(|value| value.as_str())
         .unwrap_or("moose");
-    let (rings_cm, placeholder, note) = match target {
-        "roe" => (
-            SJF_ROE_BUCK_RING_DIAMETER_CM.to_vec(),
-            true,
-            "Published roe-buck ring diameters. The outline is not measured yet.",
-        ),
-        "custom" => {
-            let diameter_m = qty(body, "zone", Dimension::Length, "m")?;
-            (
-                vec![diameter_m * 100.0],
-                false,
-                "Custom diameter. This is not an official target.",
-            )
+    let (rings_cm, placeholder, note, geometry) = if target == "custom" {
+        let diameter_m = qty(body, "zone", Dimension::Length, "m")?;
+        (
+            vec![diameter_m * 100.0],
+            false,
+            "Custom diameter. This is not an official target.".to_string(),
+            Value::Null,
+        )
+    } else {
+        let mut doc = holdover_core::target_by_id(target)
+            .ok_or_else(|| format!("unknown target {target}"))?;
+        if body.get("facing").and_then(|value| value.as_str()) == Some("right") {
+            doc.paths = holdover_core::mirror_paths(&doc.paths);
         }
-        _ => (
-            SJF_MOOSE_RING_DIAMETER_CM.to_vec(),
-            true,
-            "Published SJF moose ring diameters. The hit-area outline and silhouette are not measured yet.",
-        ),
+        let placeholder = doc.flags.iter().any(|flag| flag.kind != "resolved");
+        let rings = doc.rings.iter().map(|ring| ring.diameter_cm).collect();
+        let note = if doc.flags.is_empty() {
+            doc.subtitle.clone()
+        } else {
+            doc.flags
+                .iter()
+                .map(|flag| flag.detail.clone())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let geometry = holdover_core::target_json(&doc);
+        (rings, placeholder, note, geometry)
     };
     let mv_sd = if body.get("mv_sd").is_some() {
         qty(body, "mv_sd", Dimension::Velocity, "mps").unwrap_or(0.0)
@@ -1715,10 +1746,255 @@ pub fn impact(store: &Store, body: &Value) -> Result<Value, String> {
         "rings_cm": rings_cm,
         "placeholder": placeholder,
         "note": note,
+        "geometry": geometry,
         "range_error_m": range_error,
         "mv_sd_mps": mv_sd,
         "pois": pois,
     }))
+}
+
+pub fn reticle_scene(store: &Store, body: &Value) -> Result<Value, String> {
+    use holdover_core::{
+        generic_by_id, marks_true_mrad, parse_reticle, sfp_warning, subtension_factor, to_mrad,
+        Eyepiece, FocalPlane, ReticleUnit,
+    };
+    let mut reticle = if body.get("reticle").is_some() {
+        parse_reticle(&body["reticle"]).map_err(|err| err.to_string())?
+    } else {
+        let id = body
+            .get("reticle_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("generic-mil-dot");
+        if let Some(found) = store
+            .live_bodies("reticle")
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|row| row["id"].as_str() == Some(id)))
+        {
+            parse_reticle(&found).map_err(|err| err.to_string())?
+        } else {
+            generic_by_id(id).ok_or_else(|| format!("unknown reticle {id}"))?
+        }
+    };
+    if let Some(focal) = body.get("focal_plane").and_then(|value| value.as_str()) {
+        reticle.focal_plane = if focal == "sfp" {
+            FocalPlane::Sfp
+        } else {
+            FocalPlane::Ffp
+        };
+    }
+    if let Some(calibrated) = body
+        .get("calibrated_magnification")
+        .and_then(|value| value.as_f64())
+    {
+        reticle.calibrated_magnification = calibrated;
+    }
+    let magnification = body
+        .get("magnification")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(10.0);
+    let fov = body
+        .get("apparent_fov_deg")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(holdover_core::DEFAULT_APPARENT_FOV_DEG);
+    let viewport = body
+        .get("viewport_px")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1000.0);
+    let factor = subtension_factor(
+        reticle.focal_plane,
+        reticle.calibrated_magnification,
+        magnification,
+    )
+    .map_err(|err| err.to_string())?;
+    let marks = marks_true_mrad(&reticle, magnification).map_err(|err| err.to_string())?;
+    let eye = Eyepiece {
+        magnification,
+        apparent_fov_deg: fov,
+        viewport_px: viewport,
+    };
+    let px_per_mrad = eye.px_per_mrad().map_err(|err| err.to_string())?;
+    let range_m = if body.get("range").is_some() {
+        qty(body, "range", Dimension::Length, "m")?
+    } else {
+        body.get("range_m")
+            .and_then(|value| value.as_f64())
+            .unwrap_or(100.0)
+    };
+    let cm = holdover_core::cm_per_mrad(range_m).map_err(|err| err.to_string())?;
+    let elevation = body
+        .get("elevation_mrad")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
+    let windage = body
+        .get("windage_mrad")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
+    let lead_mrad = body
+        .get("lead_mrad")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0);
+    let target_id = body
+        .get("target_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let geometry = if target_id.is_empty() {
+        Value::Null
+    } else if let Some(mut doc) = holdover_core::target_by_id(target_id) {
+        if body.get("facing").and_then(|value| value.as_str()) == Some("right") {
+            doc.paths = holdover_core::mirror_paths(&doc.paths);
+        }
+        holdover_core::target_json(&doc)
+    } else if let Ok(saved) = store.saved_target(target_id) {
+        saved
+    } else {
+        return Err(format!("unknown target {target_id}"));
+    };
+    let unit = match reticle.unit {
+        ReticleUnit::Mrad => "mrad",
+        ReticleUnit::Moa => "MOA",
+    };
+    Ok(json!({
+        "px_per_mrad": px_per_mrad,
+        "viewport_px": viewport,
+        "sfp_factor": factor,
+        "sfp_warning": sfp_warning(&reticle, magnification),
+        "focal_plane": match reticle.focal_plane {
+            FocalPlane::Ffp => "ffp",
+            FocalPlane::Sfp => "sfp",
+        },
+        "unit": unit,
+        "calibrated_magnification": reticle.calibrated_magnification,
+        "magnification": magnification,
+        "nominal_one_true_mrad": to_mrad(1.0, reticle.unit) * factor,
+        "elements": marks,
+        "target": geometry,
+        "cm_per_mrad": cm,
+        "range_m": range_m,
+        "aim_mrad": {
+            "x": -(windage + lead_mrad),
+            "y": -elevation,
+        },
+        "elevation_mrad": elevation,
+        "windage_mrad": windage,
+        "lead_mrad": lead_mrad,
+    }))
+}
+
+pub fn target_pdf_bytes(
+    store: &Store,
+    body: &Value,
+) -> Result<holdover_core::PrintedTarget, String> {
+    let id = body
+        .get("target_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("sjf-algfigur");
+    let mut doc = if let Some(found) = holdover_core::target_by_id(id) {
+        found
+    } else {
+        let saved = store.saved_target(id)?;
+        serde_json::from_value(saved).map_err(|err| err.to_string())?
+    };
+    if body
+        .get("geometry_override")
+        .and_then(|value| value.as_bool())
+        == Some(true)
+    {
+        if let Some(rows) = body.get("paths").and_then(|value| value.as_array()) {
+            doc.paths = rows.iter().filter_map(pdf_path).collect();
+        }
+        if let Some(rings) = body.get("rings_cm").and_then(|value| value.as_array()) {
+            doc.rings = rings
+                .iter()
+                .filter_map(|value| value.as_f64())
+                .filter(|diameter| *diameter > 0.0)
+                .map(|diameter| holdover_core::RingDoc {
+                    diameter_cm: diameter,
+                    label_primary: String::new(),
+                    label_alt: String::new(),
+                    points_primary: None,
+                    points_alt: None,
+                    verified: true,
+                })
+                .collect();
+        }
+    } else {
+        if body.get("facing").and_then(|value| value.as_str()) == Some("right") {
+            doc.paths = holdover_core::mirror_paths(&doc.paths);
+        }
+        let show_silhouette = body
+            .get("show_silhouette")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        if !show_silhouette {
+            doc.paths.retain(|path| path.role != "silhouette");
+        }
+    }
+    let page_id = body
+        .get("page")
+        .and_then(|value| value.as_str())
+        .unwrap_or("a4");
+    let page = card_page(page_id).ok_or_else(|| format!("unknown page {page_id}"))?;
+    let notes = body
+        .get("notes")
+        .and_then(|value| value.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.as_str().map(|text| text.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (width, height) = holdover_core::bounds_cm(&doc);
+    let paths = doc
+        .paths
+        .iter()
+        .map(|path| holdover_core::TargetPath {
+            points: path
+                .points
+                .iter()
+                .map(|point| (point[0], point[1]))
+                .collect(),
+            closed: path.closed,
+            dashed: path.placeholder,
+        })
+        .collect();
+    let sheet = holdover_core::TargetPrint {
+        page_width_mm: page.width_mm,
+        page_height_mm: page.height_mm,
+        title: doc.name.clone(),
+        notes,
+        rings_cm: doc.rings.iter().map(|ring| ring.diameter_cm).collect(),
+        paths,
+        cell_cm: doc.cell_cm,
+        span_cm: (width, height),
+    };
+    Ok(holdover_core::render_target_pdf(&sheet))
+}
+
+fn pdf_path(value: &Value) -> Option<holdover_core::PathDoc> {
+    let points = value.get("points")?.as_array()?;
+    let parsed = points
+        .iter()
+        .filter_map(|point| {
+            let pair = point.as_array()?;
+            Some([pair.first()?.as_f64()?, pair.get(1)?.as_f64()?])
+        })
+        .collect::<Vec<_>>();
+    if parsed.is_empty() {
+        return None;
+    }
+    Some(holdover_core::PathDoc {
+        role: "print".into(),
+        points: parsed,
+        placeholder: value
+            .get("dashed")
+            .and_then(|flag| flag.as_bool())
+            .unwrap_or(true),
+        for_scoring: false,
+        closed: value
+            .get("closed")
+            .and_then(|flag| flag.as_bool())
+            .unwrap_or(true),
+    })
 }
 
 fn hold_json(hold: &holdover_core::AngularHold, angular: &str) -> Value {
@@ -2259,5 +2535,56 @@ mod tests {
             .parse()
             .unwrap();
         assert!((compact_pt - 141.73).abs() < 0.01, "{compact_pt}");
+    }
+
+    #[test]
+    fn sfp_scene_scales_at_three_magnifications_and_moose_is_flagged() {
+        let store = store();
+        for (mag, factor) in [(5.0, 2.0), (10.0, 1.0), (20.0, 0.5)] {
+            let scene = reticle_scene(
+                &store,
+                &json!({
+                    "reticle_id": "generic-mil-dot",
+                    "focal_plane": "sfp",
+                    "calibrated_magnification": 10.0,
+                    "magnification": mag,
+                    "apparent_fov_deg": 22.0,
+                    "viewport_px": 1000.0,
+                    "range_m": 100.0,
+                    "target_id": "sjf-algfigur"
+                }),
+            )
+            .unwrap();
+            assert!((scene["sfp_factor"].as_f64().unwrap() - factor).abs() < 1e-9);
+            let px = scene["px_per_mrad"].as_f64().unwrap();
+            let one = scene["nominal_one_true_mrad"].as_f64().unwrap();
+            let pixels = one * px;
+            let at_ten = {
+                let apparent = 22.0_f64.to_radians() * 1000.0;
+                1000.0 / (apparent / 10.0)
+            };
+            assert!((pixels - at_ten).abs() < 1.0, "{pixels} {at_ten}");
+        }
+        let impact = impact(
+            &store,
+            &json!({
+                "profile_ids": [store.bootstrap().unwrap()["settings"]["active_profile_id"]],
+                "range": {"text": "80 m", "unit": "m"},
+                "target": "sjf-algfigur",
+                "wind_speed": {"text": "0 mps", "unit": "mps"},
+                "wind_direction": "12oc",
+                "inclination": {"text": "0 deg", "unit": "deg"},
+                "current_air": air(),
+                "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": false}
+            }),
+        )
+        .unwrap();
+        let flags = impact["geometry"]["flags"].as_array().unwrap();
+        assert!(flags.iter().any(|flag| flag["code"] == "T2"));
+        assert!(flags.iter().any(|flag| flag["code"] == "T3"));
+        assert!(impact["geometry"]["paths"].as_array().unwrap().len() >= 2);
+        let diameter = 0.15_f64;
+        let got = impact["rings_cm"].as_array().unwrap()[0].as_f64().unwrap() / 100.0;
+        assert!((got - diameter).abs() < 1e-9);
     }
 }

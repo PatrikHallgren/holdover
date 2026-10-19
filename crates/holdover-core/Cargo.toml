@@ -10,3 +10,5 @@ description = "UI-independent external-ballistics solver for Holdover"
 publish = false
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

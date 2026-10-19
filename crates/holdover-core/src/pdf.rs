@@ -23,6 +23,130 @@ pub struct CardSheet {
     pub scale_label: String,
 }
 
+/// One target sheet. Lengths on the figure are centimetres in target space.
+/// The scale bar is always true paper size. The figure is 1:1 when it fits, otherwise 1:N.
+#[derive(Clone, Debug)]
+pub struct TargetPrint {
+    pub page_width_mm: f64,
+    pub page_height_mm: f64,
+    pub title: String,
+    pub notes: Vec<String>,
+    pub rings_cm: Vec<f64>,
+    pub paths: Vec<TargetPath>,
+    pub cell_cm: Option<f64>,
+    pub span_cm: (f64, f64),
+}
+
+#[derive(Clone, Debug)]
+pub struct TargetPath {
+    pub points: Vec<(f64, f64)>,
+    pub closed: bool,
+    pub dashed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PrintedTarget {
+    pub pdf: Vec<u8>,
+    pub scale_denominator: u32,
+    pub scale_bar_mm: f64,
+}
+
+/// Build a PDF page for a target. The black bar is 10 cm, or 5 cm on a narrow page.
+pub fn render_target_pdf(sheet: &TargetPrint) -> PrintedTarget {
+    let margin = 12.0_f64;
+    let bar_mm = if sheet.page_width_mm >= 110.0 {
+        100.0
+    } else {
+        50.0
+    };
+    let notes: Vec<&str> = sheet.notes.iter().take(8).map(String::as_str).collect();
+    let header_mm = 28.0 + notes.len() as f64 * 5.0 + 16.0;
+    let usable_w = (sheet.page_width_mm - 2.0 * margin).max(20.0);
+    let usable_h = (sheet.page_height_mm - margin - header_mm).max(20.0);
+    let span_w_mm = sheet.span_cm.0.max(1.0) * 10.0;
+    let span_h_mm = sheet.span_cm.1.max(1.0) * 10.0;
+    let denom = ((span_w_mm / usable_w).ceil())
+        .max((span_h_mm / usable_h).ceil())
+        .max(1.0) as u32;
+    let width = round_pt(sheet.page_width_mm);
+    let height = round_pt(sheet.page_height_mm);
+    let bar = round_pt(bar_mm);
+    let margin_pt = round_pt(margin);
+    let mut content = Content::new();
+    let mut y = height - margin_pt;
+    content.text(margin_pt, y - 12.0, 12.0, &sheet.title);
+    y -= 16.0;
+    let scale_line = if denom == 1 {
+        format!("Printed at 1:1. The bar below is {bar_mm:.0} mm on the paper.")
+    } else {
+        format!("Printed at 1:{denom}. The bar below is {bar_mm:.0} mm on the paper. The figure is smaller than life size.")
+    };
+    content.text(margin_pt, y - 9.0, 8.0, &scale_line);
+    y -= 12.0;
+    for note in &notes {
+        content.text(margin_pt, y - 8.0, 8.0, note);
+        y -= 10.0;
+    }
+    content.text(margin_pt, y - 9.0, 8.0, &format!("{bar_mm:.0} mm"));
+    y -= 12.0;
+    content.scale_bar(margin_pt, y - 8.0, bar, 8.0);
+    y -= 18.0;
+    let origin_x = width / 2.0;
+    let origin_y = margin_pt + (y - margin_pt) / 2.0;
+    let cm_pt = round_pt(10.0) / f64::from(denom);
+    if let Some(cell) = sheet.cell_cm {
+        if cell > 0.0 {
+            let half_w = sheet.span_cm.0 / 2.0;
+            let half_h = sheet.span_cm.1 / 2.0;
+            let mut at = -half_w;
+            while at <= half_w + 1e-6 {
+                content.segment(
+                    origin_x + at * cm_pt,
+                    origin_y - half_h * cm_pt,
+                    origin_x + at * cm_pt,
+                    origin_y + half_h * cm_pt,
+                    false,
+                );
+                at += cell;
+            }
+            let mut at = -half_h;
+            while at <= half_h + 1e-6 {
+                content.segment(
+                    origin_x - half_w * cm_pt,
+                    origin_y + at * cm_pt,
+                    origin_x + half_w * cm_pt,
+                    origin_y + at * cm_pt,
+                    false,
+                );
+                at += cell;
+            }
+        }
+    }
+    for path in &sheet.paths {
+        content.poly(
+            origin_x,
+            origin_y,
+            cm_pt,
+            &path.points,
+            path.closed,
+            path.dashed,
+        );
+    }
+    for diameter in &sheet.rings_cm {
+        if *diameter <= 0.0 {
+            continue;
+        }
+        let radius = round_pt(diameter * 10.0 / f64::from(denom)) / 2.0;
+        content.circle(origin_x, origin_y, radius);
+    }
+    let bytes = content.take();
+    PrintedTarget {
+        pdf: assemble(width, height, &[bytes]),
+        scale_denominator: denom,
+        scale_bar_mm: bar_mm,
+    }
+}
+
 /// Build a PDF whose page box is the card size and whose scale bar is `scale_bar_mm` long.
 pub fn render_card_pdf(page: &CardPage, sheet: &CardSheet) -> Vec<u8> {
     let width = round_pt(page.width_mm);
@@ -192,6 +316,68 @@ impl Content {
     fn hline(&mut self, x: f64, y: f64, width: f64) {
         let line = format!("0.4 w {x:.2} {y:.2} m {w:.2} {y:.2} l S\n", w = x + width);
         self.bytes.extend(line.as_bytes());
+    }
+
+    fn segment(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, dashed: bool) {
+        let dash = if dashed { "[2 2] 0 d\n" } else { "" };
+        let reset = if dashed { "[] 0 d\n" } else { "" };
+        let line = format!("{dash}0.6 w {x1:.2} {y1:.2} m {x2:.2} {y2:.2} l S\n{reset}");
+        self.bytes.extend(line.as_bytes());
+    }
+
+    fn poly(
+        &mut self,
+        origin_x: f64,
+        origin_y: f64,
+        cm_pt: f64,
+        points: &[(f64, f64)],
+        closed: bool,
+        dashed: bool,
+    ) {
+        if points.is_empty() {
+            return;
+        }
+        let dash = if dashed { "[3 2] 0 d\n" } else { "" };
+        let reset = if dashed { "[] 0 d\n" } else { "" };
+        let close = if closed { "h " } else { "" };
+        let mut path = format!("{dash}0.8 w ");
+        for (index, (x, y)) in points.iter().enumerate() {
+            let px = origin_x + x * cm_pt;
+            let py = origin_y + y * cm_pt;
+            if index == 0 {
+                path.push_str(&format!("{px:.2} {py:.2} m "));
+            } else {
+                path.push_str(&format!("{px:.2} {py:.2} l "));
+            }
+        }
+        path.push_str(close);
+        path.push_str("S\n");
+        path.push_str(reset);
+        self.bytes.extend(path.as_bytes());
+    }
+
+    fn circle(&mut self, cx: f64, cy: f64, radius: f64) {
+        if radius <= 0.0 {
+            return;
+        }
+        let k = 0.5522847498 * radius;
+        let diameter = radius * 2.0;
+        let (x0, y0) = (cx, cy + radius);
+        let curves = [
+            (cx + k, cy + radius, cx + radius, cy + k, cx + radius, cy),
+            (cx + radius, cy - k, cx + k, cy - radius, cx, cy - radius),
+            (cx - k, cy - radius, cx - radius, cy - k, cx - radius, cy),
+            (cx - radius, cy + k, cx - k, cy + radius, cx, cy + radius),
+        ];
+        let mut path =
+            format!("% HOLDOVER_CIRCLE_DIAMETER_PT {diameter:.2}\n0.8 w {x0:.2} {y0:.2} m ");
+        for (x1, y1, x2, y2, x3, y3) in curves {
+            path.push_str(&format!(
+                "{x1:.2} {y1:.2} {x2:.2} {y2:.2} {x3:.2} {y3:.2} c "
+            ));
+        }
+        path.push_str("S\n");
+        self.bytes.extend(path.as_bytes());
     }
 
     /// Filled bar. The path width is the physical length; a fill does not grow it.
@@ -367,5 +553,32 @@ mod tests {
         assert!((width - round_pt(90.0)).abs() < 0.01, "{width}");
         assert!((height - round_pt(50.0)).abs() < 0.01, "{height}");
         assert!((scale_bar_pt(&compact) - 141.73).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_ten_centimetre_ring_prints_at_283_46_points_when_it_fits() {
+        let sheet = TargetPrint {
+            page_width_mm: 210.0,
+            page_height_mm: 297.0,
+            title: "10 cm ring".into(),
+            notes: vec!["Generic. Not an official target.".into()],
+            rings_cm: vec![10.0],
+            paths: Vec::new(),
+            cell_cm: None,
+            span_cm: (10.0, 10.0),
+        };
+        let printed = render_target_pdf(&sheet);
+        assert_eq!(printed.scale_denominator, 1);
+        assert!((printed.scale_bar_mm - 100.0).abs() < 1e-9);
+        assert!((scale_bar_pt(&printed.pdf) - 283.46).abs() < 0.01);
+        let text = String::from_utf8_lossy(&printed.pdf);
+        let marker = "% HOLDOVER_CIRCLE_DIAMETER_PT ";
+        let start = text.find(marker).expect("circle") + marker.len();
+        let end = text[start..].find('\n').unwrap();
+        let diameter: f64 = text[start..start + end].trim().parse().unwrap();
+        assert!(
+            (diameter - 283.46).abs() < 0.02,
+            "10 cm ring drew {diameter} pt"
+        );
     }
 }

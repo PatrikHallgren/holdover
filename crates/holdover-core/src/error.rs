@@ -19,6 +19,7 @@ pub enum Error {
         feature: &'static str,
         milestone: &'static str,
     },
+    Message(String),
 }
 
 impl fmt::Display for Error {
@@ -46,6 +47,7 @@ impl fmt::Display for Error {
             Error::NotInMilestone { feature, milestone } => {
                 write!(f, "{feature} is not implemented until {milestone}")
             }
+            Error::Message(msg) => write!(f, "{msg}"),
         }
     }
 }

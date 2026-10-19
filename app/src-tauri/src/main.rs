@@ -52,7 +52,11 @@ fn main() {
             truing,
             chrono_session,
             recoil_calc,
-            impact
+            impact,
+            reticle_scene,
+            reticle_save,
+            target_save,
+            target_pdf
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -266,6 +270,43 @@ fn recoil_calc(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, 
 #[tauri::command]
 fn impact(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
     with_store(state, |store| session::impact(store, &body))
+}
+
+#[tauri::command]
+fn reticle_scene(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::reticle_scene(store, &body))
+}
+
+#[tauri::command]
+fn reticle_save(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_reticle(&body))
+}
+
+#[tauri::command]
+fn target_save(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_target_record(&body))
+}
+
+/// Write a target sheet as a PDF. The scale bar is true paper size. The figure is 1:1 or 1:N.
+#[tauri::command]
+fn target_pdf(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        let printed = session::target_pdf_bytes(store, &body)?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("holdover-target-{stamp}.pdf"));
+        fs::write(&path, &printed.pdf).map_err(|err| err.to_string())?;
+        let opened = open_pdf(&path);
+        Ok(json!({
+            "path": path,
+            "opened": opened,
+            "pdf_base64": base64_encode(&printed.pdf),
+            "scale_denominator": printed.scale_denominator,
+            "scale_bar_mm": printed.scale_bar_mm,
+        }))
+    })
 }
 
 #[tauri::command]
