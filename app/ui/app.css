@@ -241,9 +241,16 @@ th:first-child, td:first-child {
   width: 100%;
   height: auto;
   display: block;
+  color: var(--text);
   background: var(--background);
   border: 1px solid var(--border);
   touch-action: none;
+}
+
+#pbr-chart {
+  width: 100%;
+  touch-action: none;
+  cursor: grab;
 }
 
 .chart:focus {
@@ -282,10 +289,11 @@ body.field .lead-result .clicks {
   display: block;
 }
 
+.chart text,
 .chart .tick,
 .chart .zero-label {
   fill: var(--text-secondary);
-  font-size: 12px;
+  font-size: calc(12px * var(--text-scale, 1));
   font-family: inherit;
 }
 
@@ -349,22 +357,36 @@ body.field .lead-result .clicks {
 
 .impact {
   display: block;
-  width: min(100%, 640px);
+  width: 100%;
   height: auto;
-  aspect-ratio: 640 / 520;
+  aspect-ratio: 1;
+  color: var(--text);
   background: var(--background);
   border: 1px solid var(--border);
 }
 
+.impact text,
+.impact .tick {
+  fill: var(--text);
+  font-family: inherit;
+  font-size: calc(16px * var(--text-scale, 1));
+}
+
+.impact .zero,
 .impact .tick-mark {
   stroke: var(--text-secondary);
-  stroke-width: 1;
+  stroke-width: 1.5;
+}
+
+.impact .tick-mark {
+  stroke: var(--text-secondary);
+  stroke-width: 1.5;
 }
 
 .impact .ring {
   fill: none;
   stroke: var(--text-secondary);
-  stroke-width: 1.5;
+  stroke-width: 2;
 }
 
 .impact .spread {

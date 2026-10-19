@@ -6,11 +6,11 @@
 use holdover_core::{
     card_page, chart_axis, chrono_stats, combine_offsets, convert_from_si, format_number, lead,
     parse_quantity, parse_twist, parse_wind_direction, pbr, pbr_fixed, powder_coefficient,
-    print_sheet_css, recoil, scale_bar_mm, table, true_drag, true_mv, true_tracking,
-    vertical_mv_spread_m, Atmosphere, BcBand, BcReference, Bullet, CdScale, ChartAxis, Click,
-    Dimension, DragMode, DragModel, DragSpec, Effects, RecoilInput, Shot, Solution, TableSpec,
-    TrajectoryPoint, Twist, TwistHand, Warning, Wind, DRAG_GUIDANCE, MV_GUIDANCE,
-    SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM, TRACKING_GUIDANCE,
+    print_sheet_css, recoil, render_card_pdf, scale_bar_mm, table, true_drag, true_mv,
+    true_tracking, vertical_mv_spread_m, Atmosphere, BcBand, BcReference, Bullet, CardSheet,
+    CdScale, ChartAxis, Click, Dimension, DragMode, DragModel, DragSpec, Effects, RecoilInput,
+    Shot, Solution, TableSpec, TrajectoryPoint, Twist, TwistHand, Warning, Wind, DRAG_GUIDANCE,
+    MV_GUIDANCE, SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM, TRACKING_GUIDANCE,
 };
 use serde_json::{json, Value};
 
@@ -201,6 +201,102 @@ pub fn range_card(store: &Store, body: &Value) -> Result<Value, String> {
         "conditions": condition_labels,
         "csv": card_csv(&rows, &brackets, angular, length_unit),
     }))
+}
+
+pub fn card_pdf_bytes(store: &Store, body: &Value) -> Result<Vec<u8>, String> {
+    let mut owned = body.clone();
+    if owned.get("page").and_then(|value| value.as_str()).is_none() {
+        owned["page"] = json!(store.paper_id()?);
+    }
+    let page_id = owned
+        .get("page")
+        .and_then(|value| value.as_str())
+        .unwrap_or("a4")
+        .to_string();
+    store.remember_paper(&page_id)?;
+    let card = range_card(store, &owned)?;
+    let page = card_page(&page_id).ok_or_else(|| format!("unknown card size {page_id}"))?;
+    Ok(render_card_pdf(page, &sheet_from_card(&card)))
+}
+
+fn sheet_from_card(card: &Value) -> CardSheet {
+    let mut headers = vec![
+        "Range".to_string(),
+        "Elevation".to_string(),
+        "Drop".to_string(),
+        "Velocity".to_string(),
+        "Energy".to_string(),
+        "TOF".to_string(),
+        "Mach".to_string(),
+    ];
+    if let Some(brackets) = card.get("brackets").and_then(|value| value.as_array()) {
+        for label in brackets {
+            headers.push(label.as_str().unwrap_or("Wind").to_string());
+        }
+    }
+    if let Some(conditions) = card.get("conditions").and_then(|value| value.as_array()) {
+        for label in conditions {
+            headers.push(label.as_str().unwrap_or("Temp").to_string());
+        }
+    }
+    let length = card["length_unit"].as_str().unwrap_or("");
+    let mut rows = Vec::new();
+    if let Some(source) = card.get("rows").and_then(|value| value.as_array()) {
+        for row in source {
+            let mut cells = vec![
+                format!("{} {length}", row["range_display"].as_str().unwrap_or("")),
+                hold_cell(&row["elevation"]),
+                row["drop_display"].as_str().unwrap_or("").to_string(),
+                row["velocity_display"].as_str().unwrap_or("").to_string(),
+                row["energy_display"].as_str().unwrap_or("").to_string(),
+                format!("{:.3}", row["tof_s"].as_f64().unwrap_or(0.0)),
+                format!("{:.2}", row["mach"].as_f64().unwrap_or(0.0)),
+            ];
+            if let Some(winds) = row.get("winds").and_then(|value| value.as_array()) {
+                for wind in winds {
+                    cells.push(hold_cell(&wind["windage"]));
+                }
+            }
+            if let Some(conditions) = row.get("conditions").and_then(|value| value.as_array()) {
+                for condition in conditions {
+                    cells.push(hold_cell(&condition["elevation"]));
+                }
+            }
+            rows.push(cells);
+        }
+    }
+    let label = card["scale_bar_label"].as_str().unwrap_or("10 cm");
+    CardSheet {
+        title: card["profile_label"]
+            .as_str()
+            .unwrap_or("Range card")
+            .to_string(),
+        subtitle: card["zero_summary"].as_str().unwrap_or("").to_string(),
+        meta: vec![
+            format!(
+                "Truing: {} · {}",
+                card["truing"].as_str().unwrap_or(""),
+                card["date"].as_str().unwrap_or("")
+            ),
+            format!("No-wind elevation. Crosswind brackets from 9 o'clock. Scale bar {label}."),
+        ],
+        headers,
+        rows,
+        footer: card["footer"]
+            .as_str()
+            .unwrap_or("Predicted values; confirm with live fire.")
+            .to_string(),
+        disclaimer: card["disclaimer"].as_str().unwrap_or("").to_string(),
+        scale_label: label.to_string(),
+    }
+}
+
+fn hold_cell(hold: &Value) -> String {
+    format!(
+        "{} {}",
+        hold["direction"].as_str().unwrap_or(""),
+        hold["primary"].as_str().unwrap_or("")
+    )
 }
 
 pub fn chart(store: &Store, body: &Value) -> Result<Value, String> {
@@ -2088,5 +2184,80 @@ mod tests {
             slower["lead"]["mrad"].as_f64().unwrap().abs()
                 < to_the_right["lead"]["mrad"].as_f64().unwrap().abs()
         );
+    }
+
+    #[test]
+    fn letter_pdf_page_is_612_by_792_and_the_bar_is_283_46_pt() {
+        let store = store();
+        let id = store.bootstrap().unwrap()["settings"]["active_profile_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let bytes = card_pdf_bytes(
+            &store,
+            &json!({
+                "profile_id": id,
+                "from": {"text": "100 m", "unit": "m"},
+                "to": {"text": "200 m", "unit": "m"},
+                "step": {"text": "100 m", "unit": "m"},
+                "page": "letter",
+                "brackets": "2 mps",
+                "current_air": air(),
+                "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": false}
+            }),
+        )
+        .unwrap();
+        assert!(bytes.starts_with(b"%PDF-1.4"));
+        let text = String::from_utf8_lossy(&bytes);
+        let marker = "/MediaBox [0 0 ";
+        let start = text.find(marker).unwrap() + marker.len();
+        let end = text[start..].find(']').unwrap();
+        let nums: Vec<f64> = text[start..start + end]
+            .split_whitespace()
+            .map(|part| part.parse().unwrap())
+            .collect();
+        assert!((nums[0] - 612.0).abs() < 0.01, "{}", nums[0]);
+        assert!((nums[1] - 792.0).abs() < 0.01, "{}", nums[1]);
+        let bar = text.find("% HOLDOVER_SCALE_BAR ").unwrap() + "% HOLDOVER_SCALE_BAR ".len();
+        let bar_end = text[bar..].find('\n').unwrap();
+        let commented: f64 = text[bar..bar + bar_end].trim().parse().unwrap();
+        assert!((commented - 283.46).abs() < 0.01, "{commented}");
+        let drawn: f64 = text[bar + bar_end..]
+            .split(" re")
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .filter_map(|token| token.parse().ok())
+            .nth_back(1)
+            .unwrap();
+        assert!((drawn - 283.46).abs() < 0.01, "{drawn}");
+        assert_eq!(store.paper_id().unwrap(), "letter");
+
+        store
+            .set_preferences(&json!({"preset": "metric", "paper": "a6"}))
+            .unwrap();
+        assert_eq!(store.paper_id().unwrap(), "a6");
+        let compact = card_pdf_bytes(
+            &store,
+            &json!({
+                "profile_id": id,
+                "from": {"text": "100 m", "unit": "m"},
+                "to": {"text": "100 m", "unit": "m"},
+                "step": {"text": "100 m", "unit": "m"},
+                "page": "compact",
+                "current_air": air(),
+                "effects": {"incline": true, "spin_drift": false}
+            }),
+        )
+        .unwrap();
+        let compact_text = String::from_utf8_lossy(&compact);
+        let compact_bar =
+            compact_text.find("% HOLDOVER_SCALE_BAR ").unwrap() + "% HOLDOVER_SCALE_BAR ".len();
+        let compact_end = compact_text[compact_bar..].find('\n').unwrap();
+        let compact_pt: f64 = compact_text[compact_bar..compact_bar + compact_end]
+            .trim()
+            .parse()
+            .unwrap();
+        assert!((compact_pt - 141.73).abs() < 0.01, "{compact_pt}");
     }
 }

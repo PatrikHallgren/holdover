@@ -8,8 +8,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use holdover_core::{
-    card_pages, format_number, parse_quantity, running_presets, Dimension, DEFAULT_EJECTA_MPS,
-    EJECTA_CONVENTION, SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM,
+    card_page, card_pages, default_card_page, format_number, parse_quantity, running_presets,
+    Dimension, DEFAULT_EJECTA_MPS, EJECTA_CONVENTION, SJF_MOOSE_RING_DIAMETER_CM,
+    SJF_ROE_BUCK_RING_DIAMETER_CM,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -259,6 +260,7 @@ impl Store {
                 .collect::<Vec<_>>(),
             "ejecta_mps": DEFAULT_EJECTA_MPS,
             "ejecta_convention": EJECTA_CONVENTION,
+            "paper": self.paper_id()?,
         }))
     }
 
@@ -282,6 +284,11 @@ impl Store {
         if !matches!(appearance, "follow" | "light" | "dark") {
             return Err("appearance must be follow, light, or dark".into());
         }
+        if let Some(paper) = body.get("paper").and_then(|value| value.as_str()) {
+            if card_page(paper).is_none() {
+                return Err(format!("unknown card size {paper}"));
+            }
+        }
         self.conn.execute(
             "UPDATE settings SET preset = ?1, units_json = ?2, appearance = ?3, large_text = ?4,
              reduced_motion = ?5, card_pinned = ?6, angular = ?7 WHERE id = 1",
@@ -295,7 +302,47 @@ impl Store {
                 units.angular
             ],
         ).map_err(|err| err.to_string())?;
+        if let Some(paper) = body.get("paper").and_then(|value| value.as_str()) {
+            self.remember_paper(paper)?;
+        }
         Ok(())
+    }
+
+    /// Remember the range-card paper size. Unknown ids are refused.
+    pub fn remember_paper(&self, page_id: &str) -> Result<(), String> {
+        if card_page(page_id).is_none() {
+            return Err(format!("unknown card size {page_id}"));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('paper', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![page_id],
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    /// Saved paper size, or Letter for a US locale or yard unit, otherwise A4.
+    pub fn paper_id(&self) -> Result<String, String> {
+        let saved: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'paper'", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|err| err.to_string())?;
+        if let Some(saved) = saved {
+            if card_page(&saved).is_some() {
+                return Ok(saved);
+            }
+        }
+        let units = self.units()?;
+        let locale = std::env::var("LC_PAPER")
+            .or_else(|_| std::env::var("LC_ALL"))
+            .or_else(|_| std::env::var("LANG"))
+            .unwrap_or_default();
+        Ok(default_card_page(&units.length, &locale).to_string())
     }
 
     pub fn complete_onboarding(&self, body: &Value) -> Result<(), String> {

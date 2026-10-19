@@ -238,6 +238,19 @@ pub fn card_page(id: &str) -> Option<&'static CardPage> {
     card_pages().iter().find(|page| page.id == id)
 }
 
+/// First paper size when the user has not chosen one.
+///
+/// A US locale, or a yard length unit, starts on Letter. Anything else starts on A4.
+/// Letter stays in the size list either way.
+pub fn default_card_page(length_unit: &str, locale: &str) -> &'static str {
+    let loc = locale.trim().to_ascii_lowercase().replace('-', "_");
+    if length_unit == "yd" || loc.starts_with("en_us") {
+        "letter"
+    } else {
+        "a4"
+    }
+}
+
 /// Printed bar length. Compact stock cards are narrower than 10 cm, so they use a 5 cm bar.
 pub fn scale_bar_mm(page: &CardPage) -> f64 {
     if page.width_mm >= 110.0 {

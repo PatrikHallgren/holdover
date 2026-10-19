@@ -34,6 +34,9 @@ let solveTimer = 0;
 let equipNotice = "";
 let moving = { preset: "", speedText: "", speedUnit: "", direction: "3oc", reaction: "0", open: false };
 let cardPageId = "a4";
+let cardPageTouched = false;
+let pbrSpan = "full";
+let pbrWindow = null;
 let cardConditions = "";
 let cardBrackets = "2 mps, 4 mps, 6 mps";
 let chartKinds = { drop: true, wind: true, velocity: false, energy: false, tof: false, mach: false };
@@ -108,6 +111,7 @@ function applyTheme() {
 
 async function refresh() {
   boot = await call("bootstrap");
+  if (!cardPageTouched && boot.paper) cardPageId = boot.paper;
   applyTheme();
   render();
 }
@@ -397,12 +401,15 @@ function cardHtml() {
       <label class="field">${esc(t("card-size"))}<select id="card-page">${pages}</select></label>
       <label class="field">${esc(t("card-conditions"))}<input id="conditions" value="${esc(cardConditions)}" placeholder="-10 C, 30 C" /></label>
       <button type="button" id="card-build">${esc(t("apply"))}</button>
-      <button type="button" id="card-print">${esc(t("card-print"))}</button>
+      <button type="button" id="card-pdf" title="${esc(t("card-pdf-tip"))}">${esc(t("card-pdf"))}</button>
+      <button type="button" id="card-print" title="${esc(t("card-print-note"))}">${esc(t("card-print"))}</button>
       <button type="button" id="card-csv">${esc(t("card-csv"))}</button>
       <button type="button" id="card-json">${esc(t("card-json"))}</button>
       <label><input type="checkbox" id="card-pin" ${s.card_pinned ? "checked" : ""} /> ${esc(t("card-pin"))}</label>
     </div>
-    <p class="hint noprint">${esc(t("page-pin-note"))} ${esc(t("card-print-note"))}</p>
+    <p class="hint noprint">${esc(t("page-pin-note"))} ${esc(t("card-paper-note"))}</p>
+    <p class="hint noprint">${esc(t("card-print-note"))}</p>
+    <p class="hint noprint" id="card-pdf-status"></p>
     <div id="card-body">${card && card.rows ? cardTable(card) : `<p>${esc(t("card-empty"))}</p>`}</div>
   </section>`;
 }
@@ -764,6 +771,7 @@ function needsExtra() {
 
 function bindCard() {
   document.getElementById("card-build").addEventListener("click", buildCard);
+  document.getElementById("card-pdf").addEventListener("click", openCardPdf);
   document.getElementById("card-print").addEventListener("click", () => window.print());
   document.getElementById("card-csv").addEventListener("click", () => {
     if (card && card.csv) downloadText("holdover-card.csv", card.csv, "text/csv");
@@ -775,33 +783,71 @@ function bindCard() {
     boot = await call("set_preferences", { body: preferencesBody({ card_pinned: event.target.checked }) });
   });
   const pageSelect = document.getElementById("card-page");
-  if (pageSelect) pageSelect.addEventListener("change", () => { cardPageId = pageSelect.value; });
+  if (pageSelect) pageSelect.addEventListener("change", async () => {
+    cardPageId = pageSelect.value;
+    cardPageTouched = true;
+    boot = await call("set_preferences", { body: preferencesBody({ paper: cardPageId }) });
+  });
   const conditions = document.getElementById("conditions");
   if (conditions) conditions.addEventListener("input", () => { cardConditions = conditions.value; });
   const brackets = document.getElementById("brackets");
   if (brackets) brackets.addEventListener("input", () => { cardBrackets = brackets.value; });
 }
 
+function cardFormBody() {
+  const body = solveBody();
+  body.from = qtyPayload("from");
+  body.to = qtyPayload("to");
+  body.step = qtyPayload("step");
+  body.brackets = document.getElementById("brackets").value;
+  body.pinned_metric = document.getElementById("card-pin").checked;
+  body.page = document.getElementById("card-page").value;
+  body.conditions = document.getElementById("conditions").value;
+  cardPageId = body.page;
+  cardPageTouched = true;
+  cardConditions = body.conditions;
+  cardBrackets = body.brackets;
+  return body;
+}
+
 async function buildCard() {
   const host = document.getElementById("card-body");
   try {
-    const body = solveBody();
-    body.from = qtyPayload("from");
-    body.to = qtyPayload("to");
-    body.step = qtyPayload("step");
-    body.brackets = document.getElementById("brackets").value;
-    body.pinned_metric = document.getElementById("card-pin").checked;
-    body.page = document.getElementById("card-page").value;
-    body.conditions = document.getElementById("conditions").value;
-    cardPageId = body.page;
-    cardConditions = body.conditions;
-    cardBrackets = body.brackets;
+    const body = cardFormBody();
     card = await call("range_card", { body });
     applyCardPage(card);
     host.innerHTML = cardTable(card);
   } catch (error) {
     host.innerHTML = `<p class="error">${esc(error)}</p>`;
   }
+}
+
+async function openCardPdf() {
+  const status = document.getElementById("card-pdf-status");
+  try {
+    const body = cardFormBody();
+    const result = await call("card_pdf", { body });
+    if (status) {
+      const lead = result.opened ? t("card-pdf-opened") : t("card-pdf-saved");
+      status.textContent = `${lead} ${result.path || ""}`.trim();
+    }
+    if (!result.opened && result.pdf_base64) downloadBase64("holdover-range-card.pdf", result.pdf_base64);
+  } catch (error) {
+    if (status) status.textContent = String(error);
+  }
+}
+
+function downloadBase64(name, encoded) {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function bindChart() {
@@ -931,7 +977,7 @@ function drawScaledChart(kind) {
   yAxis.ticks.forEach((tick, index) => {
     const y = yOf(tick);
     marks += `<line class="grid" x1="${padL}" x2="${(width - padR).toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`;
-    marks += `<text class="tick" x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(yAxis.labels[index])}</text>`;
+    marks += `<text class="tick" fill="var(--text-secondary)" x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(yAxis.labels[index])}</text>`;
   });
   xAxis.ticks.forEach((tick, index) => {
     const x = xOf(tick);
@@ -940,14 +986,14 @@ function drawScaledChart(kind) {
     if ((index % stride === 0 || index === last) && !crowded) {
       const anchor = index === last ? "end" : index === 0 ? "start" : "middle";
       const labelX = index === 0 ? padL : index === last ? width - padR : x;
-      marks += `<text class="tick" x="${labelX.toFixed(1)}" y="${height - 6}" text-anchor="${anchor}">${esc(xAxis.labels[index])}</text>`;
+      marks += `<text class="tick" fill="var(--text-secondary)" x="${labelX.toFixed(1)}" y="${height - 6}" text-anchor="${anchor}">${esc(xAxis.labels[index])}</text>`;
     }
   });
   const zeroY = yOf(0);
   if (zeroY >= padT - 1 && zeroY <= height - padB + 1) {
     marks += `<line class="zero" x1="${padL}" x2="${(width - padR).toFixed(1)}" y1="${zeroY.toFixed(1)}" y2="${zeroY.toFixed(1)}" />`;
     if (spec.zero === "los" && width >= 420) {
-      marks += `<text class="zero-label" x="${(width - padR - 4).toFixed(1)}" y="${Math.max(padT + 12, zeroY - 5).toFixed(1)}" text-anchor="end">${esc(t("chart-los"))}</text>`;
+      marks += `<text class="zero-label" fill="var(--text-secondary)" x="${(width - padR - 4).toFixed(1)}" y="${Math.max(padT + 12, zeroY - 5).toFixed(1)}" text-anchor="end">${esc(t("chart-los"))}</text>`;
     }
   }
   const paths = (chartData.series || []).map((item, index) => {
@@ -1677,18 +1723,20 @@ function impactView(data) {
     });
   });
   if (!Number.isFinite(half) || half > 400) half = 400;
-  const width = 640;
-  const height = 520;
-  const pad = 48;
-  const plot = Math.min(width, height) - pad * 2;
+  const width = 1100;
+  const height = 1100;
+  const pad = 96;
+  const plot = width - pad * 2;
   const scale = plot / (half * 2);
   const cx = width / 2;
-  const cy = height / 2 + 8;
+  const cy = height / 2 - 16;
+  const ink = "var(--text)";
+  const axis = "var(--text-secondary)";
   const px = (cmX, cmY) => [cx + cmX * scale, cy - cmY * scale];
   const circles = rings.map((diameter) => {
     const radius = diameter / 2 * scale;
-    return `<circle class="ring" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${radius.toFixed(1)}" fill="none" stroke="currentColor" stroke-width="1.5" />
-      <text class="tick" x="${(cx + radius + 4).toFixed(1)}" y="${(cy + 4).toFixed(1)}">${esc(String(diameter))} cm</text>`;
+    return `<circle class="ring" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${radius.toFixed(1)}" fill="none" stroke="${axis}" stroke-width="2" />
+      <text class="tick" fill="${ink}" x="${(cx + radius + 8).toFixed(1)}" y="${(cy + 6).toFixed(1)}">${esc(String(diameter))} cm</text>`;
   }).join("");
   const marks = pois.map((poi, index) => {
     const [x, y] = px(Number(poi.windage_cm) || 0, Number(poi.path_cm) || 0);
@@ -1701,15 +1749,15 @@ function impactView(data) {
     const rangeHigh = px(Number(poi.windage_cm) || 0, Number(poi.range_high_cm));
     const brackets = (poi.brackets || []).map((item) => {
       const [bx, by] = px(Number(item.windage_cm) || 0, Number(poi.path_cm) || 0);
-      return `<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="7" fill="none" stroke="${color}" stroke-width="1.5" />
-        <text class="tick" x="${(bx + 8).toFixed(1)}" y="${(by - 6).toFixed(1)}">${esc(item.label || "")}</text>`;
+      return `<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="10" fill="none" stroke="${color}" stroke-width="2" />
+        <text class="tick" fill="${ink}" x="${(bx + 14).toFixed(1)}" y="${(by - 10).toFixed(1)}">${esc(item.label || "")}</text>`;
     }).join("");
-    return `<line class="spread" stroke="${color}" stroke-width="1.5" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${low[1].toFixed(1)}" y2="${high[1].toFixed(1)}" />
-      <line class="spread" stroke="${color}" stroke-width="1.5" x1="${left[0].toFixed(1)}" x2="${right[0].toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />
-      <line class="spread" stroke="${color}" stroke-width="1.5" x1="${(x - 8).toFixed(1)}" x2="${(x + 8).toFixed(1)}" y1="${rangeLow[1].toFixed(1)}" y2="${rangeLow[1].toFixed(1)}" />
-      <line class="spread" stroke="${color}" stroke-width="1.5" x1="${(x - 8).toFixed(1)}" x2="${(x + 8).toFixed(1)}" y1="${rangeHigh[1].toFixed(1)}" y2="${rangeHigh[1].toFixed(1)}" />
+    return `<line class="spread" stroke="${color}" stroke-width="2" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${low[1].toFixed(1)}" y2="${high[1].toFixed(1)}" />
+      <line class="spread" stroke="${color}" stroke-width="2" x1="${left[0].toFixed(1)}" x2="${right[0].toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />
+      <line class="spread" stroke="${color}" stroke-width="2" x1="${(x - 12).toFixed(1)}" x2="${(x + 12).toFixed(1)}" y1="${rangeLow[1].toFixed(1)}" y2="${rangeLow[1].toFixed(1)}" />
+      <line class="spread" stroke="${color}" stroke-width="2" x1="${(x - 12).toFixed(1)}" x2="${(x + 12).toFixed(1)}" y1="${rangeHigh[1].toFixed(1)}" y2="${rangeHigh[1].toFixed(1)}" />
       ${brackets}
-      <circle class="poi" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="${color}" stroke="none" />`;
+      <circle class="poi" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${color}" stroke="none" />`;
   }).join("");
   const step = half > 40 ? 10 : 5;
   let ticks = "";
@@ -1717,25 +1765,25 @@ function impactView(data) {
   for (let cm = firstTick; cm <= half; cm += step) {
     const [x] = px(cm, 0);
     const [, y] = px(0, cm);
-    ticks += `<line class="tick-mark" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(cy - 5).toFixed(1)}" y2="${(cy + 5).toFixed(1)}" />
-      <text class="tick" x="${x.toFixed(1)}" y="${(cy + 18).toFixed(1)}" text-anchor="middle">${cm}</text>
-      <line class="tick-mark" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" x1="${(cx - 5).toFixed(1)}" x2="${(cx + 5).toFixed(1)}" />`;
+    ticks += `<line class="tick-mark" stroke="${axis}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(cy - 8).toFixed(1)}" y2="${(cy + 8).toFixed(1)}" />
+      <text class="tick" fill="${ink}" x="${x.toFixed(1)}" y="${(cy + 28).toFixed(1)}" text-anchor="middle">${cm}</text>
+      <line class="tick-mark" stroke="${axis}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" x1="${(cx - 8).toFixed(1)}" x2="${(cx + 8).toFixed(1)}" />`;
   }
-  const [bar0, bar1] = [px(-5, -half + 1), px(5, -half + 1)];
+  const [bar0, bar1] = [px(-5, 0), px(5, 0)];
   const badge = data.placeholder ? `<p class="badge">${esc(t("impact-placeholder"))}</p>` : "";
   return `${badge}
     <p class="hint">${esc(data.note || "")}</p>
     <p class="axis-title">${esc(t("impact-scale"))}</p>
-    <svg class="impact" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("impact-title"))}">
+    <svg class="impact" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("impact-title"))}">
       <rect width="${width}" height="${height}" fill="var(--background)" />
-      <line class="zero" x1="${pad}" x2="${width - pad}" y1="${cy.toFixed(1)}" y2="${cy.toFixed(1)}" />
-      <line class="zero" y1="${pad}" y2="${height - pad}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" />
+      <line class="zero" stroke="${axis}" x1="${pad}" x2="${width - pad}" y1="${cy.toFixed(1)}" y2="${cy.toFixed(1)}" />
+      <line class="zero" stroke="${axis}" y1="${pad}" y2="${height - pad}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" />
       ${ticks}
-      <text class="tick" x="${(width - pad).toFixed(1)}" y="${(cy - 6).toFixed(1)}" text-anchor="end">${esc(t("chart-wind-sign"))}</text>
-      <text class="tick" x="${(cx + 6).toFixed(1)}" y="${pad}">${esc(t("chart-above-los"))}</text>
+      <text class="tick" fill="${ink}" x="${(width - pad).toFixed(1)}" y="${(cy - 12).toFixed(1)}" text-anchor="end">${esc(t("chart-wind-sign"))}</text>
+      <text class="tick" fill="${ink}" x="${(cx + 12).toFixed(1)}" y="${(pad + 8).toFixed(1)}">${esc(t("chart-above-los"))}</text>
       ${circles}${marks}
-      <line class="zero" x1="${bar0[0].toFixed(1)}" x2="${bar1[0].toFixed(1)}" y1="${(height - 28).toFixed(1)}" y2="${(height - 28).toFixed(1)}" />
-      <text class="tick" x="${cx.toFixed(1)}" y="${(height - 12).toFixed(1)}" text-anchor="middle">10 cm</text>
+      <line class="zero" stroke="${axis}" stroke-width="3" x1="${bar0[0].toFixed(1)}" x2="${bar1[0].toFixed(1)}" y1="${(height - 48).toFixed(1)}" y2="${(height - 48).toFixed(1)}" />
+      <text class="tick" fill="${ink}" x="${cx.toFixed(1)}" y="${(height - 22).toFixed(1)}" text-anchor="middle">10 cm</text>
     </svg>
     <p class="legend">${pois.map((poi, index) => `<span><i class="swatch swatch-${index % 6}"></i>${esc(poi.label)} · ${esc(t("impact-poi"))}</span>`).join("")}</p>
     <p class="hint">${esc(t("impact-bars"))}</p>
@@ -1795,23 +1843,175 @@ function pbrView(data) {
     ${above}
     <p><strong>${esc(t("pbr-ordinate"))}</strong> ${esc(data.ordinate_display)} ${esc(t("pbr-at"))} ${esc(data.ordinate_range_display)} ${esc(data.length_unit)}</p>
     <p class="hint">${esc(t("pbr-ordinate-help"))}</p>
-    ${pbrChart(data)}
+    <div class="row" id="pbr-spans">${pbrSpanButtons(data)}</div>
+    <p class="hint">${esc(t("pbr-zoom-hint"))}</p>
+    <div id="pbr-chart"></div>
     <p class="hint">${esc(t("pbr-still-air"))}</p>
     ${confirm}`;
 }
 
-function pbrChart(data) {
+function pbrSpanButtons(data) {
+  const unit = (data.x && data.x.unit) || data.length_unit || "m";
+  const choices = [
+    ["300", pbrRangeLabel(300, unit)],
+    ["800", pbrRangeLabel(800, unit)],
+    ["full", t("pbr-span-full")],
+  ];
+  return choices.map(([id, label]) =>
+    `<button type="button" data-pbr-span="${id}" aria-pressed="${pbrSpan === id}">${esc(label)}</button>`).join("");
+}
+
+function pbrRangeLabel(metres, unit) {
+  const factor = toSi(1, "length", unit) || 1;
+  const shown = metres / factor;
+  const text = shown >= 100 ? String(Math.round(shown)) : String(Math.round(shown * 10) / 10);
+  return `${text} ${unit}`;
+}
+
+function pbrExtent(data) {
   const samples = data.samples || [];
-  const xAxis = data.x;
-  const yAxis = data.y;
-  if (!samples.length || !xAxis || !yAxis) return "";
+  if (!samples.length) {
+    const x = data.x || { min: 0, max: 1 };
+    return { min: Number(x.min) || 0, max: Number(x.max) || 1 };
+  }
+  const min = Number(samples[0].range) || 0;
+  const max = Number(samples[samples.length - 1].range) || min + 1;
+  return { min, max: Math.max(max, min + 1e-6) };
+}
+
+function pbrPresetWindow(data) {
+  const extent = pbrExtent(data);
+  if (pbrSpan !== "300" && pbrSpan !== "800") return extent;
+  const unit = (data.x && data.x.unit) || "m";
+  const shown = Number(pbrSpan) / (toSi(1, "length", unit) || 1);
+  return { min: extent.min, max: Math.min(extent.max, Math.max(extent.min + 1, shown)) };
+}
+
+function clampPbrWindow(min, max, extent) {
+  const full = Math.max(extent.max - extent.min, 1e-6);
+  let span = max - min;
+  const minSpan = Math.max(full * 0.02, 1e-3);
+  if (!Number.isFinite(span) || span < minSpan) span = minSpan;
+  if (span > full) span = full;
+  let start = min;
+  if (start < extent.min) start = extent.min;
+  if (start + span > extent.max) start = extent.max - span;
+  return { min: start, max: start + span };
+}
+
+function pbrVisible(data) {
+  const extent = pbrExtent(data);
+  if (pbrWindow) return clampPbrWindow(pbrWindow.min, pbrWindow.max, extent);
+  return clampPbrWindow(pbrPresetWindow(data).min, pbrPresetWindow(data).max, extent);
+}
+
+function tickDecimals(step) {
+  let scaled = step;
+  let decimals = 0;
+  while (decimals < 8 && Math.abs(scaled - Math.round(scaled)) > 1e-6) {
+    scaled *= 10;
+    decimals += 1;
+  }
+  return decimals;
+}
+
+function snapTick(value, step) {
+  const scale = 10 ** tickDecimals(step);
+  return Math.round(value * scale) / scale;
+}
+
+function formatTick(value, step) {
+  const snapped = snapTick(value, step);
+  if (!Number.isFinite(snapped) || Math.abs(snapped) < Math.max(Math.abs(step), 1) * 1e-9) return "0";
+  let text = snapped.toFixed(tickDecimals(step));
+  if (text.includes(".")) text = text.replace(/0+$/, "").replace(/\.$/, "");
+  return text;
+}
+
+function niceStep(span, maxTicks) {
+  const raw = Math.abs(span) / Math.min(12, Math.max(2, maxTicks));
+  if (!Number.isFinite(raw) || raw === 0) return 1;
+  const exp = Math.floor(Math.log10(raw));
+  const base = 10 ** exp;
+  const frac = raw / base;
+  const nice = [1, 2, 2.5, 5, 10].find((step) => step + 1e-9 >= frac) || 10;
+  return nice * base;
+}
+
+function niceAxis(dataMin, dataMax, maxTicks, includeZero) {
+  let lo = Math.min(dataMin, dataMax);
+  let hi = Math.max(dataMin, dataMax);
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    lo = 0;
+    hi = 1;
+  }
+  if (includeZero) {
+    lo = Math.min(lo, 0);
+    hi = Math.max(hi, 0);
+  }
+  if (hi - lo < 1e-9) {
+    lo -= 1;
+    hi += 1;
+  }
+  const step = niceStep(hi - lo, maxTicks);
+  const start = snapTick(Math.floor(lo / step) * step, step);
+  const end = snapTick(Math.ceil(hi / step) * step, step);
+  const ticks = [];
+  const labels = [];
+  let value = start;
+  for (let guard = 0; value <= end + step * 1e-6 && guard < 48; guard += 1) {
+    const snapped = snapTick(value, step);
+    if (!ticks.length || Math.abs(snapped - ticks[ticks.length - 1]) > step * 1e-6) {
+      ticks.push(snapped);
+      labels.push(formatTick(snapped, step));
+    }
+    value += step;
+  }
+  if (!ticks.length) {
+    ticks.push(0);
+    labels.push("0");
+  }
+  return { min: ticks[0], max: ticks[ticks.length - 1], ticks, labels };
+}
+
+function paintPbrChart() {
+  const host = document.getElementById("pbr-chart");
+  const data = pbrResult;
+  if (!host || !data || !(data.samples || []).length || !data.x || !data.y) return;
+  const samples = data.samples;
+  const shown = pbrVisible(data);
+  const visible = samples.filter((sample, index) => {
+    const range = Number(sample.range);
+    const prev = index ? Number(samples[index - 1].range) : range;
+    const next = index + 1 < samples.length ? Number(samples[index + 1].range) : range;
+    return (range >= shown.min && range <= shown.max)
+      || (range < shown.min && next > shown.min)
+      || (range > shown.max && prev < shown.max);
+  });
+  let yLo = Infinity;
+  let yHi = -Infinity;
+  visible.forEach((sample) => {
+    const path = Number(sample.path);
+    if (Number.isFinite(path)) {
+      yLo = Math.min(yLo, path);
+      yHi = Math.max(yHi, path);
+    }
+  });
   const radius = Number(data.radius_display) || 0;
-  const width = 640;
-  const height = 300;
-  const padL = 62;
-  const padR = 16;
-  const padT = 16;
-  const padB = 28;
+  if (!Number.isFinite(yLo) || !Number.isFinite(yHi)) {
+    yLo = -radius;
+    yHi = radius;
+  }
+  yLo = Math.min(yLo, -radius, 0);
+  yHi = Math.max(yHi, radius, 0);
+  const xAxis = niceAxis(shown.min, shown.max, 6, shown.min <= 0 && shown.max >= 0);
+  const yAxis = niceAxis(yLo, yHi, 5, true);
+  const width = Math.max(640, host.clientWidth || 720);
+  const height = Math.round(Math.max(320, width * 0.46));
+  const padL = 78;
+  const padR = 18;
+  const padT = 18;
+  const padB = 36;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
   const xSpan = (xAxis.max - xAxis.min) || 1;
@@ -1819,28 +2019,116 @@ function pbrChart(data) {
   const xOf = (value) => padL + (value - xAxis.min) / xSpan * plotW;
   const yOf = (value) => padT + (yAxis.max - value) / ySpan * plotH;
   let marks = `<rect class="frame" x="${padL}" y="${padT}" width="${plotW.toFixed(1)}" height="${plotH.toFixed(1)}" fill="none" />`;
-  (yAxis.ticks || []).forEach((tick, index) => {
+  yAxis.ticks.forEach((tick, index) => {
     const y = yOf(tick);
     marks += `<line class="grid" x1="${padL}" x2="${width - padR}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`;
-    marks += `<text class="tick" x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(yAxis.labels[index])}</text>`;
+    marks += `<text class="tick" fill="var(--text-secondary)" x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(yAxis.labels[index])}</text>`;
   });
-  (xAxis.ticks || []).forEach((tick, index) => {
+  xAxis.ticks.forEach((tick, index) => {
     const x = xOf(tick);
     marks += `<line class="grid" y1="${padT}" y2="${height - padB}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" />`;
-    marks += `<text class="tick" x="${x.toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(xAxis.labels[index])}</text>`;
+    marks += `<text class="tick" fill="var(--text-secondary)" x="${x.toFixed(1)}" y="${height - 10}" text-anchor="middle">${esc(xAxis.labels[index])}</text>`;
   });
   const band = (value) => `<line class="band" x1="${padL}" x2="${width - padR}" y1="${yOf(value).toFixed(1)}" y2="${yOf(value).toFixed(1)}" />`;
-  const d = samples.map((sample, index) => `${index ? "L" : "M"}${xOf(sample.range).toFixed(1)},${yOf(sample.path).toFixed(1)}`).join(" ");
-  return `<p class="legend"><span><i class="swatch"></i>${esc(t("path"))}</span><span>${esc(t("pbr-band"))}</span><span>${esc(t("chart-los"))}</span></p>
-    <p class="axis-title">${esc(yAxis.unit)}, ${esc(t("chart-above-los"))}</p>
-    <svg class="chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("nav-pbr"))}">
+  const drawn = visible.length ? visible : samples;
+  const d = drawn.map((sample, index) => `${index ? "L" : "M"}${xOf(sample.range).toFixed(1)},${yOf(sample.path).toFixed(1)}`).join(" ");
+  host.innerHTML = `<p class="legend"><span><i class="swatch"></i>${esc(t("path"))}</span><span>${esc(t("pbr-band"))}</span><span>${esc(t("chart-los"))}</span></p>
+    <p class="axis-title">${esc(data.y.unit)}, ${esc(t("chart-above-los"))}</p>
+    <svg class="chart" data-pad-l="${padL}" data-pad-r="${padR}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("nav-pbr"))}">
       ${marks}
       ${band(radius)}${band(-radius)}
       <line class="zero" x1="${padL}" x2="${width - padR}" y1="${yOf(0).toFixed(1)}" y2="${yOf(0).toFixed(1)}" />
-      <text class="zero-label" x="${(width - padR - 4)}" y="${Math.max(padT + 12, yOf(0) - 4).toFixed(1)}" text-anchor="end">${esc(t("chart-los"))}</text>
+      <text class="zero-label" fill="var(--text-secondary)" x="${(width - padR - 4)}" y="${Math.max(padT + 14, yOf(0) - 6).toFixed(1)}" text-anchor="end">${esc(t("chart-los"))}</text>
       <path d="${d}" fill="none" stroke="var(--chart-0)" stroke-width="2" />
     </svg>
-    <p class="axis-title">${esc(t("range"))} (${esc(xAxis.unit)})</p>`;
+    <p class="axis-title">${esc(t("range"))} (${esc(data.x.unit)})</p>`;
+}
+
+function markPbrSpan() {
+  document.querySelectorAll("[data-pbr-span]").forEach((button) => {
+    button.setAttribute("aria-pressed", button.dataset.pbrSpan === pbrSpan ? "true" : "false");
+  });
+}
+
+function pbrPlotFraction(event) {
+  const host = document.getElementById("pbr-chart");
+  const svg = host && host.querySelector("svg");
+  if (!svg) return 0.5;
+  const rect = svg.getBoundingClientRect();
+  const padL = Number(svg.dataset.padL) || 78;
+  const padR = Number(svg.dataset.padR) || 18;
+  const width = svg.viewBox.baseVal.width || rect.width || 1;
+  const plotLeft = rect.left + (padL / width) * rect.width;
+  const plotWidth = ((width - padL - padR) / width) * rect.width;
+  if (plotWidth <= 1) return 0.5;
+  return Math.min(1, Math.max(0, (event.clientX - plotLeft) / plotWidth));
+}
+
+function zoomPbr(anchor, factor) {
+  if (!pbrResult) return;
+  const extent = pbrExtent(pbrResult);
+  const current = pbrVisible(pbrResult);
+  const span = (current.max - current.min) * factor;
+  const at = current.min + (current.max - current.min) * anchor;
+  const min = at - span * anchor;
+  pbrWindow = clampPbrWindow(min, min + span, extent);
+  pbrSpan = "custom";
+  markPbrSpan();
+  paintPbrChart();
+}
+
+function panPbr(min, max) {
+  if (!pbrResult) return;
+  pbrWindow = clampPbrWindow(min, max, pbrExtent(pbrResult));
+  pbrSpan = "custom";
+  markPbrSpan();
+  paintPbrChart();
+}
+
+function bindPbrChart() {
+  const host = document.getElementById("pbr-chart");
+  if (!host || host.dataset.bound) return;
+  host.dataset.bound = "1";
+  host.addEventListener("wheel", (event) => {
+    if (!pbrResult) return;
+    event.preventDefault();
+    const factor = event.deltaY > 0 ? 1.18 : 1 / 1.18;
+    zoomPbr(pbrPlotFraction(event), factor);
+  }, { passive: false });
+  let drag = null;
+  host.addEventListener("pointerdown", (event) => {
+    if (!pbrResult || event.button !== 0) return;
+    const current = pbrVisible(pbrResult);
+    drag = { x: event.clientX, min: current.min, max: current.max, width: host.getBoundingClientRect().width };
+    host.setPointerCapture(event.pointerId);
+  });
+  host.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    const span = drag.max - drag.min;
+    const dx = (event.clientX - drag.x) / Math.max(1, drag.width) * span;
+    const extent = pbrExtent(pbrResult);
+    pbrWindow = clampPbrWindow(drag.min - dx, drag.max - dx, extent);
+    pbrSpan = "custom";
+    markPbrSpan();
+    paintPbrChart();
+  });
+  const end = () => { drag = null; };
+  host.addEventListener("pointerup", end);
+  host.addEventListener("pointercancel", end);
+}
+
+function bindPbrSpans() {
+  document.querySelectorAll("[data-pbr-span]").forEach((button) => {
+    button.addEventListener("click", () => {
+      pbrSpan = button.dataset.pbrSpan;
+      pbrWindow = null;
+      const host = document.getElementById("pbr-body");
+      if (host && pbrResult) {
+        host.innerHTML = pbrView(pbrResult);
+        bindPbrActions();
+      }
+    });
+  });
 }
 
 function bindPbr() {
@@ -1868,6 +2156,10 @@ function bindPbrActions() {
   if (apply) apply.addEventListener("click", () => runApplyZero(false));
   const confirm = document.getElementById("pbr-confirm");
   if (confirm) confirm.addEventListener("click", () => runApplyZero(true));
+  paintPbrChart();
+  bindPbrSpans();
+  bindPbrChart();
+  requestAnimationFrame(() => paintPbrChart());
 }
 
 async function runPbr() {

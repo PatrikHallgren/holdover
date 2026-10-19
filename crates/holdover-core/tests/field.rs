@@ -322,6 +322,21 @@ fn point_blank_near_is_zero_only_when_the_sight_is_inside_the_zone() {
 }
 
 #[test]
+fn default_paper_follows_locale_or_yards() {
+    assert_eq!(holdover_core::default_card_page("m", "sv_SE.UTF-8"), "a4");
+    assert_eq!(
+        holdover_core::default_card_page("m", "en_US.UTF-8"),
+        "letter"
+    );
+    assert_eq!(holdover_core::default_card_page("m", "en-US"), "letter");
+    assert_eq!(
+        holdover_core::default_card_page("yd", "sv_SE.UTF-8"),
+        "letter"
+    );
+    assert_eq!(holdover_core::default_card_page("m", ""), "a4");
+}
+
+#[test]
 fn printed_card_bar_is_the_labelled_length() {
     assert_eq!(scale_bar_mm(card_page("a4").unwrap()), 100.0);
     assert_eq!(scale_bar_mm(card_page("a5").unwrap()), 100.0);

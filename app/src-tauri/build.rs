@@ -13,6 +13,7 @@ fn main() {
             "set_active_profile",
             "solve",
             "range_card",
+            "card_pdf",
             "chart",
             "export_library",
             "import_library",
