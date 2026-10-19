@@ -11,6 +11,7 @@ mod error;
 mod field;
 mod pchip;
 mod pdf;
+mod reticle;
 mod solve;
 mod stability;
 mod targets;
@@ -29,13 +30,25 @@ pub use field::{
     PbrSample, PowderFit, Recoil, RecoilInput, RunningPreset, DEFAULT_EJECTA_MPS, DRAG_GUIDANCE,
     EJECTA_CONVENTION, MV_GUIDANCE, TRACKING_GUIDANCE,
 };
-pub use pdf::{render_card_pdf, round_pt, CardSheet};
+pub use pdf::{
+    render_card_pdf, render_target_pdf, round_pt, CardSheet, PrintedTarget, TargetPath, TargetPrint,
+};
+pub use reticle::{
+    angular_mrad, cm_per_mrad, generic_by_id, generic_reticles, marks_true_mrad, mirror_reticle,
+    parse_reticle, repeat_reticle, reticle_json, sfp_warning, snap_value, subtension_factor,
+    target_diameter_px, to_mrad, Eyepiece, FocalPlane, Mark, MirrorAxis, Reticle, ReticleUnit,
+    DEFAULT_APPARENT_FOV_DEG,
+};
 pub use solve::{
     group_stats, solve, solve_zero, table, AngularHold, Bullet, Click, Direction, Effects,
     Integrator, Shot, Solution, TableSpec, TrajectoryPoint, Warning, ZeroSolution,
 };
 pub use stability::SPIN_DRIFT_PROVENANCE;
-pub use targets::{SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM};
+pub use targets::{
+    apply_target_edit, bounds_cm, library_value, mirror_paths, sanitize_svg, target_by_id,
+    target_json, target_library, FlagDoc, PathDoc, RingDoc, TargetDoc, MOOSE_HIT_AREA_CM,
+    SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM,
+};
 pub use units::{
     convert_from_si, format_number, format_quantity, parse_quantity, parse_twist, parse_wind,
     parse_wind_direction, Dimension, Twist, TwistHand, Wind,

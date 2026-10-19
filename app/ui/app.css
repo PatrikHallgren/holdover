@@ -355,7 +355,9 @@ body.field .lead-result .clicks {
   text-align: center;
 }
 
-.impact {
+.impact,
+.reticle,
+.target-face {
   display: block;
   width: 100%;
   height: auto;
@@ -363,6 +365,24 @@ body.field .lead-result .clicks {
   color: var(--text);
   background: var(--background);
   border: 1px solid var(--border);
+}
+
+.reticle text,
+.target-face text,
+.reticle,
+.target-face {
+  fill: var(--text);
+  font-family: inherit;
+  font-size: calc(16px * var(--text-scale, 1));
+}
+
+textarea {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  width: 100%;
+  min-height: 6rem;
 }
 
 .impact text,

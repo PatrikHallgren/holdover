@@ -49,6 +49,35 @@ let truingKind = "mv";
 let truingPreview = null;
 let truingForm = { range: "400 m", elevation: "", shots: "", group: "", lines: "", advertised: "10 mrad", observed: "", piecewise: false };
 let impactData = null;
+let impactTarget = "sjf-algfigur";
+let impactFacing = "left";
+let impactRinging = "primary";
+let impactSilhouette = true;
+let leadTarget = "sjf-algfigur";
+let leadFacing = "left";
+let reticleTimer = 0;
+let reticleScene = null;
+let reticleNotice = "";
+let targetNotice = "";
+let targetEdit = "";
+let reticleState = {
+  id: "generic-mil-dot",
+  mag: 10,
+  fov: 22,
+  focal: "sfp",
+  cal: 10,
+  target: "sjf-algfigur",
+  rangeText: "100 m",
+  facing: "left",
+  ringing: "primary",
+  snap: 0.5,
+  tool: "line",
+  showHold: true,
+  showSilhouette: true,
+  draft: null,
+  lineStart: null,
+  page: "a4",
+};
 let chronoResult = null;
 let chronoForm = { shots: "", temperature: "15 C", label: "Chronograph", loadId: "", confirmSave: false, confirmMv: false };
 let recoilForm = null;
@@ -134,7 +163,7 @@ function shellHtml() {
   return `<div class="shell"><header class="top">
     <span class="brand">${esc(t("app-name"))}</span>
     <nav>
-      ${nav("solve")}${nav("card")}${nav("charts")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("settings")}
+      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("settings")}
     </nav>
     <div class="presets">
       ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
@@ -142,7 +171,7 @@ function shellHtml() {
     </div>
   </header>`;
   function nav(id) {
-    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", settings: "nav-settings" };
+    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", settings: "nav-settings" };
     const key = keys[id] || "nav-solve";
     return `<button type="button" data-page="${id}" class="${page === id ? "active" : ""}">${esc(t(key))}</button>`;
   }
@@ -178,6 +207,8 @@ function unitsPopover(includeApply = true) {
 function pageHtml() {
   if (page === "card") return cardHtml();
   if (page === "charts") return chartHtml();
+  if (page === "reticle") return reticleHtml();
+  if (page === "targets") return targetsHtml();
   if (page === "pbr") return pbrHtml();
   if (page === "truing") return truingHtml();
   if (page === "equipment") return equipmentHtml();
@@ -235,6 +266,18 @@ function solveHtml() {
         <label class="field">${esc(t("lead-reaction"))}
           <input id="reaction_s" value="${esc(moving.reaction || "0")}" inputmode="decimal" />
           <span class="hint">${esc(t("lead-reaction-note"))}</span>
+        </label>
+        <label class="field" title="${esc(t("lead-target-tip"))}">${esc(t("impact-target"))}
+          <select id="lead-target" title="${esc(t("lead-target-tip"))}">
+            <option value="">${esc(t("lead-target-none"))}</option>
+            ${targetOptions(leadTarget, ["sjf", "svsf"])}
+          </select>
+        </label>
+        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
+          <select id="lead-facing" title="${esc(t("facing-tip"))}">
+            <option value="left" ${leadFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+            <option value="right" ${leadFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+          </select>
         </label>
       </details>
     </section>
@@ -377,7 +420,8 @@ function leadHold() {
     <p class="clicks">${esc(t("tof"))} ${Number.isFinite(tof) ? tof.toFixed(3) : "—"} s · ${esc(t("lead-impact"))} ${impactRange}</p>
     <p class="clicks">${esc(t("lead-combined"))} ${esc(lead.combined.direction)} ${esc(lead.combined.primary)}</p>
     ${along}
-    <p class="meta">${esc(lead.outline || t("lead-outline"))} ${esc(lead.reaction_note || "")}</p>
+    <p class="meta">${esc(lead.target && lead.target.id ? t("lead-outline-drawn") : t("lead-outline"))} ${esc(lead.reaction_note || "")}</p>
+    <div id="lead-face"></div>
   </div>`;
 }
 
@@ -480,11 +524,23 @@ function chartHtml() {
     <div class="fields noprint">
       <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
         <select id="impact-target" title="${esc(t("impact-target-tip"))}">
-          <option value="moose">${esc(t("rings-moose"))}</option>
-          <option value="roe">${esc(t("rings-roe"))}</option>
-          <option value="custom">${esc(t("impact-custom"))}</option>
+          ${targetOptions(impactTarget)}
+          <option value="custom" ${impactTarget === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
         </select>
       </label>
+      <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
+        <select id="impact-facing" title="${esc(t("facing-tip"))}">
+          <option value="left" ${impactFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+          <option value="right" ${impactFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+        </select>
+      </label>
+      <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
+        <select id="impact-ringing" title="${esc(t("ringing-tip"))}">
+          <option value="primary" ${impactRinging === "primary" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
+          <option value="alt" ${impactRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
+        </select>
+      </label>
+      <label title="${esc(t("silhouette-tip"))}"><input id="impact-silhouette" type="checkbox" ${impactSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
       <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length")}</span>
       <span title="${esc(t("impact-mv-tip"))}">${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}</span>
       <span title="${esc(t("impact-error-tip"))}">${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}</span>
@@ -704,6 +760,8 @@ function bindPage() {
   if (page === "solve") bindSolve();
   if (page === "card") bindCard();
   if (page === "charts") bindChart();
+  if (page === "reticle") bindReticle();
+  if (page === "targets") bindTargets();
   if (page === "pbr") bindPbr();
   if (page === "truing") bindTruing();
   if (page === "equipment") bindEquipment();
@@ -760,8 +818,21 @@ function bindSolve() {
       scheduleSolve(80);
     });
   });
+  const leadPick = document.getElementById("lead-target");
+  if (leadPick) leadPick.addEventListener("change", () => {
+    leadTarget = leadPick.value;
+    moving.open = true;
+    scheduleSolve(0);
+  });
+  const leadFace = document.getElementById("lead-facing");
+  if (leadFace) leadFace.addEventListener("change", () => {
+    leadFacing = leadFace.value;
+    moving.open = true;
+    scheduleSolve(0);
+  });
   const details = document.getElementById("lead-box");
   if (details) details.addEventListener("toggle", () => { moving.open = details.open; });
+  paintLeadFace();
 }
 
 function needsExtra() {
@@ -877,10 +948,33 @@ function bindChart() {
   document.getElementById("chart-csv").addEventListener("click", () => {
     if (chartData) downloadText("holdover-chart.csv", chartCsv(), "text/csv");
   });
-  const drawImpact = document.getElementById("impact-draw");
-  if (drawImpact) drawImpact.addEventListener("click", () => {
+  const redrawImpact = () => {
     const ids = [...document.querySelectorAll(".overlay:checked")].map((box) => box.value).slice(0, 6);
     buildImpact(ids);
+  };
+  const drawImpact = document.getElementById("impact-draw");
+  if (drawImpact) drawImpact.addEventListener("click", redrawImpact);
+  const onImpactControl = (id, node) => {
+    if (id === "impact-target") impactTarget = node.value;
+    if (id === "impact-facing") impactFacing = node.value;
+    if (id === "impact-ringing") impactRinging = node.value;
+    redrawImpact();
+  };
+  ["impact-target", "impact-facing", "impact-ringing"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener("change", () => onImpactControl(id, node));
+  });
+  const brackets = document.getElementById("impact-brackets");
+  if (brackets) brackets.addEventListener("input", () => redrawImpact());
+  const silhouette = document.getElementById("impact-silhouette");
+  if (silhouette) silhouette.addEventListener("change", () => {
+    impactSilhouette = silhouette.checked;
+    redrawImpact();
+  });
+  ["impact-range", "mv_sd", "range_error", "impact-zone"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("input", () => redrawImpact());
   });
   const host = document.getElementById("chart-body");
   if (window.ResizeObserver) {
@@ -1285,6 +1379,8 @@ function cycleChip(chip) {
   if (Number.isFinite(si)) {
     input.dataset.si = String(si);
     input.value = formatLocal(si, input.dataset.dim, next);
+    input.dataset.text = input.value;
+    input.dataset.dirty = "1";
   }
   if (input.id === "target_speed") {
     moving.speedUnit = next;
@@ -1292,6 +1388,12 @@ function cycleChip(chip) {
   }
   showPreview(input);
   if (page === "solve") scheduleSolve(0);
+  if (page === "reticle") scheduleReticle();
+  if (page === "charts") {
+    const ids = [...document.querySelectorAll(".overlay:checked")].map((box) => box.value).slice(0, 6);
+    buildImpact(ids);
+  }
+  if (page === "targets") paintTarget();
 }
 
 function showPreview(input) {
@@ -1352,6 +1454,8 @@ function solveBody() {
     target_speed: liveTargetSpeed(),
     target_direction: liveTargetDirection(),
     reaction_s: liveReaction(),
+    lead_target: leadTarget,
+    facing: leadFacing,
     angular: s.angular || "mrad",
     range_step: storedQuantity(s.range_step || "10 m", units().length),
     wind_step: storedQuantity(s.wind_step || "1 mps", units().velocity),
@@ -1416,6 +1520,7 @@ async function runSolve() {
     solveError = "";
     hold.classList.remove("stale");
     hold.innerHTML = holdInner();
+    paintLeadFace();
     error.textContent = "";
     const differs = document.getElementById("differs");
     if (differs) differs.classList.toggle("hidden", !lastSolve.current_differs);
@@ -1590,6 +1695,8 @@ function fillPalette() {
     ["solve", t("nav-solve")],
     ["card", t("nav-card")],
     ["charts", t("nav-charts")],
+    ["reticle", t("nav-reticle")],
+    ["targets", t("nav-targets")],
     ["pbr", t("nav-pbr")],
     ["truing", t("nav-truing")],
     ["equipment", t("nav-equipment")],
@@ -1700,6 +1807,9 @@ async function buildImpact(ids) {
     body.profile_ids = ids;
     body.range = qtyPayload("impact-range") || body.range;
     body.target = document.getElementById("impact-target").value;
+    body.facing = (document.getElementById("impact-facing") || {}).value || impactFacing;
+    impactTarget = body.target;
+    impactFacing = body.facing;
     body.mv_sd = qtyPayload("mv_sd");
     body.range_error = qtyPayload("range_error");
     body.brackets = document.getElementById("impact-brackets").value;
@@ -1712,79 +1822,24 @@ async function buildImpact(ids) {
 }
 
 function impactView(data) {
-  const rings = (data.rings_cm || []).map(Number).filter((value) => Number.isFinite(value) && value > 0);
+  const spec = data.geometry && data.geometry.paths ? data.geometry : {
+    rings: (data.rings_cm || []).map((diameter) => ({ diameter_cm: diameter, label_primary: "", verified: true })),
+    paths: [],
+    flags: [],
+  };
   const pois = data.pois || [];
-  let half = Math.max(8, ...rings.map((diameter) => diameter / 2), 8);
-  pois.forEach((poi) => {
-    half = Math.max(half, Math.abs(Number(poi.path_cm) || 0) + 4, Math.abs(Number(poi.windage_cm) || 0) + 4);
-    half = Math.max(half, Math.abs(Number(poi.wind_left_cm) || 0) + 4, Math.abs(Number(poi.wind_right_cm) || 0) + 4);
-    (poi.brackets || []).forEach((item) => {
-      half = Math.max(half, Math.abs(Number(item.windage_cm) || 0) + 4);
-    });
+  const picture = faceSvg(spec, {
+    pois,
+    ringing: impactRinging,
+    showSilhouette: impactSilhouette,
+    label: t("impact-title"),
   });
-  if (!Number.isFinite(half) || half > 400) half = 400;
-  const width = 1100;
-  const height = 1100;
-  const pad = 96;
-  const plot = width - pad * 2;
-  const scale = plot / (half * 2);
-  const cx = width / 2;
-  const cy = height / 2 - 16;
-  const ink = "var(--text)";
-  const axis = "var(--text-secondary)";
-  const px = (cmX, cmY) => [cx + cmX * scale, cy - cmY * scale];
-  const circles = rings.map((diameter) => {
-    const radius = diameter / 2 * scale;
-    return `<circle class="ring" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${radius.toFixed(1)}" fill="none" stroke="${axis}" stroke-width="2" />
-      <text class="tick" fill="${ink}" x="${(cx + radius + 8).toFixed(1)}" y="${(cy + 6).toFixed(1)}">${esc(String(diameter))} cm</text>`;
-  }).join("");
-  const marks = pois.map((poi, index) => {
-    const [x, y] = px(Number(poi.windage_cm) || 0, Number(poi.path_cm) || 0);
-    const color = `var(--chart-${index % 6})`;
-    const low = px(Number(poi.windage_cm) || 0, Number(poi.mv_low_cm));
-    const high = px(Number(poi.windage_cm) || 0, Number(poi.mv_high_cm));
-    const left = px(Number(poi.wind_left_cm) || 0, Number(poi.path_cm) || 0);
-    const right = px(Number(poi.wind_right_cm) || 0, Number(poi.path_cm) || 0);
-    const rangeLow = px(Number(poi.windage_cm) || 0, Number(poi.range_low_cm));
-    const rangeHigh = px(Number(poi.windage_cm) || 0, Number(poi.range_high_cm));
-    const brackets = (poi.brackets || []).map((item) => {
-      const [bx, by] = px(Number(item.windage_cm) || 0, Number(poi.path_cm) || 0);
-      return `<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="10" fill="none" stroke="${color}" stroke-width="2" />
-        <text class="tick" fill="${ink}" x="${(bx + 14).toFixed(1)}" y="${(by - 10).toFixed(1)}">${esc(item.label || "")}</text>`;
-    }).join("");
-    return `<line class="spread" stroke="${color}" stroke-width="2" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${low[1].toFixed(1)}" y2="${high[1].toFixed(1)}" />
-      <line class="spread" stroke="${color}" stroke-width="2" x1="${left[0].toFixed(1)}" x2="${right[0].toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />
-      <line class="spread" stroke="${color}" stroke-width="2" x1="${(x - 12).toFixed(1)}" x2="${(x + 12).toFixed(1)}" y1="${rangeLow[1].toFixed(1)}" y2="${rangeLow[1].toFixed(1)}" />
-      <line class="spread" stroke="${color}" stroke-width="2" x1="${(x - 12).toFixed(1)}" x2="${(x + 12).toFixed(1)}" y1="${rangeHigh[1].toFixed(1)}" y2="${rangeHigh[1].toFixed(1)}" />
-      ${brackets}
-      <circle class="poi" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${color}" stroke="none" />`;
-  }).join("");
-  const step = half > 40 ? 10 : 5;
-  let ticks = "";
-  const firstTick = Math.ceil(-half / step) * step;
-  for (let cm = firstTick; cm <= half; cm += step) {
-    const [x] = px(cm, 0);
-    const [, y] = px(0, cm);
-    ticks += `<line class="tick-mark" stroke="${axis}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(cy - 8).toFixed(1)}" y2="${(cy + 8).toFixed(1)}" />
-      <text class="tick" fill="${ink}" x="${x.toFixed(1)}" y="${(cy + 28).toFixed(1)}" text-anchor="middle">${cm}</text>
-      <line class="tick-mark" stroke="${axis}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" x1="${(cx - 8).toFixed(1)}" x2="${(cx + 8).toFixed(1)}" />`;
-  }
-  const [bar0, bar1] = [px(-5, 0), px(5, 0)];
-  const badge = data.placeholder ? `<p class="badge">${esc(t("impact-placeholder"))}</p>` : "";
-  return `${badge}
-    <p class="hint">${esc(data.note || "")}</p>
+  const badges = flagHtml(spec.flags);
+  const hint = data.target === "custom" ? t("impact-custom-note") : (spec.subtitle || data.note || "");
+  return `${badges}
+    <p class="hint">${esc(hint)}</p>
     <p class="axis-title">${esc(t("impact-scale"))}</p>
-    <svg class="impact" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("impact-title"))}">
-      <rect width="${width}" height="${height}" fill="var(--background)" />
-      <line class="zero" stroke="${axis}" x1="${pad}" x2="${width - pad}" y1="${cy.toFixed(1)}" y2="${cy.toFixed(1)}" />
-      <line class="zero" stroke="${axis}" y1="${pad}" y2="${height - pad}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" />
-      ${ticks}
-      <text class="tick" fill="${ink}" x="${(width - pad).toFixed(1)}" y="${(cy - 12).toFixed(1)}" text-anchor="end">${esc(t("chart-wind-sign"))}</text>
-      <text class="tick" fill="${ink}" x="${(cx + 12).toFixed(1)}" y="${(pad + 8).toFixed(1)}">${esc(t("chart-above-los"))}</text>
-      ${circles}${marks}
-      <line class="zero" stroke="${axis}" stroke-width="3" x1="${bar0[0].toFixed(1)}" x2="${bar1[0].toFixed(1)}" y1="${(height - 48).toFixed(1)}" y2="${(height - 48).toFixed(1)}" />
-      <text class="tick" fill="${ink}" x="${cx.toFixed(1)}" y="${(height - 22).toFixed(1)}" text-anchor="middle">10 cm</text>
-    </svg>
+    ${picture}
     <p class="legend">${pois.map((poi, index) => `<span><i class="swatch swatch-${index % 6}"></i>${esc(poi.label)} · ${esc(t("impact-poi"))}</span>`).join("")}</p>
     <p class="hint">${esc(t("impact-bars"))}</p>
     <div class="row">
@@ -2533,6 +2588,953 @@ async function runRecoil() {
     if (host) host.innerHTML = recoilHtml().includes("unused") ? "" : `<p>${esc(t("recoil-velocity"))} ${esc(recoilResult.velocity_display)} ${esc(recoilResult.velocity_unit)} · ${esc(t("energy"))} ${esc(recoilResult.energy_display)} ${esc(recoilResult.energy_unit)}</p><p>${esc(recoilResult.convention || "")}</p>${recoilResult.reduction_is_estimate ? `<p class="hint">${esc(t("recoil-estimate"))}</p>` : ""}`;
   } catch (error) {
     if (msg) msg.textContent = String(error);
+  }
+}
+
+function targetOptions(selected, families) {
+  const library = (boot.targets && boot.targets.library) || [];
+  const saved = (boot.equipment && boot.equipment.targets) || [];
+  const seen = new Set();
+  return library.concat(saved).filter((item) => {
+    if (!item || seen.has(item.id)) return false;
+    if (families && !families.includes(item.family)) return false;
+    seen.add(item.id);
+    return true;
+  }).map((item) => `<option value="${esc(item.id)}" ${item.id === selected ? "selected" : ""}>${esc(item.name)} — ${esc(item.subtitle || "")}</option>`).join("");
+}
+
+function libraryTarget(id) {
+  const saved = ((boot.equipment && boot.equipment.targets) || []).find((item) => item.id === id);
+  if (saved) return saved;
+  return ((boot.targets && boot.targets.library) || []).find((item) => item.id === id) || null;
+}
+
+function flagHtml(flags) {
+  return (flags || []).map((flag) => {
+    const kind = t("badge-" + (flag.kind || "placeholder"));
+    const detail = t(flag.detail || ("flag-" + flag.code));
+    return `<p class="badge badge-${esc(flag.kind || "placeholder")}">${esc(kind)} · ${esc(flag.code || "")} · ${esc(detail)}</p>`;
+  }).join("");
+}
+
+function lengthLabelFromCm(cm) {
+  const unit = units().small || "cm";
+  return `${formatLocal(Number(cm) / 100, "length", unit)} ${unit}`;
+}
+
+function toCm(value, unit) {
+  const metres = toSi(Number(value), "length", unit || "cm");
+  return Number.isFinite(metres) ? metres * 100 : NaN;
+}
+
+function qtyToCm(id) {
+  const payload = qtyPayload(id);
+  if (!payload) return null;
+  const parsed = parseLocal(payload.text, "length", payload.unit);
+  if (!parsed || !Number.isFinite(parsed.si)) return null;
+  return parsed.si * 100;
+}
+
+function faceSvg(spec, opts) {
+  const options = opts || {};
+  const showSilhouette = options.showSilhouette !== false;
+  const rings = (spec.rings || []).filter((ring) => Number(ring.diameter_cm) > 0);
+  const paths = (spec.paths || []).filter((path) => showSilhouette || path.role !== "silhouette");
+  const pois = options.pois || [];
+  let half = 8;
+  rings.forEach((ring) => { half = Math.max(half, Number(ring.diameter_cm) / 2); });
+  paths.forEach((path) => (path.points || []).forEach((point) => {
+    half = Math.max(half, Math.abs(Number(point[0]) || 0), Math.abs(Number(point[1]) || 0));
+  }));
+  if (spec.width_cm) half = Math.max(half, Number(spec.width_cm) / 2, Number(spec.height_cm) / 2);
+  pois.forEach((poi) => {
+    half = Math.max(half, Math.abs(Number(poi.path_cm) || 0) + 4, Math.abs(Number(poi.windage_cm) || 0) + 4);
+    half = Math.max(half, Math.abs(Number(poi.wind_left_cm) || 0) + 4, Math.abs(Number(poi.wind_right_cm) || 0) + 4);
+  });
+  if (options.markCm) half = Math.max(half, Math.abs(options.markCm.x) + 2, Math.abs(options.markCm.y) + 2);
+  if (!Number.isFinite(half) || half > 800) half = 800;
+  const size = 1100;
+  const pad = 80;
+  const scale = (size - pad * 2) / (half * 2);
+  const cx = size / 2;
+  const cy = size / 2;
+  const px = (x, y) => [cx + x * scale, cy - y * scale];
+  const ink = "var(--text)";
+  const axis = "var(--text-secondary)";
+  let body = "";
+  if (spec.cell_cm && spec.width_cm && spec.height_cm) {
+    const cell = Number(spec.cell_cm);
+    const w = Number(spec.width_cm) / 2;
+    const h = Number(spec.height_cm) / 2;
+    for (let x = -w; x <= w + 1e-6; x += cell) {
+      const [x1, y1] = px(x, -h);
+      const [x2, y2] = px(x, h);
+      body += `<line stroke="var(--border)" stroke-width="1" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" />`;
+    }
+    for (let y = -h; y <= h + 1e-6; y += cell) {
+      const [x1, y1] = px(-w, y);
+      const [x2, y2] = px(w, y);
+      body += `<line stroke="var(--border)" stroke-width="1" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" />`;
+    }
+  }
+  paths.forEach((path) => {
+    const points = path.points || [];
+    if (!points.length) return;
+    const dashed = path.placeholder ? 'stroke-dasharray="8 5"' : "";
+    const stroke = path.placeholder ? "var(--warning)" : ink;
+    if (path.closed === false) {
+      let d = "";
+      for (let i = 0; i + 1 < points.length; i += 2) {
+        const a = px(Number(points[i][0]), Number(points[i][1]));
+        const b = px(Number(points[i + 1][0]), Number(points[i + 1][1]));
+        d += `M ${a[0].toFixed(1)} ${a[1].toFixed(1)} L ${b[0].toFixed(1)} ${b[1].toFixed(1)} `;
+      }
+      body += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="2" ${dashed} />`;
+      return;
+    }
+    const d = points.map((point, index) => {
+      const at = px(Number(point[0]), Number(point[1]));
+      return `${index === 0 ? "M" : "L"} ${at[0].toFixed(1)} ${at[1].toFixed(1)}`;
+    }).join(" ") + " Z";
+    body += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="2.5" ${dashed} />`;
+  });
+  rings.forEach((ring) => {
+    const radius = Number(ring.diameter_cm) / 2 * scale;
+    const alt = options.ringing === "alt" && ring.label_alt;
+    const label = alt || ring.label_primary || lengthLabelFromCm(ring.diameter_cm);
+    const stroke = ring.verified === false ? axis : ink;
+    const dash = ring.verified === false ? 'stroke-dasharray="6 4"' : "";
+    const [lx, ly] = ringLabelPoint(px, Number(ring.diameter_cm) / 2, options.ringing);
+    body += `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${radius.toFixed(1)}" fill="none" stroke="${stroke}" stroke-width="2" ${dash} />
+      <text fill="${ink}" x="${(lx + 8).toFixed(1)}" y="${(ly - 6).toFixed(1)}">${esc(label)}</text>`;
+  });
+  if (!rings.length && !paths.length) {
+    body += `<text fill="${ink}" x="${cx.toFixed(1)}" y="${cy.toFixed(1)}" text-anchor="middle">${esc(t("target-no-size"))}</text>`;
+  }
+  pois.forEach((poi, index) => {
+    const color = `var(--chart-${index % 6})`;
+    const [x, y] = px(Number(poi.windage_cm) || 0, Number(poi.path_cm) || 0);
+    const low = px(Number(poi.windage_cm) || 0, Number(poi.mv_low_cm));
+    const high = px(Number(poi.windage_cm) || 0, Number(poi.mv_high_cm));
+    const left = px(Number(poi.wind_left_cm) || 0, Number(poi.path_cm) || 0);
+    const right = px(Number(poi.wind_right_cm) || 0, Number(poi.path_cm) || 0);
+    body += `<line stroke="${color}" stroke-width="2" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${low[1].toFixed(1)}" y2="${high[1].toFixed(1)}" />
+      <line stroke="${color}" stroke-width="2" x1="${left[0].toFixed(1)}" x2="${right[0].toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />
+      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7" fill="${color}" />`;
+    (poi.brackets || []).forEach((item) => {
+      const at = px(Number(item.windage_cm) || 0, Number(poi.path_cm) || 0);
+      body += `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="10" fill="none" stroke="${color}" stroke-width="2" />
+        <text fill="${ink}" x="${(at[0] + 12).toFixed(1)}" y="${(at[1] - 8).toFixed(1)}">${esc(item.label || "")}</text>`;
+    });
+  });
+  if (options.markCm) {
+    const at = px(options.markCm.x, options.markCm.y);
+    body += `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="8" fill="var(--accent)" />
+      <text fill="${ink}" x="${(at[0] + 12).toFixed(1)}" y="${(at[1] - 10).toFixed(1)}">${esc(t("lead"))}</text>`;
+  }
+  const barCm = half > 30 ? 10 : 5;
+  const bar0 = px(-barCm / 2, 0);
+  const bar1 = px(barCm / 2, 0);
+  const step = half > 80 ? 20 : half > 40 ? 10 : 5;
+  let ticks = "";
+  for (let cm = Math.ceil(-half / step) * step; cm <= half; cm += step) {
+    const [x] = px(cm, 0);
+    ticks += `<line stroke="${axis}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(cy - 6).toFixed(1)}" y2="${(cy + 6).toFixed(1)}" />
+      <text fill="${ink}" x="${x.toFixed(1)}" y="${(cy + 24).toFixed(1)}" text-anchor="middle">${esc(lengthLabelFromCm(cm))}</text>`;
+  }
+  return `<svg class="target-face" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(options.label || spec.name || t("nav-targets"))}">
+    <rect width="${size}" height="${size}" fill="var(--background)" />
+    <line stroke="${axis}" x1="${pad}" x2="${size - pad}" y1="${cy}" y2="${cy}" />
+    <line stroke="${axis}" x1="${cx}" x2="${cx}" y1="${pad}" y2="${size - pad}" />
+    ${ticks}${body}
+    <line stroke="${ink}" stroke-width="3" x1="${bar0[0].toFixed(1)}" x2="${bar1[0].toFixed(1)}" y1="${(size - 36).toFixed(1)}" y2="${(size - 36).toFixed(1)}" />
+    <text fill="${ink}" x="${cx}" y="${(size - 16).toFixed(1)}" text-anchor="middle">${esc(lengthLabelFromCm(barCm))}</text>
+  </svg>`;
+}
+
+function ringLabelPoint(px, radiusCm, ringing) {
+  if (ringing === "alt") return px(radiusCm, 0);
+  const diagonal = radiusCm * Math.SQRT1_2;
+  return px(diagonal, diagonal);
+}
+
+function paintLeadFace() {
+  const host = document.getElementById("lead-face");
+  if (!host) return;
+  if (!leadTarget) {
+    host.innerHTML = "";
+    return;
+  }
+  const solved = lastSolve && lastSolve.lead && lastSolve.lead.target;
+  let spec = (solved && solved.id) ? solved : libraryTarget(leadTarget);
+  if (!spec) {
+    host.innerHTML = "";
+    return;
+  }
+  if (!(solved && solved.id) && leadFacing === "right") {
+    spec = JSON.parse(JSON.stringify(spec));
+    (spec.paths || []).forEach((path) => (path.points || []).forEach((point) => { point[0] = -point[0]; }));
+  }
+  const lead = lastSolve && lastSolve.lead;
+  const cm = lead ? Number(lead.cm) : NaN;
+  host.innerHTML = flagHtml(spec.flags) + faceSvg(spec, {
+    showSilhouette: true,
+    ringing: "primary",
+    markCm: Number.isFinite(cm) ? { x: cm, y: 0 } : null,
+    label: spec.name,
+  });
+}
+
+function reticleChoices() {
+  const saved = (boot.equipment && boot.equipment.reticles) || [];
+  const rows = (boot.reticles || []).concat(saved);
+  return rows.map((item) => `<option value="${esc(item.id)}" ${item.id === reticleState.id ? "selected" : ""}>${esc(item.name)}</option>`).join("");
+}
+
+function reticleHtml() {
+  return `<section class="panel">
+    <h2>${esc(t("reticle-title"))}</h2>
+    <p class="hint">${esc(t("reticle-intro"))}</p>
+    <div class="fields">
+      <label class="field" title="${esc(t("reticle-pick-tip"))}">${esc(t("reticle-pick"))}
+        <select id="reticle-pick" title="${esc(t("reticle-pick-tip"))}">${reticleChoices()}</select>
+      </label>
+      <label class="field" title="${esc(t("reticle-mag-tip"))}">${esc(t("reticle-mag"))}
+        <input id="reticle-mag" value="${esc(reticleState.mag)}" inputmode="decimal" title="${esc(t("reticle-mag-tip"))}" />
+      </label>
+      <div class="row">
+        ${[5, 10, 20].map((mag) => `<button type="button" data-mag="${mag}" title="${esc(t("reticle-mag-check"))}">${mag}×</button>`).join("")}
+      </div>
+      <label class="field" title="${esc(t("reticle-fov-tip"))}">${esc(t("reticle-fov"))}
+        <input id="reticle-fov" value="${esc(reticleState.fov)}" inputmode="decimal" title="${esc(t("reticle-fov-tip"))}" />
+      </label>
+      <label class="field" title="${esc(t("reticle-focal-tip"))}">${esc(t("reticle-focal"))}
+        <select id="reticle-focal" title="${esc(t("reticle-focal-tip"))}">
+          <option value="ffp" ${reticleState.focal === "ffp" ? "selected" : ""}>${esc(t("focal-ffp"))}</option>
+          <option value="sfp" ${reticleState.focal === "sfp" ? "selected" : ""}>${esc(t("focal-sfp"))}</option>
+        </select>
+      </label>
+      <label class="field" title="${esc(t("reticle-cal-tip"))}">${esc(t("reticle-cal"))}
+        <input id="reticle-cal" value="${esc(reticleState.cal)}" inputmode="decimal" title="${esc(t("reticle-cal-tip"))}" />
+      </label>
+      <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
+        <select id="reticle-target" title="${esc(t("impact-target-tip"))}">
+          <option value="">${esc(t("reticle-no-target"))}</option>
+          ${targetOptions(reticleState.target)}
+        </select>
+      </label>
+      <span title="${esc(t("reticle-range-tip"))}">${qtyField("reticle-range", t("range"), reticleState.rangeText, units().length, "length")}</span>
+      <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
+        <select id="reticle-facing" title="${esc(t("facing-tip"))}">
+          <option value="left" ${reticleState.facing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+          <option value="right" ${reticleState.facing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+        </select>
+      </label>
+      <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
+        <select id="reticle-ringing" title="${esc(t("ringing-tip"))}">
+          <option value="primary" ${reticleState.ringing !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
+          <option value="alt" ${reticleState.ringing === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
+        </select>
+      </label>
+      <label title="${esc(t("reticle-hold-tip"))}"><input id="reticle-hold" type="checkbox" ${reticleState.showHold ? "checked" : ""} /> ${esc(t("reticle-hold"))}</label>
+      <label title="${esc(t("silhouette-tip"))}"><input id="reticle-silhouette" type="checkbox" ${reticleState.showSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+    </div>
+    <p id="reticle-readout" class="hint"></p>
+    <p id="reticle-warn" class="badge hidden"></p>
+    <div id="reticle-flags"></div>
+    <div id="reticle-face"></div>
+    <h3>${esc(t("editor-title"))}</h3>
+    <p class="hint">${esc(t("editor-intro"))}</p>
+    <div class="fields">
+      <label class="field" title="${esc(t("editor-name-tip"))}">${esc(t("editor-name"))}
+        <input id="reticle-name" title="${esc(t("editor-name-tip"))}" />
+      </label>
+      <label class="field" title="${esc(t("editor-tool-tip"))}">${esc(t("editor-tool"))}
+        <select id="reticle-tool" title="${esc(t("editor-tool-tip"))}">
+          ${["line", "hash", "dot", "circle", "text"].map((tool) => `<option value="${tool}" ${reticleState.tool === tool ? "selected" : ""}>${esc(t("tool-" + tool))}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field" title="${esc(t("editor-text-tip"))}">${esc(t("editor-text"))}
+        <input id="reticle-text" value="1" title="${esc(t("editor-text-tip"))}" />
+      </label>
+      <label class="field" title="${esc(t("editor-snap-tip"))}">${esc(t("editor-snap"))}
+        <input id="reticle-snap" value="${esc(reticleState.snap)}" inputmode="decimal" title="${esc(t("editor-snap-tip"))}" />
+      </label>
+      <label class="field" title="${esc(t("editor-repeat-tip"))}">${esc(t("editor-repeat"))}
+        <input id="reticle-copies" value="3" inputmode="decimal" title="${esc(t("editor-repeat-tip"))}" />
+      </label>
+      <label class="field" title="${esc(t("editor-dx-tip"))}">${esc(t("editor-dx"))}
+        <input id="reticle-dx" value="1" inputmode="decimal" title="${esc(t("editor-dx-tip"))}" />
+      </label>
+      <label class="field" title="${esc(t("editor-dy-tip"))}">${esc(t("editor-dy"))}
+        <input id="reticle-dy" value="0" inputmode="decimal" title="${esc(t("editor-dy-tip"))}" />
+      </label>
+    </div>
+    <div class="row">
+      <button type="button" id="reticle-mirror-x" title="${esc(t("editor-mirror-x-tip"))}">${esc(t("editor-mirror-x"))}</button>
+      <button type="button" id="reticle-mirror-y" title="${esc(t("editor-mirror-y-tip"))}">${esc(t("editor-mirror-y"))}</button>
+      <button type="button" id="reticle-repeat" title="${esc(t("editor-repeat-tip"))}">${esc(t("editor-repeat-apply"))}</button>
+      <button type="button" id="reticle-undo" title="${esc(t("editor-undo-tip"))}">${esc(t("editor-undo"))}</button>
+      <button type="button" id="reticle-save" title="${esc(t("editor-save-tip"))}">${esc(t("editor-save"))}</button>
+      <button type="button" id="reticle-export" title="${esc(t("editor-export-tip"))}">${esc(t("editor-export"))}</button>
+      <label class="field" title="${esc(t("editor-import-tip"))}">${esc(t("editor-import"))}<input id="reticle-import" type="file" accept="application/json,.json" title="${esc(t("editor-import-tip"))}" /></label>
+    </div>
+    <p id="reticle-notice" class="hint">${esc(reticleNotice)}</p>
+    <p class="hint">${esc(t("reticle-pdf-note"))}</p>
+  </section>`;
+}
+
+function ensureDraft() {
+  if (reticleState.draft && reticleState.draft._picked === reticleState.id) return;
+  const rows = (boot.reticles || []).concat((boot.equipment && boot.equipment.reticles) || []);
+  const found = rows.find((item) => item.id === reticleState.id);
+  const draft = found ? JSON.parse(JSON.stringify(found)) : {
+    format: "holdover-reticle", version: 1, id: "", name: t("editor-new-name"),
+    focal_plane: "ffp", unit: units().angle === "MOA" ? "MOA" : "mrad", calibrated_magnification: 10,
+    licence: "user-drawn", source: "User drawn in Holdover.", elements: [],
+  };
+  draft._picked = reticleState.id;
+  draft.elements = draft.elements || [];
+  reticleState.draft = draft;
+  reticleState.lineStart = null;
+}
+
+function bindReticle() {
+  ensureDraft();
+  const name = document.getElementById("reticle-name");
+  if (name && reticleState.draft) name.value = reticleState.draft.name || "";
+  const read = (id, assign) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener("input", () => { assign(node); scheduleReticle(); });
+  };
+  read("reticle-mag", (node) => { reticleState.mag = Number(node.value) || reticleState.mag; });
+  read("reticle-fov", (node) => { reticleState.fov = Number(node.value) || reticleState.fov; });
+  read("reticle-cal", (node) => { reticleState.cal = Number(node.value) || reticleState.cal; });
+  read("reticle-range", (node) => { reticleState.rangeText = node.value; node.dataset.dirty = "1"; });
+  read("reticle-snap", (node) => { reticleState.snap = Number(node.value) || 0; });
+  read("reticle-name", (node) => { if (reticleState.draft) reticleState.draft.name = node.value; });
+  ["reticle-pick", "reticle-focal", "reticle-target", "reticle-facing", "reticle-ringing", "reticle-tool"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener("change", () => {
+      if (id === "reticle-pick") { reticleState.id = node.value; reticleState.draft = null; ensureDraft(); if (name) name.value = reticleState.draft.name || ""; }
+      if (id === "reticle-focal") reticleState.focal = node.value;
+      if (id === "reticle-target") reticleState.target = node.value;
+      if (id === "reticle-facing") reticleState.facing = node.value;
+      if (id === "reticle-ringing") reticleState.ringing = node.value;
+      if (id === "reticle-tool") reticleState.tool = node.value;
+      scheduleReticle();
+    });
+  });
+  document.querySelectorAll("[data-mag]").forEach((button) => button.addEventListener("click", () => {
+    reticleState.mag = Number(button.dataset.mag);
+    const input = document.getElementById("reticle-mag");
+    if (input) input.value = String(reticleState.mag);
+    scheduleReticle();
+  }));
+  const hold = document.getElementById("reticle-hold");
+  if (hold) hold.addEventListener("change", () => { reticleState.showHold = hold.checked; scheduleReticle(); });
+  const silhouette = document.getElementById("reticle-silhouette");
+  if (silhouette) silhouette.addEventListener("change", () => { reticleState.showSilhouette = silhouette.checked; scheduleReticle(); });
+  document.getElementById("reticle-mirror-x").addEventListener("click", () => { mirrorDraft("x"); scheduleReticle(); });
+  document.getElementById("reticle-mirror-y").addEventListener("click", () => { mirrorDraft("y"); scheduleReticle(); });
+  document.getElementById("reticle-repeat").addEventListener("click", () => { repeatDraft(); scheduleReticle(); });
+  document.getElementById("reticle-undo").addEventListener("click", () => {
+    if (reticleState.draft && reticleState.draft.elements.length) reticleState.draft.elements.pop();
+    scheduleReticle();
+  });
+  document.getElementById("reticle-save").addEventListener("click", saveReticle);
+  document.getElementById("reticle-export").addEventListener("click", () => {
+    ensureDraft();
+    downloadText("holdover-reticle.json", JSON.stringify(reticleState.draft, null, 2), "application/json");
+  });
+  document.getElementById("reticle-import").addEventListener("change", async (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text());
+      parsed._picked = reticleState.id;
+      reticleState.draft = parsed;
+      scheduleReticle();
+    } catch (error) {
+      reticleNotice = String(error);
+      const note = document.getElementById("reticle-notice");
+      if (note) note.textContent = reticleNotice;
+    }
+  });
+  scheduleReticle();
+}
+
+function scheduleReticle() {
+  window.clearTimeout(reticleTimer);
+  reticleTimer = window.setTimeout(drawReticle, 60);
+}
+
+function mirrorDraft(axis) {
+  ensureDraft();
+  const flip = (x, y) => axis === "x" ? [-x, y] : [x, -y];
+  reticleState.draft.elements = (reticleState.draft.elements || []).map((mark) => {
+    if (mark.kind === "line") {
+      const a = flip(mark.x1, mark.y1);
+      const b = flip(mark.x2, mark.y2);
+      return Object.assign({}, mark, { x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+    }
+    if (mark.kind === "polyline") {
+      return Object.assign({}, mark, { points: (mark.points || []).map((point) => flip(point[0], point[1])) });
+    }
+    if (mark.x !== undefined) {
+      const at = flip(mark.x, mark.y);
+      return Object.assign({}, mark, { x: at[0], y: at[1] });
+    }
+    return mark;
+  });
+}
+
+function repeatDraft() {
+  ensureDraft();
+  const copies = Math.max(1, Math.min(40, Number(document.getElementById("reticle-copies").value) || 1));
+  const dx = Number(document.getElementById("reticle-dx").value) || 0;
+  const dy = Number(document.getElementById("reticle-dy").value) || 0;
+  const base = reticleState.draft.elements.slice();
+  const out = [];
+  for (let index = 0; index < copies; index += 1) {
+    base.forEach((mark) => out.push(shiftMark(mark, dx * index, dy * index)));
+  }
+  reticleState.draft.elements = out;
+}
+
+function shiftMark(mark, dx, dy) {
+  const copy = Object.assign({}, mark);
+  if (copy.kind === "line") { copy.x1 += dx; copy.y1 += dy; copy.x2 += dx; copy.y2 += dy; }
+  else if (copy.kind === "polyline") copy.points = (copy.points || []).map((point) => [point[0] + dx, point[1] + dy]);
+  else if (copy.x !== undefined) { copy.x += dx; copy.y += dy; }
+  return copy;
+}
+
+async function saveReticle() {
+  ensureDraft();
+  const draft = JSON.parse(JSON.stringify(reticleState.draft));
+  delete draft._picked;
+  draft.licence = "user-drawn";
+  draft.source = draft.source || "User drawn in Holdover.";
+  const savedAlready = ((boot.equipment && boot.equipment.reticles) || []).some((item) => item.id === draft.id);
+  if (!savedAlready) draft.id = "";
+  try {
+    const saved = await call("reticle_save", { body: draft });
+    reticleNotice = t("editor-saved");
+    reticleState.id = saved.id;
+    reticleState.draft = null;
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    reticleNotice = String(error);
+    const note = document.getElementById("reticle-notice");
+    if (note) note.textContent = reticleNotice;
+  }
+}
+
+async function drawReticle() {
+  const host = document.getElementById("reticle-face");
+  if (!host || page !== "reticle") return;
+  ensureDraft();
+  const draft = JSON.parse(JSON.stringify(reticleState.draft));
+  delete draft._picked;
+  const range = qtyPayload("reticle-range") || { text: reticleState.rangeText || "100 m", unit: units().length };
+  const body = {
+    reticle: draft,
+    focal_plane: reticleState.focal,
+    calibrated_magnification: Number(reticleState.cal) || 10,
+    magnification: Number(reticleState.mag) || 10,
+    apparent_fov_deg: Number(reticleState.fov) || 22,
+    viewport_px: 1000,
+    range,
+    target_id: reticleState.target,
+    facing: reticleState.facing,
+    elevation_mrad: 0,
+    windage_mrad: 0,
+    lead_mrad: 0,
+  };
+  if (reticleState.showHold && lastSolve && lastSolve.elevation) {
+    body.elevation_mrad = Number(lastSolve.elevation.mrad) || 0;
+    body.windage_mrad = Number(lastSolve.windage.mrad) || 0;
+    if (lastSolve.lead && lastSolve.lead.lead) body.lead_mrad = Number(lastSolve.lead.lead.mrad) || 0;
+  }
+  try {
+    reticleScene = await call("reticle_scene", { body });
+    host.innerHTML = reticleSvg(reticleScene);
+    const readout = document.getElementById("reticle-readout");
+    if (readout) readout.textContent = reticleReadout(reticleScene);
+    const warn = document.getElementById("reticle-warn");
+    if (warn) {
+      warn.textContent = reticleScene.sfp_warning ? t("sfp-warning") : "";
+      warn.classList.toggle("hidden", !reticleScene.sfp_warning);
+    }
+    const flags = document.getElementById("reticle-flags");
+    if (flags) flags.innerHTML = reticleScene.target ? flagHtml(reticleScene.target.flags) : "";
+    const svg = host.querySelector("svg");
+    if (svg) svg.addEventListener("click", reticleClick);
+  } catch (error) {
+    host.innerHTML = `<p class="error">${esc(error)}</p>`;
+  }
+}
+
+function reticleReadout(scene) {
+  const one = Number(scene.nominal_one_true_mrad);
+  const unit = scene.unit || "mrad";
+  let text = `${t("reticle-scale")} ${one.toFixed(3)} mrad ${t("reticle-per")} 1 ${unit}. ${t("reticle-factor")} ${Number(scene.sfp_factor).toFixed(3)}.`;
+  const target = scene.target;
+  const ring = target && target.rings && target.rings[0];
+  if (ring && scene.cm_per_mrad) {
+    const px = Number(ring.diameter_cm) / Number(scene.cm_per_mrad) * Number(scene.px_per_mrad);
+    text += ` ${t("reticle-ring-px")} ${px.toFixed(1)} px.`;
+  }
+  return text;
+}
+
+function reticleSvg(scene) {
+  const size = Number(scene.viewport_px) || 1000;
+  const c = size / 2;
+  const px = (x, y) => [c + x * scene.px_per_mrad, c - y * scene.px_per_mrad];
+  const stepTrue = Math.abs(Number(scene.nominal_one_true_mrad) || 1) * (Number(reticleState.snap) || 1);
+  const stepPx = stepTrue * Number(scene.px_per_mrad);
+  let grid = "";
+  if (stepPx >= 12 && stepPx < size) {
+    for (let at = c; at < size; at += stepPx) {
+      grid += gridLine(at, c, size, true) + gridLine(size - (at - c), c, size, true);
+    }
+    for (let at = c; at < size; at += stepPx) {
+      grid += gridLine(at, c, size, false) + gridLine(size - (at - c), c, size, false);
+    }
+  }
+  let marks = "";
+  (scene.elements || []).forEach((mark) => { marks += markSvg(mark, px); });
+  let target = "";
+  if (scene.target) {
+    const aim = scene.aim_mrad || { x: 0, y: 0 };
+    const cm = Number(scene.cm_per_mrad) || 1;
+    const to = (x, y) => px(x / cm + aim.x, y / cm + aim.y);
+    target = targetMarks(scene.target, to, reticleState.ringing, reticleState.showSilhouette);
+  }
+  const centre = `<line stroke="var(--accent)" stroke-width="1.5" x1="${(c - 12).toFixed(1)}" x2="${(c + 12).toFixed(1)}" y1="${c}" y2="${c}" />
+    <line stroke="var(--accent)" stroke-width="1.5" y1="${(c - 12).toFixed(1)}" y2="${(c + 12).toFixed(1)}" x1="${c}" x2="${c}" />
+    <text fill="var(--text)" x="${(c + 14).toFixed(1)}" y="${(c - 8).toFixed(1)}">${esc(t(reticleState.showHold ? "reticle-hold-point" : "reticle-centre"))}</text>`;
+  const overlays = holdMarks(scene, px);
+  return `<svg class="reticle" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(t("reticle-title"))}">
+    <rect width="${size}" height="${size}" fill="var(--background)" />
+    ${grid}${target}${marks}${centre}${overlays}
+  </svg>`;
+}
+
+function holdMarks(scene, px) {
+  if (!reticleState.showHold) return "";
+  const bits = [];
+  const wind = Number(scene.windage_mrad) || 0;
+  const lead = Number(scene.lead_mrad) || 0;
+  if (Math.abs(wind) > 0.02) bits.push(overlayDot(px(wind, 0), "var(--chart-1)", t("reticle-wind-dot")));
+  if (Math.abs(lead) > 0.02) bits.push(overlayDot(px(lead, 0), "var(--chart-2)", t("reticle-lead-point")));
+  return bits.join("");
+}
+
+function overlayDot(at, color, label) {
+  return `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="6" fill="${color}" />
+    <text fill="var(--text)" x="${(at[0] + 10).toFixed(1)}" y="${(at[1] - 8).toFixed(1)}">${esc(label)}</text>`;
+}
+
+function gridLine(at, c, size, vertical) {
+  if (vertical) return `<line stroke="var(--border)" stroke-width="1" x1="${at.toFixed(1)}" x2="${at.toFixed(1)}" y1="0" y2="${size}" />`;
+  return `<line stroke="var(--border)" stroke-width="1" y1="${at.toFixed(1)}" y2="${at.toFixed(1)}" x1="0" x2="${size}" />`;
+}
+
+function markSvg(mark, px) {
+  const ink = "var(--text)";
+  if (mark.kind === "line") {
+    const a = px(mark.x1, mark.y1);
+    const b = px(mark.x2, mark.y2);
+    const width = Math.max(1, Math.min(8, Math.abs(mark.weight || 0.04) * (reticleScene.px_per_mrad || 20)));
+    return `<line stroke="${ink}" stroke-width="${width.toFixed(2)}" stroke-linecap="round" x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}" />`;
+  }
+  if (mark.kind === "hash") {
+    const angle = Number(mark.angle || 0) * Math.PI / 180;
+    const len = Number(mark.length || 0.2) / 2;
+    const a = px(mark.x - Math.cos(angle) * len, mark.y - Math.sin(angle) * len);
+    const b = px(mark.x + Math.cos(angle) * len, mark.y + Math.sin(angle) * len);
+    return `<line stroke="${ink}" stroke-width="1.5" x1="${a[0].toFixed(1)}" y1="${a[1].toFixed(1)}" x2="${b[0].toFixed(1)}" y2="${b[1].toFixed(1)}" />`;
+  }
+  if (mark.kind === "dot" || mark.kind === "circle") {
+    const at = px(mark.x, mark.y);
+    const radius = Math.max(1, Number(mark.diameter || 0.2) / 2 * (reticleScene.px_per_mrad || 20));
+    const fill = mark.kind === "dot" ? `fill="${ink}"` : `fill="none"`;
+    return `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="${radius.toFixed(1)}" ${fill} stroke="${ink}" stroke-width="1.5" />`;
+  }
+  if (mark.kind === "polyline") {
+    const d = (mark.points || []).map((point, index) => {
+      const at = px(point[0], point[1]);
+      return `${index === 0 ? "M" : "L"} ${at[0].toFixed(1)} ${at[1].toFixed(1)}`;
+    }).join(" ");
+    return `<path d="${d}${mark.closed ? " Z" : ""}" fill="none" stroke="${ink}" stroke-width="1.5" />`;
+  }
+  if (mark.kind === "text") {
+    const at = px(mark.x, mark.y);
+    return `<text fill="${ink}" x="${at[0].toFixed(1)}" y="${at[1].toFixed(1)}">${esc(mark.text || "")}</text>`;
+  }
+  return "";
+}
+
+function targetMarks(spec, to, ringing, showSilhouette) {
+  let body = "";
+  (spec.paths || []).forEach((path) => {
+    if (!showSilhouette && path.role === "silhouette") return;
+    const points = path.points || [];
+    if (!points.length) return;
+    const stroke = path.placeholder ? "var(--warning)" : "var(--text)";
+    const dash = path.placeholder ? 'stroke-dasharray="8 5"' : "";
+    if (path.closed === false) {
+      let d = "";
+      for (let i = 0; i + 1 < points.length; i += 2) {
+        const a = to(Number(points[i][0]), Number(points[i][1]));
+        const b = to(Number(points[i + 1][0]), Number(points[i + 1][1]));
+        d += `M ${a[0].toFixed(1)} ${a[1].toFixed(1)} L ${b[0].toFixed(1)} ${b[1].toFixed(1)} `;
+      }
+      body += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.5" ${dash} />`;
+      return;
+    }
+    const d = points.map((point, index) => {
+      const at = to(Number(point[0]), Number(point[1]));
+      return `${index === 0 ? "M" : "L"} ${at[0].toFixed(1)} ${at[1].toFixed(1)}`;
+    }).join(" ") + " Z";
+    body += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.75" ${dash} />`;
+  });
+  (spec.rings || []).forEach((ring) => {
+    const radius = Number(ring.diameter_cm) / 2;
+    const edge = ringing === "alt" ? to(radius, 0) : to(radius * Math.SQRT1_2, radius * Math.SQRT1_2);
+    const centre = to(0, 0);
+    const r = Math.abs(edge[0] - centre[0]);
+    const label = (ringing === "alt" && ring.label_alt) || ring.label_primary || "";
+    body += `<circle cx="${centre[0].toFixed(1)}" cy="${centre[1].toFixed(1)}" r="${r.toFixed(1)}" fill="none" stroke="var(--text)" stroke-width="1.5" />`;
+    if (label) body += `<text fill="var(--text)" x="${(edge[0] + 4).toFixed(1)}" y="${(edge[1] - 4).toFixed(1)}">${esc(label)}</text>`;
+  });
+  return body;
+}
+
+function reticleClick(event) {
+  if (!reticleScene || !reticleState.draft) return;
+  const svg = event.currentTarget;
+  const point = svgPoint(svg, event);
+  const c = Number(reticleScene.viewport_px) / 2;
+  const trueX = (point.x - c) / reticleScene.px_per_mrad;
+  const trueY = (c - point.y) / reticleScene.px_per_mrad;
+  const factor = Number(reticleScene.sfp_factor) || 1;
+  let x = trueX / factor;
+  let y = trueY / factor;
+  if (reticleScene.unit === "MOA") {
+    x = x * 10.8 / Math.PI;
+    y = y * 10.8 / Math.PI;
+  }
+  const step = Number(reticleState.snap) || 0;
+  if (step > 0) {
+    x = Math.round(x / step) * step;
+    y = Math.round(y / step) * step;
+  }
+  const tool = reticleState.tool;
+  if (tool === "line") {
+    if (!reticleState.lineStart) {
+      reticleState.lineStart = [x, y];
+      reticleNotice = t("editor-line-next");
+      const note = document.getElementById("reticle-notice");
+      if (note) note.textContent = reticleNotice;
+      return;
+    }
+    const start = reticleState.lineStart;
+    reticleState.lineStart = null;
+    reticleState.draft.elements.push({ kind: "line", x1: start[0], y1: start[1], x2: x, y2: y, weight: 0.04 });
+  } else if (tool === "hash") {
+    reticleState.draft.elements.push({ kind: "hash", x, y, length: step > 0 ? step : 0.5, angle: 90, weight: 0.04 });
+  } else if (tool === "dot") {
+    reticleState.draft.elements.push({ kind: "dot", x, y, diameter: Math.max(0.05, step > 0 ? step * 0.4 : 0.2) });
+  } else if (tool === "circle") {
+    reticleState.draft.elements.push({ kind: "circle", x, y, diameter: Math.max(0.1, step > 0 ? step * 2 : 1) });
+  } else if (tool === "text") {
+    const text = (document.getElementById("reticle-text") || {}).value || "1";
+    reticleState.draft.elements.push({ kind: "text", x, y, text });
+  }
+  drawReticle();
+}
+
+function svgPoint(svg, event) {
+  const matrix = svg.getScreenCTM();
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  if (!matrix) return point;
+  return point.matrixTransform(matrix.inverse());
+}
+
+function targetsHtml() {
+  const pages = (boot.card_pages || []).map((item) => `<option value="${esc(item.id)}" ${reticleState.page === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("");
+  const spec = currentTarget();
+  return `<section class="panel">
+    <h2>${esc(t("targets-page-title"))}</h2>
+    <p class="hint">${esc(t("targets-intro"))}</p>
+    <h3>${esc(t("open-items"))}</h3>
+    <p class="hint">${esc(t("open-items-intro"))}</p>
+    <div id="open-items">${openItemsHtml()}</div>
+    <div class="fields">
+      <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
+        <select id="target-pick" title="${esc(t("impact-target-tip"))}">${targetOptions(targetPickId())}</select>
+      </label>
+      <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
+        <select id="target-facing" title="${esc(t("facing-tip"))}">
+          <option value="left" ${targetFacing !== "right" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+          <option value="right" ${targetFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+        </select>
+      </label>
+      <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
+        <select id="target-ringing" title="${esc(t("ringing-tip"))}">
+          <option value="primary" ${targetRinging !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
+          <option value="alt" ${targetRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
+        </select>
+      </label>
+      <label title="${esc(t("silhouette-tip"))}"><input id="target-silhouette" type="checkbox" ${targetSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+      <label class="field" title="${esc(t("card-size"))}">${esc(t("card-size"))}
+        <select id="target-page" title="${esc(t("card-size"))}">${pages}</select>
+      </label>
+    </div>
+    <div id="target-flags">${spec ? flagHtml(spec.flags) : ""}</div>
+    <p class="hint">${spec ? esc(spec.subtitle || "") : ""} ${spec && spec.distance_note ? "· " + esc(spec.distance_note) : ""}</p>
+    <div id="target-face">${spec ? faceSvg(spec, { showSilhouette: true, ringing: "primary", label: spec.name }) : ""}</div>
+    <h3>${esc(t("target-edit-title"))}</h3>
+    <p class="hint">${esc(t("target-edit-intro"))}</p>
+    <div id="target-editor">${targetEditorHtml(spec)}</div>
+    <div class="row">
+      <button type="button" id="target-save" title="${esc(t("target-save-tip"))}">${esc(t("target-save"))}</button>
+      <button type="button" id="target-pdf" title="${esc(t("target-pdf-tip"))}">${esc(t("target-pdf"))}</button>
+    </div>
+    <p id="target-notice" class="hint">${esc(targetNotice)}</p>
+    <h3>${esc(t("svg-title"))}</h3>
+    <p class="hint">${esc(t("svg-intro"))}</p>
+    <div class="fields">
+      <label class="field" title="${esc(t("svg-file-tip"))}">${esc(t("svg-file"))}<input id="svg-file" type="file" accept=".svg,image/svg+xml" title="${esc(t("svg-file-tip"))}" /></label>
+      <span title="${esc(t("svg-width-tip"))}">${qtyField("svg-width", t("svg-width"), "20 cm", units().small, "length")}</span>
+      <span title="${esc(t("svg-height-tip"))}">${qtyField("svg-height", t("svg-height"), "20 cm", units().small, "length")}</span>
+      <button type="button" id="svg-save" title="${esc(t("svg-save-tip"))}">${esc(t("svg-save"))}</button>
+    </div>
+  </section>`;
+}
+
+let targetPick = "sjf-algfigur";
+let targetFacing = "left";
+let targetRinging = "primary";
+let targetSilhouette = true;
+let targetDraft = null;
+
+function targetPickId() { return targetPick; }
+function targetFacingValue() { return targetFacing; }
+
+function currentTarget() {
+  if (targetDraft && targetDraft.id === targetPick) return targetDraft;
+  return libraryTarget(targetPick);
+}
+
+function openItemsHtml() {
+  const seen = new Set();
+  const rows = [];
+  ((boot.targets && boot.targets.library) || []).forEach((item) => {
+    (item.flags || []).forEach((flag) => {
+      if (!flag.detail || seen.has(flag.detail) || flag.code === "T1") return;
+      seen.add(flag.detail);
+      rows.push(`<p class="badge badge-${esc(flag.kind)}">${esc(flag.code)} · ${esc(t(flag.detail))}</p>`);
+    });
+  });
+  return rows.join("");
+}
+
+function targetEditorHtml(spec) {
+  if (!spec) return "";
+  const unit = units().small || "cm";
+  const paths = (spec.paths || []).map((path, index) => `<label class="field" title="${esc(t("target-points-tip"))}">${esc(t("target-points"))} ${esc(path.role)} (${esc(unit)})
+      <textarea id="path-${index}" data-role="${esc(path.role)}" rows="6" title="${esc(t("target-points-tip"))}">${esc(pointsText(path.points))}</textarea>
+    </label>`).join("");
+  const vital = (spec.flags || []).some((flag) => flag.code === "T6")
+    ? `<label class="field" title="${esc(t("vital-tip"))}">${esc(t("vital"))} (${esc(unit)})
+        <input id="vital-diameter" inputmode="decimal" title="${esc(t("vital-tip"))}" placeholder="${esc(t("vital-empty"))}" />
+      </label>`
+    : "";
+  const label = `<label class="field" title="${esc(t("target-label-tip"))}">${esc(t("editor-name"))}
+      <input id="target-label" value="${esc(spec.name || "")}" title="${esc(t("target-label-tip"))}" />
+    </label>`;
+  return label + vital + paths + (paths ? "" : `<p class="hint">${esc(t("target-no-points"))}</p>`);
+}
+
+function pointsText(points) {
+  const unit = units().small || "cm";
+  return (points || []).map((point) => `${formatLocal(Number(point[0]) / 100, "length", unit)} ${formatLocal(Number(point[1]) / 100, "length", unit)}`).join("\n");
+}
+
+function bindTargets() {
+  const pick = document.getElementById("target-pick");
+  if (pick) pick.addEventListener("change", () => {
+    targetPick = pick.value;
+    targetDraft = null;
+    render();
+  });
+  ["target-facing", "target-ringing"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener("change", () => {
+      if (id === "target-facing") targetFacing = node.value;
+      if (id === "target-ringing") targetRinging = node.value;
+      paintTarget();
+    });
+  });
+  const silhouette = document.getElementById("target-silhouette");
+  if (silhouette) silhouette.addEventListener("change", () => { targetSilhouette = silhouette.checked; paintTarget(); });
+  document.querySelectorAll("#target-editor textarea").forEach((box) => {
+    box.addEventListener("input", () => { applyTargetDraft(); paintTarget(); });
+  });
+  const vital = document.getElementById("vital-diameter");
+  if (vital) vital.addEventListener("input", () => { applyTargetDraft(); paintTarget(); });
+  document.getElementById("target-save").addEventListener("click", saveTarget);
+  document.getElementById("target-pdf").addEventListener("click", openTargetPdf);
+  document.getElementById("svg-save").addEventListener("click", saveSvgTarget);
+  paintTarget();
+}
+
+function applyTargetDraft() {
+  const base = libraryTarget(targetPick);
+  if (!base) return;
+  const draft = JSON.parse(JSON.stringify(base));
+  document.querySelectorAll("#target-editor textarea").forEach((box) => {
+    const role = box.dataset.role;
+    const points = parsePointText(box.value);
+    const path = (draft.paths || []).find((item) => item.role === role);
+    if (path && points.length) {
+      path.points = points;
+      path.placeholder = true;
+      path.for_scoring = false;
+    }
+  });
+  const vital = document.getElementById("vital-diameter");
+  if (vital && String(vital.value || "").trim()) {
+    const cm = toCm(Number(String(vital.value).replace(",", ".")), units().small || "cm");
+    if (cm > 0) {
+      draft.rings = (draft.rings || []).filter((ring) => ring.label_primary !== "vital");
+      draft.rings.push({ diameter_cm: cm, label_primary: "vital", label_alt: "", verified: false });
+    }
+  }
+  draft.id = targetPick;
+  targetDraft = draft;
+}
+
+function parsePointText(text) {
+  const unit = units().small || "cm";
+  const points = [];
+  String(text || "").split(/\n/).forEach((line) => {
+    const parts = line.trim().split(/[\s,]+/).filter(Boolean);
+    if (parts.length < 2) return;
+    const x = toCm(Number(parts[0].replace(",", ".")), unit);
+    const y = toCm(Number(parts[1].replace(",", ".")), unit);
+    if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+  });
+  return points;
+}
+
+function paintTarget() {
+  const host = document.getElementById("target-face");
+  const spec = currentTarget();
+  if (!host || !spec) return;
+  const draw = JSON.parse(JSON.stringify(spec));
+  if (targetFacing === "right") {
+    (draw.paths || []).forEach((path) => (path.points || []).forEach((point) => { point[0] = -point[0]; }));
+  }
+  host.innerHTML = faceSvg(draw, { showSilhouette: targetSilhouette, ringing: targetRinging, label: draw.name });
+  const flags = document.getElementById("target-flags");
+  if (flags) flags.innerHTML = flagHtml(draw.flags);
+}
+
+async function saveTarget() {
+  applyTargetDraft();
+  const draft = targetDraft || libraryTarget(targetPick);
+  if (!draft) return;
+  const saved = ((boot.equipment && boot.equipment.targets) || []).find((item) => item.id === targetPick);
+  const vital = document.getElementById("vital-diameter");
+  const body = {
+    base_id: saved ? (saved.base_id || "") : targetPick,
+    id: saved ? saved.id : "",
+    label: (document.getElementById("target-label") || {}).value || draft.name,
+    paths: draft.paths || [],
+  };
+  if (vital && String(vital.value || "").trim()) {
+    body.vital_diameter_cm = toCm(Number(String(vital.value).replace(",", ".")), units().small || "cm");
+  }
+  try {
+    const stored = await call("target_save", { body });
+    targetNotice = t("target-saved");
+    targetPick = stored.id;
+    targetDraft = null;
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    targetNotice = String(error);
+    const note = document.getElementById("target-notice");
+    if (note) note.textContent = targetNotice;
+  }
+}
+
+async function openTargetPdf() {
+  const spec = currentTarget();
+  const notes = ((spec && spec.flags) || []).map((flag) => `${t("badge-" + flag.kind)}: ${t(flag.detail)}`);
+  notes.push(t("target-print-scale"));
+  const draw = spec ? JSON.parse(JSON.stringify(spec)) : { paths: [], rings: [] };
+  if (targetFacing === "right") {
+    (draw.paths || []).forEach((path) => (path.points || []).forEach((point) => { point[0] = -point[0]; }));
+  }
+  if (!targetSilhouette) draw.paths = (draw.paths || []).filter((path) => path.role !== "silhouette");
+  try {
+    const result = await call("target_pdf", { body: {
+      target_id: targetPick,
+      page: (document.getElementById("target-page") || {}).value || "a4",
+      geometry_override: true,
+      paths: (draw.paths || []).map((path) => ({
+        points: path.points || [],
+        closed: path.closed !== false,
+        dashed: !!path.placeholder,
+      })),
+      rings_cm: (draw.rings || []).map((ring) => Number(ring.diameter_cm)).filter((value) => value > 0),
+      notes,
+    } });
+    const scale = result.scale_denominator === 1 ? t("target-scale-one") : `${t("target-scale")} 1:${result.scale_denominator}`;
+    targetNotice = `${result.opened ? t("card-pdf-opened") : t("card-pdf-saved")} ${scale}`;
+    const note = document.getElementById("target-notice");
+    if (note) note.textContent = targetNotice;
+  } catch (error) {
+    targetNotice = String(error);
+    const note = document.getElementById("target-notice");
+    if (note) note.textContent = targetNotice;
+  }
+}
+
+async function saveSvgTarget() {
+  const file = document.getElementById("svg-file").files && document.getElementById("svg-file").files[0];
+  if (!file) return;
+  const text = await file.text();
+  try {
+    const stored = await call("target_save", { body: {
+      base_id: "custom",
+      label: file.name.replace(/\.svg$/i, ""),
+      svg: text,
+      width_cm: qtyToCm("svg-width") || 20,
+      height_cm: qtyToCm("svg-height") || 20,
+    } });
+    targetNotice = t("svg-saved");
+    targetPick = stored.id;
+    targetDraft = null;
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    targetNotice = String(error);
+    const note = document.getElementById("target-notice");
+    if (note) note.textContent = targetNotice;
   }
 }
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-target-pdf"
+description = "Enables the target_pdf command without any pre-configured scope."
+commands.allow = ["target_pdf"]
+
+[[permission]]
+identifier = "deny-target-pdf"
+description = "Denies the target_pdf command without any pre-configured scope."
+commands.deny = ["target_pdf"]

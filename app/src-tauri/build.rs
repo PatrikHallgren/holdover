@@ -23,6 +23,10 @@ fn main() {
             "chrono_session",
             "recoil_calc",
             "impact",
+            "reticle_scene",
+            "reticle_save",
+            "target_save",
+            "target_pdf",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }
