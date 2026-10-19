@@ -40,6 +40,8 @@ let chartKinds = { drop: true, wind: true, velocity: false, energy: false, tof: 
 let pbrResult = null;
 let pbrPreview = null;
 let pbrZonePreset = "moose";
+let pbrMode = "optimal";
+let pbrZeroText = "100 m";
 let truingKind = "mv";
 let truingPreview = null;
 let truingForm = { range: "400 m", elevation: "", shots: "", group: "", lines: "", advertised: "10 mrad", observed: "", piecewise: false };
@@ -349,12 +351,37 @@ function leadNote() {
 }
 
 function leadHold() {
+  const speed = document.getElementById("target_speed");
+  const typed = speed ? String(speed.value || "").trim() : String(moving.speedText || "").trim();
+  if (!typed && !(lastSolve && lastSolve.lead)) return "";
   const lead = lastSolve && lastSolve.lead;
-  if (!lead || !lead.lead) return "";
-  const flight = `${lead.flight_lead.direction} ${lead.flight_lead.primary}`;
-  const combined = `${lead.combined.direction} ${lead.combined.primary}`;
-  return `<p class="secondary">${esc(t("lead"))} ${esc(flight)} · ${Number(lead.lead_m).toFixed(3)} m · ${esc(t("lead-combined"))} ${esc(combined)}</p>
-    <p class="hint">${esc(lead.reaction_note || t("lead-reaction-note"))}</p>`;
+  if (!lead || !lead.flight_lead) {
+    return `<div class="lead-result"><p class="direction">${esc(t("lead"))}</p><p>${esc(t("lead-waiting"))}</p></div>`;
+  }
+  const mrad = Number(lead.mrad);
+  const moa = Number(lead.moa);
+  const cm = Number(lead.cm);
+  const tof = Number(lead.tof_s);
+  const along = Number.isFinite(mrad) && Math.abs(mrad) < 0.0005 ? `<p class="meta">${esc(t("lead-along"))}</p>` : "";
+  const impactRange = lead.impact_range_display
+    ? `${esc(lead.impact_range_display)} ${esc(lead.length_unit || "")}`
+    : "—";
+  return `<div class="lead-result">
+    <p class="direction">${esc(t("lead"))} ${esc(lead.flight_lead.direction)}</p>
+    <p class="figure">${esc(formatLead(mrad))} mrad</p>
+    <p class="clicks">${esc(formatLead(moa))} MOA · ${esc(formatLead(cm))} cm ${esc(t("lead-at-target"))}</p>
+    <p class="clicks">${esc(t("tof"))} ${Number.isFinite(tof) ? tof.toFixed(3) : "—"} s · ${esc(t("lead-impact"))} ${impactRange}</p>
+    <p class="clicks">${esc(t("lead-combined"))} ${esc(lead.combined.direction)} ${esc(lead.combined.primary)}</p>
+    ${along}
+    <p class="meta">${esc(lead.outline || t("lead-outline"))} ${esc(lead.reaction_note || "")}</p>
+  </div>`;
+}
+
+function formatLead(value) {
+  if (!Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  const text = abs >= 100 ? String(Math.round(abs * 10) / 10) : String(Math.round(abs * 100) / 100);
+  return value < -1e-9 ? `−${text}` : text;
 }
 
 function cardHtml() {
@@ -394,8 +421,11 @@ function cardTable(data) {
     ${(row.winds || []).map((wind) => `<td>${esc(wind.windage.direction)} ${esc(wind.windage.primary)}</td>`).join("")}
     ${(row.conditions || []).map((item) => `<td>${esc(item.elevation.direction)} ${esc(item.elevation.primary)}</td>`).join("")}
   </tr>`).join("");
-  const bar = data.scale_bar_mm
-    ? `<div class="scale-bar" style="width:${Number(data.scale_bar_mm)}mm"><span>${esc(data.scale_bar_label || "")}</span></div>`
+  const barMm = Number(data.scale_bar_mm);
+  const barLabel = esc(data.scale_bar_label || "");
+  const bar = barMm
+    ? `<div class="scale-bar scale-bar-screen" style="width:${barMm}mm"><span>${barLabel}</span></div>
+       <div class="scale-bar scale-bar-print"><span>${barLabel}</span></div>`
     : "";
   return `<h2>${esc(data.profile_label || "")}</h2>
     <p>${esc(data.zero_summary || "")}</p>
@@ -414,8 +444,19 @@ function cardTable(data) {
 function chartHtml() {
   const profiles = boot.equipment.profiles;
   const boxes = profiles.map((item) => `<label><input type="checkbox" class="overlay" value="${esc(item.id)}" ${item.id === boot.settings.active_profile_id ? "checked" : ""} /> ${esc(item.label)}</label>`).join("");
-  const kinds = ["drop", "wind", "velocity", "energy", "tof", "mach"].map((kind) =>
-    `<label><input type="checkbox" class="chart-kind" value="${kind}" ${chartKinds[kind] ? "checked" : ""} /> ${esc(t(kind === "drop" ? "chart-drop" : kind === "wind" ? "chart-wind" : kind))}</label>`).join("");
+  const kindTitle = {
+    drop: "chart-drop-tip",
+    wind: "chart-wind-tip",
+    velocity: "chart-velocity-tip",
+    energy: "chart-energy-tip",
+    tof: "chart-tof-tip",
+    mach: "chart-mach-tip",
+  };
+  const kinds = ["drop", "wind", "velocity", "energy", "tof", "mach"].map((kind) => {
+    const tip = esc(t(kindTitle[kind]));
+    const label = kind === "drop" ? "chart-drop" : kind === "wind" ? "chart-wind" : kind;
+    return `<label title="${tip}"><input type="checkbox" class="chart-kind" value="${kind}" title="${tip}" ${chartKinds[kind] ? "checked" : ""} /> ${esc(t(label))}</label>`;
+  }).join("");
   return `<section class="panel">
     <div class="checks noprint">${boxes}</div>
     <div class="checks noprint">${kinds}</div>
@@ -427,22 +468,26 @@ function chartHtml() {
     </div>
     <p class="hint">${esc(t("charts-note"))} ${esc(t("same-conditions"))} ${esc(t("chart-limit"))}</p>
     <div id="chart-body"></div>
-    <h3 class="noprint">${esc(t("impact-title"))}</h3>
-    <div class="row noprint">
-      <label class="field">${esc(t("impact-target"))}
-        <select id="impact-target">
+    <h3>${esc(t("impact-title"))}</h3>
+    <p class="hint">${esc(t("impact-intro"))}</p>
+    <div class="fields noprint">
+      <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
+        <select id="impact-target" title="${esc(t("impact-target-tip"))}">
           <option value="moose">${esc(t("rings-moose"))}</option>
           <option value="roe">${esc(t("rings-roe"))}</option>
           <option value="custom">${esc(t("impact-custom"))}</option>
         </select>
       </label>
-      ${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length")}
-      ${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}
-      ${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}
-      <label class="field">${esc(t("card-winds"))}<input id="impact-brackets" value="2 mps, 4 mps" /></label>
-      ${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}
+      <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length")}</span>
+      <span title="${esc(t("impact-mv-tip"))}">${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}</span>
+      <span title="${esc(t("impact-error-tip"))}">${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}</span>
+      <label class="field" title="${esc(t("impact-wind-tip"))}">${esc(t("card-winds"))}
+        <input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" />
+      </label>
+      <span title="${esc(t("impact-zone-tip"))}">${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}</span>
+      <button type="button" id="impact-draw" title="${esc(t("impact-draw-tip"))}">${esc(t("impact-draw"))}</button>
     </div>
-    <div id="impact-body" class="noprint"></div>
+    <div id="impact-body"></div>
   </section>`;
 }
 
@@ -761,14 +806,35 @@ async function buildCard() {
 
 function bindChart() {
   document.getElementById("chart-build").addEventListener("click", buildChart);
+  document.querySelectorAll(".overlay").forEach((box) => box.addEventListener("change", buildChart));
   document.querySelectorAll(".chart-kind").forEach((box) => box.addEventListener("change", () => {
     chartKinds[box.value] = box.checked;
-    if (chartData) paintCharts();
+    if (chartData) paintCharts(true);
   }));
+  [
+    ["impact-range", "impact-range-tip"],
+    ["mv_sd", "impact-mv-tip"],
+    ["range_error", "impact-error-tip"],
+    ["impact-zone", "impact-zone-tip"],
+  ].forEach(([id, key]) => {
+    const input = document.getElementById(id);
+    const chip = document.querySelector(`[data-for="${id}"]`);
+    const tip = t(key);
+    if (input) input.title = tip;
+    if (chip) {
+      chip.title = tip;
+      chip.setAttribute("aria-label", tip);
+    }
+  });
   document.getElementById("chart-svg").addEventListener("click", () => downloadSvg("holdover-charts.svg"));
   document.getElementById("chart-png").addEventListener("click", () => downloadPng("holdover-charts.png"));
   document.getElementById("chart-csv").addEventListener("click", () => {
     if (chartData) downloadText("holdover-chart.csv", chartCsv(), "text/csv");
+  });
+  const drawImpact = document.getElementById("impact-draw");
+  if (drawImpact) drawImpact.addEventListener("click", () => {
+    const ids = [...document.querySelectorAll(".overlay:checked")].map((box) => box.value).slice(0, 6);
+    buildImpact(ids);
   });
   const host = document.getElementById("chart-body");
   if (window.ResizeObserver) {
@@ -807,16 +873,16 @@ async function buildChart() {
   }
 }
 
-function paintCharts() {
+function paintCharts(force) {
   const host = document.getElementById("chart-body");
   if (!host || !chartData || chartPainting) return;
   const width = Math.max(280, host.clientWidth || 640);
-  if (width === chartPaintWidth && host.querySelector("svg")) return;
+  if (!force && width === chartPaintWidth && host.querySelector("svg")) return;
   chartPainting = true;
   chartPaintWidth = width;
   const note = host.dataset.limit === "1" ? `<p class="hint">${esc(t("chart-six"))}</p>` : "";
   const kinds = ["drop", "wind", "velocity", "energy", "tof", "mach"].filter((kind) => chartKinds[kind]);
-  host.innerHTML = note + (kinds.length ? kinds.map((kind) => drawScaledChart(kind)).join("") : `<p>${esc(t("chart-empty"))}</p>`);
+  host.innerHTML = note + (kinds.length ? kinds.map((kind) => drawScaledChart(kind)).join("") : `<p>${esc(t("chart-kinds-empty"))}</p>`);
   bindChartPointers();
   positionCursor();
   writeReadouts();
@@ -1237,15 +1303,45 @@ function solveBody() {
       altitude: airPayload("altitude", units().length),
     },
     effects: document.querySelector("[data-effect]") ? effects() : (s.effects || effects()),
-    target_speed: moving.speedText ? { text: moving.speedText, unit: moving.speedUnit || units().velocity } : undefined,
-    target_direction: moving.direction || "3oc",
-    reaction_s: Number(String(moving.reaction || "0").replace(",", ".")) || 0,
+    target_speed: liveTargetSpeed(),
+    target_direction: liveTargetDirection(),
+    reaction_s: liveReaction(),
     angular: s.angular || "mrad",
     range_step: storedQuantity(s.range_step || "10 m", units().length),
     wind_step: storedQuantity(s.wind_step || "1 mps", units().velocity),
   };
   if (!body.target_speed) delete body.target_speed;
   return body;
+}
+
+function liveTargetSpeed() {
+  const input = document.getElementById("target_speed");
+  if (input && String(input.value || "").trim()) {
+    moving.speedText = input.value;
+    moving.speedUnit = input.dataset.unit || moving.speedUnit;
+    return qtyPayload("target_speed");
+  }
+  if (moving.speedText && String(moving.speedText).trim()) {
+    return { text: moving.speedText, unit: moving.speedUnit || units().velocity };
+  }
+  return undefined;
+}
+
+function liveTargetDirection() {
+  const input = document.getElementById("target_direction");
+  if (input && String(input.value || "").trim()) {
+    moving.direction = input.value;
+    return input.value;
+  }
+  return moving.direction || "3oc";
+}
+
+function liveReaction() {
+  const input = document.getElementById("reaction_s");
+  const text = input ? input.value : moving.reaction;
+  if (input) moving.reaction = input.value;
+  const value = Number(String(text || "0").replace(",", "."));
+  return Number.isFinite(value) ? value : 0;
 }
 
 function effects() {
@@ -1485,7 +1581,7 @@ function applyCardPage(data) {
   }
   const width = Number(data.page.width_mm);
   const height = Number(data.page.height_mm);
-  style.textContent = `@media print { @page { size: ${width}mm ${height}mm; margin: 8mm; } }`;
+  style.textContent = data.print_css || `@media print { @page { size: ${width}mm ${height}mm; margin: 10mm; } }`;
 }
 
 function downloadText(name, text, type) {
@@ -1570,37 +1666,91 @@ async function buildImpact(ids) {
 }
 
 function impactView(data) {
-  const rings = data.rings_cm || [];
+  const rings = (data.rings_cm || []).map(Number).filter((value) => Number.isFinite(value) && value > 0);
   const pois = data.pois || [];
-  let half = Math.max(5, ...rings.map((diameter) => diameter / 2));
+  let half = Math.max(8, ...rings.map((diameter) => diameter / 2), 8);
   pois.forEach((poi) => {
-    half = Math.max(half, Math.abs(poi.path_cm) + 2, Math.abs(poi.windage_cm) + 2);
+    half = Math.max(half, Math.abs(Number(poi.path_cm) || 0) + 4, Math.abs(Number(poi.windage_cm) || 0) + 4);
+    half = Math.max(half, Math.abs(Number(poi.wind_left_cm) || 0) + 4, Math.abs(Number(poi.wind_right_cm) || 0) + 4);
+    (poi.brackets || []).forEach((item) => {
+      half = Math.max(half, Math.abs(Number(item.windage_cm) || 0) + 4);
+    });
   });
-  const size = half * 2;
-  const circles = rings.map((diameter) => `<circle class="ring" cx="0" cy="0" r="${diameter / 2}" />`).join("");
-  const marks = pois.map((poi, index) => {
-    const x = poi.windage_cm;
-    const y = -poi.path_cm;
-    const color = `var(--chart-${index % 6})`;
-    const mv = `<line stroke="${color}" stroke-dasharray="0.4 0.3" x1="${x}" x2="${x}" y1="${-poi.mv_high_cm}" y2="${-poi.mv_low_cm}" />`;
-    const range = `<line stroke="${color}" x1="${x - 0.6}" x2="${x + 0.6}" y1="${-poi.range_low_cm}" y2="${-poi.range_low_cm}" /><line stroke="${color}" x1="${x - 0.6}" x2="${x + 0.6}" y1="${-poi.range_high_cm}" y2="${-poi.range_high_cm}" />`;
-    const wind = `<line stroke="${color}" stroke-dasharray="1.2 0.4" x1="${poi.wind_left_cm}" x2="${poi.wind_right_cm}" y1="${y}" y2="${y}" />`;
-    const brackets = (poi.brackets || []).map((item) => `<circle cx="${item.windage_cm}" cy="${y}" r="0.35" fill="none" stroke="${color}" />`).join("");
-    return `${mv}${range}${wind}${brackets}<circle class="poi" cx="${x}" cy="${y}" r="0.7" fill="${color}" />`;
+  if (!Number.isFinite(half) || half > 400) half = 400;
+  const width = 640;
+  const height = 520;
+  const pad = 48;
+  const plot = Math.min(width, height) - pad * 2;
+  const scale = plot / (half * 2);
+  const cx = width / 2;
+  const cy = height / 2 + 8;
+  const px = (cmX, cmY) => [cx + cmX * scale, cy - cmY * scale];
+  const circles = rings.map((diameter) => {
+    const radius = diameter / 2 * scale;
+    return `<circle class="ring" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${radius.toFixed(1)}" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <text class="tick" x="${(cx + radius + 4).toFixed(1)}" y="${(cy + 4).toFixed(1)}">${esc(String(diameter))} cm</text>`;
   }).join("");
-  const badge = data.placeholder ? `<p class="badge">${esc(t("impact-placeholder"))}</p><p class="hint">${esc(data.note || "")}</p>` : `<p class="hint">${esc(data.note || "")}</p>`;
+  const marks = pois.map((poi, index) => {
+    const [x, y] = px(Number(poi.windage_cm) || 0, Number(poi.path_cm) || 0);
+    const color = `var(--chart-${index % 6})`;
+    const low = px(Number(poi.windage_cm) || 0, Number(poi.mv_low_cm));
+    const high = px(Number(poi.windage_cm) || 0, Number(poi.mv_high_cm));
+    const left = px(Number(poi.wind_left_cm) || 0, Number(poi.path_cm) || 0);
+    const right = px(Number(poi.wind_right_cm) || 0, Number(poi.path_cm) || 0);
+    const rangeLow = px(Number(poi.windage_cm) || 0, Number(poi.range_low_cm));
+    const rangeHigh = px(Number(poi.windage_cm) || 0, Number(poi.range_high_cm));
+    const brackets = (poi.brackets || []).map((item) => {
+      const [bx, by] = px(Number(item.windage_cm) || 0, Number(poi.path_cm) || 0);
+      return `<circle cx="${bx.toFixed(1)}" cy="${by.toFixed(1)}" r="7" fill="none" stroke="${color}" stroke-width="1.5" />
+        <text class="tick" x="${(bx + 8).toFixed(1)}" y="${(by - 6).toFixed(1)}">${esc(item.label || "")}</text>`;
+    }).join("");
+    return `<line class="spread" stroke="${color}" stroke-width="1.5" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${low[1].toFixed(1)}" y2="${high[1].toFixed(1)}" />
+      <line class="spread" stroke="${color}" stroke-width="1.5" x1="${left[0].toFixed(1)}" x2="${right[0].toFixed(1)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />
+      <line class="spread" stroke="${color}" stroke-width="1.5" x1="${(x - 8).toFixed(1)}" x2="${(x + 8).toFixed(1)}" y1="${rangeLow[1].toFixed(1)}" y2="${rangeLow[1].toFixed(1)}" />
+      <line class="spread" stroke="${color}" stroke-width="1.5" x1="${(x - 8).toFixed(1)}" x2="${(x + 8).toFixed(1)}" y1="${rangeHigh[1].toFixed(1)}" y2="${rangeHigh[1].toFixed(1)}" />
+      ${brackets}
+      <circle class="poi" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="${color}" stroke="none" />`;
+  }).join("");
+  const step = half > 40 ? 10 : 5;
+  let ticks = "";
+  const firstTick = Math.ceil(-half / step) * step;
+  for (let cm = firstTick; cm <= half; cm += step) {
+    const [x] = px(cm, 0);
+    const [, y] = px(0, cm);
+    ticks += `<line class="tick-mark" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(cy - 5).toFixed(1)}" y2="${(cy + 5).toFixed(1)}" />
+      <text class="tick" x="${x.toFixed(1)}" y="${(cy + 18).toFixed(1)}" text-anchor="middle">${cm}</text>
+      <line class="tick-mark" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" x1="${(cx - 5).toFixed(1)}" x2="${(cx + 5).toFixed(1)}" />`;
+  }
+  const [bar0, bar1] = [px(-5, -half + 1), px(5, -half + 1)];
+  const badge = data.placeholder ? `<p class="badge">${esc(t("impact-placeholder"))}</p>` : "";
   return `${badge}
-    <svg class="impact" viewBox="${-half} ${-half} ${size} ${size}" style="width:${size}cm" role="img" aria-label="${esc(t("impact-title"))}">
-      <line x1="${-half}" x2="${half}" y1="0" y2="0" stroke="var(--border)" stroke-width="0.08" />
-      <line y1="${-half}" y2="${half}" x1="0" x2="0" stroke="var(--border)" stroke-width="0.08" />
+    <p class="hint">${esc(data.note || "")}</p>
+    <p class="axis-title">${esc(t("impact-scale"))}</p>
+    <svg class="impact" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("impact-title"))}">
+      <rect width="${width}" height="${height}" fill="var(--background)" />
+      <line class="zero" x1="${pad}" x2="${width - pad}" y1="${cy.toFixed(1)}" y2="${cy.toFixed(1)}" />
+      <line class="zero" y1="${pad}" y2="${height - pad}" x1="${cx.toFixed(1)}" x2="${cx.toFixed(1)}" />
+      ${ticks}
+      <text class="tick" x="${(width - pad).toFixed(1)}" y="${(cy - 6).toFixed(1)}" text-anchor="end">${esc(t("chart-wind-sign"))}</text>
+      <text class="tick" x="${(cx + 6).toFixed(1)}" y="${pad}">${esc(t("chart-above-los"))}</text>
       ${circles}${marks}
+      <line class="zero" x1="${bar0[0].toFixed(1)}" x2="${bar1[0].toFixed(1)}" y1="${(height - 28).toFixed(1)}" y2="${(height - 28).toFixed(1)}" />
+      <text class="tick" x="${cx.toFixed(1)}" y="${(height - 12).toFixed(1)}" text-anchor="middle">10 cm</text>
     </svg>
-    <p class="legend">${pois.map((poi, index) => `<span><i class="swatch swatch-${index % 6}"></i>${esc(poi.label)}</span>`).join("")}</p>
-    <div class="row"><button type="button" id="impact-svg">${esc(t("download-svg"))}</button><button type="button" id="impact-png">${esc(t("download-png"))}</button></div>`;
+    <p class="legend">${pois.map((poi, index) => `<span><i class="swatch swatch-${index % 6}"></i>${esc(poi.label)} · ${esc(t("impact-poi"))}</span>`).join("")}</p>
+    <p class="hint">${esc(t("impact-bars"))}</p>
+    <div class="row">
+      <button type="button" id="impact-svg" title="${esc(t("impact-svg-tip"))}">${esc(t("impact-save-svg"))}</button>
+      <button type="button" id="impact-png" title="${esc(t("impact-png-tip"))}">${esc(t("impact-save-png"))}</button>
+    </div>`;
 }
 
 function pbrHtml() {
   return `<section class="panel">
+    <div class="checks">
+      <label title="${esc(t("pbr-optimal-tip"))}"><input type="radio" name="pbr-mode" value="optimal" ${pbrMode !== "fixed" ? "checked" : ""} /> ${esc(t("pbr-optimal"))}</label>
+      <label title="${esc(t("pbr-fixed-tip"))}"><input type="radio" name="pbr-mode" value="fixed" ${pbrMode === "fixed" ? "checked" : ""} /> ${esc(t("pbr-fixed"))}</label>
+    </div>
     <label class="field">${esc(t("pbr-preset"))}
       <select id="pbr-preset">
         <option value="moose" ${pbrZonePreset === "moose" ? "selected" : ""}>${esc(t("pbr-moose"))}</option>
@@ -1609,8 +1759,9 @@ function pbrHtml() {
       </select>
     </label>
     ${qtyField("zone", t("pbr-zone"), pbrZoneText(), pbrZoneUnit(), "length")}
+    <div class="${pbrMode === "fixed" ? "" : "hidden"}">${qtyField("pbr-zero", t("pbr-zero-input"), pbrZeroText, units().length, "length")}</div>
     <button type="button" id="pbr-build">${esc(t("apply"))}</button>
-    <p class="hint">${esc(t("pbr-note"))}</p>
+    <p class="hint">${esc(pbrMode === "fixed" ? "pbr-fixed-note" : "pbr-note")}</p>
     <div id="pbr-body">${pbrResult ? pbrView(pbrResult) : ""}</div>
   </section>`;
 }
@@ -1627,13 +1778,23 @@ function pbrZoneUnit() {
 }
 
 function pbrView(data) {
-  const confirm = pbrPreview && !pbrPreview.applied
+  const confirm = data.mode === "fixed" ? "" : (pbrPreview && !pbrPreview.applied
     ? `<p>${esc(t("pbr-apply-preview"))} ${esc(pbrPreview.next_text)}. <button type="button" id="pbr-confirm">${esc(t("pbr-confirm"))}</button></p>`
-    : `<button type="button" id="pbr-apply">${esc(t("pbr-apply"))}</button>`;
-  return `<p>${esc(t("pbr-near"))} ${esc(data.near_display)} ${esc(data.length_unit)}</p>
-    <p>${esc(t("pbr-far"))} ${esc(data.far_display)} ${esc(data.length_unit)}</p>
-    <p>${esc(t("pbr-zero"))} ${esc(data.zero_display)} ${esc(data.length_unit)}</p>
-    <p>${esc(t("pbr-ordinate"))} ${esc(data.ordinate_display)} ${esc(t("pbr-at"))} ${esc(data.ordinate_range_display)} ${esc(data.length_unit)}</p>
+    : `<button type="button" id="pbr-apply">${esc(t("pbr-apply"))}</button>`);
+  const inside = data.starts_inside ? `<p class="hint">${esc(t("pbr-starts-inside"))}</p>` : "";
+  const above = data.exits_above ? `<p class="hint">${esc(t("pbr-exits-above"))}</p>` : "";
+  return `<p><strong>${esc(t("pbr-start-label"))}</strong> ${esc(data.near_display)} ${esc(data.length_unit)}</p>
+    <p class="hint">${esc(t("pbr-start-help"))}</p>
+    ${inside}
+    <p><strong>${esc(t("pbr-near-zero-label"))}</strong> ${esc(data.near_zero_display)} ${esc(data.length_unit)}</p>
+    <p class="hint">${esc(t("pbr-near-zero-help"))}</p>
+    <p><strong>${esc(t("pbr-far-zero-label"))}</strong> ${esc(data.far_zero_display)} ${esc(data.length_unit)}</p>
+    <p class="hint">${esc(t("pbr-far-zero-help"))}</p>
+    <p><strong>${esc(t("pbr-end-label"))}</strong> ${esc(data.far_display)} ${esc(data.length_unit)}</p>
+    <p class="hint">${esc(t("pbr-end-help"))}</p>
+    ${above}
+    <p><strong>${esc(t("pbr-ordinate"))}</strong> ${esc(data.ordinate_display)} ${esc(t("pbr-at"))} ${esc(data.ordinate_range_display)} ${esc(data.length_unit)}</p>
+    <p class="hint">${esc(t("pbr-ordinate-help"))}</p>
     ${pbrChart(data)}
     <p class="hint">${esc(t("pbr-still-air"))}</p>
     ${confirm}`;
@@ -1641,36 +1802,45 @@ function pbrView(data) {
 
 function pbrChart(data) {
   const samples = data.samples || [];
-  if (!samples.length) return "";
+  const xAxis = data.x;
+  const yAxis = data.y;
+  if (!samples.length || !xAxis || !yAxis) return "";
   const radius = Number(data.radius_display) || 0;
-  let xMin = Infinity;
-  let xMax = -Infinity;
-  let yMin = -radius;
-  let yMax = radius;
-  samples.forEach((sample) => {
-    xMin = Math.min(xMin, sample.range);
-    xMax = Math.max(xMax, sample.range);
-    yMin = Math.min(yMin, sample.path, -radius);
-    yMax = Math.max(yMax, sample.path, radius);
-  });
   const width = 640;
-  const height = 280;
-  const padL = 56;
-  const padR = 12;
+  const height = 300;
+  const padL = 62;
+  const padR = 16;
   const padT = 16;
   const padB = 28;
   const plotW = width - padL - padR;
   const plotH = height - padT - padB;
-  const xOf = (value) => padL + (value - xMin) / ((xMax - xMin) || 1) * plotW;
-  const yOf = (value) => padT + (yMax - value) / ((yMax - yMin) || 1) * plotH;
+  const xSpan = (xAxis.max - xAxis.min) || 1;
+  const ySpan = (yAxis.max - yAxis.min) || 1;
+  const xOf = (value) => padL + (value - xAxis.min) / xSpan * plotW;
+  const yOf = (value) => padT + (yAxis.max - value) / ySpan * plotH;
+  let marks = `<rect class="frame" x="${padL}" y="${padT}" width="${plotW.toFixed(1)}" height="${plotH.toFixed(1)}" fill="none" />`;
+  (yAxis.ticks || []).forEach((tick, index) => {
+    const y = yOf(tick);
+    marks += `<line class="grid" x1="${padL}" x2="${width - padR}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" />`;
+    marks += `<text class="tick" x="${padL - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end">${esc(yAxis.labels[index])}</text>`;
+  });
+  (xAxis.ticks || []).forEach((tick, index) => {
+    const x = xOf(tick);
+    marks += `<line class="grid" y1="${padT}" y2="${height - padB}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" />`;
+    marks += `<text class="tick" x="${x.toFixed(1)}" y="${height - 8}" text-anchor="middle">${esc(xAxis.labels[index])}</text>`;
+  });
+  const band = (value) => `<line class="band" x1="${padL}" x2="${width - padR}" y1="${yOf(value).toFixed(1)}" y2="${yOf(value).toFixed(1)}" />`;
   const d = samples.map((sample, index) => `${index ? "L" : "M"}${xOf(sample.range).toFixed(1)},${yOf(sample.path).toFixed(1)}`).join(" ");
-  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("nav-pbr"))}">
-    <line class="zero" x1="${padL}" x2="${width - padR}" y1="${yOf(radius)}" y2="${yOf(radius)}" />
-    <line class="zero" x1="${padL}" x2="${width - padR}" y1="${yOf(-radius)}" y2="${yOf(-radius)}" />
-    <line class="grid" x1="${padL}" x2="${width - padR}" y1="${yOf(0)}" y2="${yOf(0)}" />
-    <path d="${d}" fill="none" stroke="var(--chart-0)" stroke-width="2" />
-  </svg>
-  <p class="hint">${esc(t("pbr-band"))}</p>`;
+  return `<p class="legend"><span><i class="swatch"></i>${esc(t("path"))}</span><span>${esc(t("pbr-band"))}</span><span>${esc(t("chart-los"))}</span></p>
+    <p class="axis-title">${esc(yAxis.unit)}, ${esc(t("chart-above-los"))}</p>
+    <svg class="chart" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(t("nav-pbr"))}">
+      ${marks}
+      ${band(radius)}${band(-radius)}
+      <line class="zero" x1="${padL}" x2="${width - padR}" y1="${yOf(0).toFixed(1)}" y2="${yOf(0).toFixed(1)}" />
+      <text class="zero-label" x="${(width - padR - 4)}" y="${Math.max(padT + 12, yOf(0) - 4).toFixed(1)}" text-anchor="end">${esc(t("chart-los"))}</text>
+      <path d="${d}" fill="none" stroke="var(--chart-0)" stroke-width="2" />
+    </svg>
+    <p class="axis-title">${esc(t("range"))} (${esc(xAxis.unit)})</p>`;
 }
 
 function bindPbr() {
@@ -1681,6 +1851,13 @@ function bindPbr() {
     pbrPreview = null;
     render();
   });
+  document.querySelectorAll("input[name=pbr-mode]").forEach((input) => input.addEventListener("change", () => {
+    pbrMode = input.value;
+    pbrPreview = null;
+    render();
+  }));
+  const zero = document.getElementById("pbr-zero");
+  if (zero) zero.addEventListener("input", () => { pbrZeroText = zero.value; });
   const build = document.getElementById("pbr-build");
   if (build) build.addEventListener("click", runPbr);
   bindPbrActions();
@@ -1698,6 +1875,12 @@ async function runPbr() {
   try {
     const body = solveBody();
     body.zone = qtyPayload("zone");
+    body.mode = pbrMode;
+    if (pbrMode === "fixed") {
+      const zero = document.getElementById("pbr-zero");
+      if (zero) pbrZeroText = zero.value;
+      body.zero = qtyPayload("pbr-zero") || { text: pbrZeroText, unit: units().length };
+    }
     pbrResult = await call("point_blank", { body });
     pbrResult.zone_text = body.zone.text;
     pbrPreview = null;
@@ -1739,9 +1922,10 @@ function truingHtml() {
     <button type="button" data-history="${esc(entry.id)}" data-action="revert">${esc(t("truing-revert"))}</button>
   </li>`).join("");
   return `<section class="panel fields">
+    <p>${esc(t("truing-intro"))}</p>
     <p class="meta">${esc(t("truing-active"))}: ${esc(active)}</p>
-    <label class="field">${esc(t("truing-kind"))}
-      <select id="truing-kind">
+    <label class="field" title="${esc(t("truing-kind-tip"))}">${esc(t("truing-kind"))}
+      <select id="truing-kind" title="${esc(t("truing-kind-tip"))}">
         <option value="mv" ${truingKind === "mv" ? "selected" : ""}>${esc(t("truing-mv"))}</option>
         <option value="drag" ${truingKind === "drag" ? "selected" : ""}>${esc(t("truing-drag"))}</option>
         <option value="tracking" ${truingKind === "tracking" ? "selected" : ""}>${esc(t("truing-tracking"))}</option>
@@ -1758,20 +1942,27 @@ function truingHtml() {
 
 function truingFields() {
   if (truingKind === "drag") {
-    return `<label class="field">${esc(t("truing-lines"))}<textarea id="truing-lines" rows="5">${esc(truingForm.lines)}</textarea></label>
+    return `<label class="field" title="${esc(t("truing-lines-tip"))}">${esc(t("truing-lines"))}<textarea id="truing-lines" rows="5" title="${esc(t("truing-lines-tip"))}">${esc(truingForm.lines)}</textarea></label>
       <p class="hint">${esc(t("truing-lines-hint"))}</p>
-      <label><input type="checkbox" id="truing-piecewise" ${truingForm.piecewise ? "checked" : ""} /> ${esc(t("truing-piecewise"))}</label>
+      <label title="${esc(t("truing-piecewise-tip"))}"><input type="checkbox" id="truing-piecewise" ${truingForm.piecewise ? "checked" : ""} /> ${esc(t("truing-piecewise"))}</label>
+      <p class="hint">${esc(t("truing-piecewise-tip"))}</p>
       <p class="hint">${esc(t("truing-drag-guidance"))}</p>`;
   }
   if (truingKind === "tracking") {
-    return `${qtyField("advertised", t("truing-advertised"), truingForm.advertised, "mrad", "angle")}
-      ${qtyField("observed", t("truing-observed"), truingForm.observed, "mrad", "angle")}
+    return `<span title="${esc(t("truing-advertised-tip"))}">${qtyField("advertised", t("truing-advertised"), truingForm.advertised, "mrad", "angle")}</span>
+      <p class="hint">${esc(t("truing-advertised-tip"))}</p>
+      <span title="${esc(t("truing-observed-tip"))}">${qtyField("observed", t("truing-observed"), truingForm.observed, "mrad", "angle")}</span>
+      <p class="hint">${esc(t("truing-observed-tip"))}</p>
       <p class="hint">${esc(t("truing-tracking-guidance"))}</p>`;
   }
-  return `${qtyField("observe_range", t("range"), truingForm.range, units().length, "length")}
-    ${qtyField("observe_elevation", t("elevation"), truingForm.elevation, "mrad", "angle")}
-    <label class="field">${esc(t("truing-shots"))}<input id="truing-shots" value="${esc(truingForm.shots)}" /></label>
-    <label class="field">${esc(t("truing-group"))}<input id="truing-group" value="${esc(truingForm.group)}" /></label>
+  return `<span title="${esc(t("truing-range-tip"))}">${qtyField("observe_range", t("range"), truingForm.range, units().length, "length")}</span>
+    <p class="hint">${esc(t("truing-range-tip"))}</p>
+    <span title="${esc(t("truing-elev-tip"))}">${qtyField("observe_elevation", t("elevation"), truingForm.elevation, "mrad", "angle")}</span>
+    <p class="hint">${esc(t("truing-elev-tip"))}</p>
+    <label class="field" title="${esc(t("truing-shots-tip"))}">${esc(t("truing-shots"))}<input id="truing-shots" value="${esc(truingForm.shots)}" title="${esc(t("truing-shots-tip"))}" /></label>
+    <p class="hint">${esc(t("truing-shots-tip"))}</p>
+    <label class="field" title="${esc(t("truing-group-tip"))}">${esc(t("truing-group"))}<input id="truing-group" value="${esc(truingForm.group)}" title="${esc(t("truing-group-tip"))}" /></label>
+    <p class="hint">${esc(t("truing-group-tip"))}</p>
     <p class="hint">${esc(t("truing-mv-guidance"))}</p>`;
 }
 
@@ -1782,7 +1973,13 @@ function truingDiff(preview) {
   if (detail.before_transonic === false && preview.kind === "mv") warnings.push(t("truing-transonic"));
   if (detail.guidance) warnings.push(detail.guidance);
   const apply = preview.applied ? "" : `<button type="button" id="truing-apply">${esc(t("truing-apply"))}</button>`;
+  const changed = preview.kind === "drag"
+    ? t("truing-result-drag")
+    : preview.kind === "tracking"
+      ? t("truing-result-tracking")
+      : t("truing-result-mv");
   return `<p>${esc(preview.summary || preview.action || "")}</p>
+    <p class="hint">${esc(changed)}</p>
     <p class="warning">${esc(warnings.join(" "))}</p>
     ${apply}`;
 }

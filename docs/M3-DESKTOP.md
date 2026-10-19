@@ -40,6 +40,16 @@ mise exec rust@1.98.1 -- cargo build --release -p holdover-cli
 - **Recoil.** Equipment → Recoil. Rifle weight is the weight as fired. Charge weight is typed here and is not saved. The ejecta line names the 1219.2 m/s (4000 ft/s) convention and says it has not been confirmed against the SAAMI publication. A reduction other than zero is labelled an estimate.
 - **Chronograph.** Paste `800, 800, 800, 800, 800, 800, 800, 900 mps`. Statistics show mean 812.5 m/s and flag the last shot. That shot stays in the mean and the sample standard deviation. Save, Set as load MV, and Apply slope each ask before they write.
 
+## Retest after the field notes
+
+These five are the checks from the first run of this build. Print the card and measure it with a ruler. The other four can be checked on screen.
+
+1. **Point-blank range.** Compute the moose 15 cm zone. Point-blank start can be 0 m: the sight sits inside that zone at the muzzle. Near zero is the first rise through the line of sight, and it is not 0 m. Far zero is the later crossing, and point-blank end is past that. Switch to Fixed zero, type `100 m`, and compute again. Far zero stays near 100 m, and the start, end, and maximum ordinate are the band for that zero, not a new optimal zero. The chart has range and path ticks, units, a line-of-sight line, and the two zone lines.
+2. **Lead.** On Solve, open Moving target. Set `5.3 mps` and `3oc`. The hold gains a lead block: milliradians, MOA, centimetres at the target, and time of flight. Change the speed to `2 mps`. Those numbers get smaller. Change the direction to `9oc`. The lead flips to the other side. No animal outline is drawn; the note under the numbers says so.
+3. **Truing.** Open Truing. The paragraph at the top says what preview and apply do. Every field has a short explanation: range and elevation are the measured group, shots and group size are recorded and do not change the fit, and the result line says whether the fit changes muzzle velocity, drag, or clicks.
+4. **Range card scale.** Build an A4 card. Print, or save as PDF, at **100%** (not fit-to-page). Measure the printed bar with a ruler. The label says 10 cm, and the bar should be 10 cm. A5 and Letter use the same 10 cm bar. A6 and Compact use a 5 cm bar.
+5. **Charts and impact.** On Charts, turn Drop off and Velocity on. The drop chart goes away and a speed chart appears, with a speed unit on the axis. Turn Wind on as well: drift comes back on its own angular axis. Scroll to Impact. Rings, a point of impact, and a 10 cm scale are drawn. Moose still says the outline is not measured. The controls under the heading are labelled Target, Range, Muzzle-velocity SD, Range error, wind brackets, and zone diameter, and Draw impact redraws the picture. They are not zoom controls.
+
 ## Not in this build
 
 Group statistics stay in a later milestone. The moose and roe outlines are still unmeasured, so the impact view draws rings only. Aerodynamic jump can be requested and is still not applied. Spin drift is still the cited Litz equation and is still not marked verified against the book. There is no chronograph device import and no reloading recipe.

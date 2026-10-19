@@ -105,6 +105,15 @@ fn point_blank_range_matches_a_bore_search() {
     assert!(solved.near_m < solved.optimal_zero_m);
     assert!(solved.optimal_zero_m < solved.far_m);
     assert!(solved.far_m > solved.ordinate_range_m);
+    let near_zero = solved.near_zero_m.expect("near zero");
+    let far_zero = solved.far_zero_m.expect("far zero");
+    assert!(near_zero > 1.0, "near zero {near_zero}");
+    assert!(near_zero < far_zero);
+    assert!((far_zero - solved.optimal_zero_m).abs() < 1.0e-9);
+    assert!(
+        solved.starts_inside,
+        "a 4.5 cm sight sits inside a 10 cm zone"
+    );
 
     let mut best: f64 = 0.0;
     let mut best_bore = 0.0;
@@ -260,6 +269,56 @@ fn result_input() -> RecoilInput {
         ejecta_mps: 4000.0 * 0.3048,
         reduction_fraction: 0.0,
     }
+}
+
+#[test]
+fn a_fixed_zero_reports_its_own_crossings() {
+    let shot = zeroed(800.0, 0.22);
+    let solved = holdover_core::pbr_fixed(&shot, 0.10).unwrap();
+    let far_zero = solved.far_zero_m.expect("far zero");
+    let near_zero = solved.near_zero_m.expect("near zero");
+    assert!((far_zero - 100.0).abs() < 1.0, "far zero {far_zero}");
+    assert!(
+        near_zero > 1.0 && near_zero < far_zero,
+        "near zero {near_zero}"
+    );
+    assert!(solved.ordinate_m > 0.0);
+    assert!(solved.near_m < solved.far_m);
+}
+
+#[test]
+fn print_css_uses_millimetres_only() {
+    let css = holdover_core::print_sheet_css(card_page("a4").unwrap());
+    assert!(
+        css.contains("@page { size: 210mm 297mm; margin: 10mm; }"),
+        "{css}"
+    );
+    assert!(css.contains(
+        "width: 100mm !important; min-width: 100mm !important; max-width: 100mm !important;"
+    ));
+    assert!(!css.contains("px"), "{css}");
+    assert!(!css.to_lowercase().contains("devicepixelratio"), "{css}");
+    let compact = holdover_core::print_sheet_css(card_page("compact").unwrap());
+    assert!(compact.contains("width: 50mm !important;"));
+    assert!(compact.contains("size: 90mm 50mm;"));
+}
+
+#[test]
+fn point_blank_near_is_zero_only_when_the_sight_is_inside_the_zone() {
+    let shot = zeroed(800.0, 0.22);
+    let tight = pbr(&shot, 0.06).unwrap();
+    assert!(
+        !tight.starts_inside,
+        "a 4.5 cm sight is outside a 6 cm zone"
+    );
+    assert!(tight.near_m > 1.0, "near {}", tight.near_m);
+    let near_zero = tight.near_zero_m.expect("near zero");
+    assert!(
+        tight.near_m < near_zero,
+        "zone entry {} before the line of sight {}",
+        tight.near_m,
+        near_zero
+    );
 }
 
 #[test]

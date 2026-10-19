@@ -5,12 +5,12 @@
 
 use holdover_core::{
     card_page, chart_axis, chrono_stats, combine_offsets, convert_from_si, format_number, lead,
-    parse_quantity, parse_twist, parse_wind_direction, pbr, powder_coefficient, recoil,
-    scale_bar_mm, table, true_drag, true_mv, true_tracking, vertical_mv_spread_m, Atmosphere,
-    BcBand, BcReference, Bullet, CdScale, ChartAxis, Click, Dimension, DragMode, DragModel,
-    DragSpec, Effects, RecoilInput, Shot, Solution, TableSpec, TrajectoryPoint, Twist, TwistHand,
-    Warning, Wind, DRAG_GUIDANCE, MV_GUIDANCE, SJF_MOOSE_RING_DIAMETER_CM,
-    SJF_ROE_BUCK_RING_DIAMETER_CM, TRACKING_GUIDANCE,
+    parse_quantity, parse_twist, parse_wind_direction, pbr, pbr_fixed, powder_coefficient,
+    print_sheet_css, recoil, scale_bar_mm, table, true_drag, true_mv, true_tracking,
+    vertical_mv_spread_m, Atmosphere, BcBand, BcReference, Bullet, CdScale, ChartAxis, Click,
+    Dimension, DragMode, DragModel, DragSpec, Effects, RecoilInput, Shot, Solution, TableSpec,
+    TrajectoryPoint, Twist, TwistHand, Warning, Wind, DRAG_GUIDANCE, MV_GUIDANCE,
+    SJF_MOOSE_RING_DIAMETER_CM, SJF_ROE_BUCK_RING_DIAMETER_CM, TRACKING_GUIDANCE,
 };
 use serde_json::{json, Value};
 
@@ -74,7 +74,7 @@ pub fn solve(store: &Store, body: &Value) -> Result<Value, String> {
         "sensitivity": sensitivity,
         "angular": angular,
         "truing": meta.truing_label,
-        "lead": lead_of(&shot, body, range_m, point, angular)?,
+        "lead": lead_of(&shot, body, range_m, point, angular, &units.length)?,
         "disclaimer": holdover_core::DISCLAIMER,
     }))
 }
@@ -197,6 +197,7 @@ pub fn range_card(store: &Store, body: &Value) -> Result<Value, String> {
         },
         "scale_bar_mm": scale_bar_mm(page),
         "scale_bar_label": if scale_bar_mm(page) >= 100.0 { "10 cm" } else { "5 cm" },
+        "print_css": print_sheet_css(page),
         "conditions": condition_labels,
         "csv": card_csv(&rows, &brackets, angular, length_unit),
     }))
@@ -322,6 +323,22 @@ fn hold_scale(angular: &str) -> (String, String, bool) {
 
 fn shown_value(si: f64, unit: &str) -> f64 {
     convert_from_si(si, unit).unwrap_or(si)
+}
+
+fn sample_extent(samples: &[Value], key: &str) -> (f64, f64) {
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for sample in samples {
+        if let Some(value) = sample.get(key).and_then(|value| value.as_f64()) {
+            lo = lo.min(value);
+            hi = hi.max(value);
+        }
+    }
+    if lo.is_finite() && hi.is_finite() {
+        (lo, hi)
+    } else {
+        (0.0, 1.0)
+    }
 }
 
 fn extent(series: &[Value], key: &str) -> (f64, f64) {
@@ -746,15 +763,22 @@ fn lead_of(
     range_m: f64,
     point: &TrajectoryPoint,
     angular: &str,
+    length_unit: &str,
 ) -> Result<Value, String> {
     if body.get("target_speed").is_none() {
         return Ok(Value::Null);
     }
-    let speed = qty(body, "target_speed", Dimension::Velocity, "mps").unwrap_or(0.0);
+    let speed = qty(body, "target_speed", Dimension::Velocity, "mps")?;
     if speed <= 0.0 {
         return Ok(Value::Null);
     }
-    let direction = parse_wind_direction(&field_text(body, "target_direction")).unwrap_or(0.0);
+    let direction_text = field_text(body, "target_direction");
+    let direction = parse_wind_direction(if direction_text.trim().is_empty() {
+        "3oc"
+    } else {
+        direction_text.as_str()
+    })
+    .map_err(|err| err.to_string())?;
     let reaction = body
         .get("reaction_s")
         .and_then(|value| value.as_f64())
@@ -769,15 +793,22 @@ fn lead_of(
     );
     Ok(json!({
         "lead_m": solved.lead_m,
+        "lead_display": shown(solved.lead_m.abs(), "cm"),
         "reaction_lead_m": solved.reaction_lead_m,
         "reaction_s": reaction,
         "reaction_note": "Reaction time is your assumption. It is added only when you enter one.",
         "tof_s": solved.tof_s,
         "impact_range_m": solved.impact_range_m,
+        "impact_range_display": shown(solved.impact_range_m, length_unit),
+        "length_unit": length_unit,
         "iterations": solved.iterations,
+        "mrad": solved.lead.mrad,
+        "moa": solved.lead.moa,
+        "cm": solved.lead_m * 100.0,
         "lead": hold_json(&solved.with_reaction, angular),
         "flight_lead": hold_json(&solved.lead, angular),
         "combined": hold_json(&combined, angular),
+        "outline": "A target outline is not drawn. This is the numeric lead.",
     }))
 }
 
@@ -855,7 +886,20 @@ fn card_csv(
 pub fn point_blank(store: &Store, body: &Value) -> Result<Value, String> {
     let (shot, meta) = build_shot(store, body)?;
     let diameter = qty(body, "zone", Dimension::Length, "m")?;
-    let solved = pbr(&shot, diameter).map_err(|err| err.to_string())?;
+    let mode = body
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("optimal");
+    let mut shot = shot;
+    if mode == "fixed" && body.get("zero").is_some() {
+        shot.zero_range_m = Some(qty(body, "zero", Dimension::Length, "m")?);
+        shot.bore_angle_rad = None;
+    }
+    let solved = if mode == "fixed" {
+        pbr_fixed(&shot, diameter).map_err(|err| err.to_string())?
+    } else {
+        pbr(&shot, diameter).map_err(|err| err.to_string())?
+    };
     let units = store.units()?;
     let samples: Vec<Value> = solved
         .samples
@@ -869,21 +913,40 @@ pub fn point_blank(store: &Store, body: &Value) -> Result<Value, String> {
             })
         })
         .collect();
+    let (range_lo, range_hi) = sample_extent(&samples, "range");
+    let (path_lo, path_hi) = sample_extent(&samples, "path");
+    let radius_display = shown_value(solved.radius_m, &units.small);
+    let y_lo = path_lo.min(-radius_display);
+    let y_hi = path_hi.max(radius_display);
+    let optional_display = |value: Option<f64>| {
+        value
+            .map(|metres| shown(metres, &units.length))
+            .unwrap_or_else(|| "—".into())
+    };
     Ok(json!({
         "profile_id": meta.profile_id,
         "profile_label": meta.profile_label,
+        "mode": if mode == "fixed" { "fixed" } else { "optimal" },
         "radius_m": solved.radius_m,
         "near_m": solved.near_m,
         "far_m": solved.far_m,
         "optimal_zero_m": solved.optimal_zero_m,
+        "near_zero_m": solved.near_zero_m,
+        "far_zero_m": solved.far_zero_m,
+        "starts_inside": solved.starts_inside,
+        "exits_above": solved.exits_above,
         "ordinate_m": solved.ordinate_m,
         "ordinate_range_m": solved.ordinate_range_m,
         "near_display": shown(solved.near_m, &units.length),
         "far_display": shown(solved.far_m, &units.length),
         "zero_display": shown(solved.optimal_zero_m, &units.length),
+        "near_zero_display": optional_display(solved.near_zero_m),
+        "far_zero_display": optional_display(solved.far_zero_m),
         "ordinate_display": shown(solved.ordinate_m, &units.small),
         "ordinate_range_display": shown(solved.ordinate_range_m, &units.length),
-        "radius_display": shown_value(solved.radius_m, &units.small),
+        "radius_display": radius_display,
+        "x": axis_json(&chart_axis(range_lo, range_hi, 6, true), &units.length),
+        "y": axis_json(&chart_axis(y_lo, y_hi, 5, true), &units.small),
         "length_unit": units.length,
         "small_unit": units.small,
         "zone_m": diameter,
@@ -1828,6 +1891,16 @@ mod tests {
         assert_eq!(card["scale_bar_mm"], 100.0);
         assert_eq!(card["scale_bar_label"], "10 cm");
         assert_eq!(card["page"]["width_mm"], 210.0);
+        let print_css = card["print_css"].as_str().unwrap();
+        assert!(
+            print_css.contains("@page { size: 210mm 297mm; margin: 10mm; }"),
+            "{print_css}"
+        );
+        assert!(
+            print_css.contains("width: 100mm !important;"),
+            "{print_css}"
+        );
+        assert!(!print_css.contains("px"), "{print_css}");
         assert!(card["csv"].as_str().unwrap().contains("Range (m)"));
         let compact = range_card(
             &store,
@@ -1946,6 +2019,24 @@ mod tests {
         let zero = zone["optimal_zero_m"].as_f64().unwrap();
         let far = zone["far_m"].as_f64().unwrap();
         assert!(near < zero && zero < far, "{near} {zero} {far}");
+        assert!(zone["near_zero_m"].as_f64().unwrap() > 1.0);
+        assert!(zone["far_zero_m"].as_f64().unwrap() > zone["near_zero_m"].as_f64().unwrap());
+        assert!(zone["x"]["labels"].as_array().unwrap().len() > 2);
+        assert!(!zone["y"]["unit"].as_str().unwrap().is_empty());
+        let fixed = point_blank(
+            &store,
+            &json!({
+                "profile_id": id,
+                "mode": "fixed",
+                "zero": {"text": "100 m", "unit": "m"},
+                "zone": {"text": "10 cm", "unit": "cm"},
+                "current_air": air(),
+                "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": false}
+            }),
+        )
+        .unwrap();
+        assert_eq!(fixed["mode"], "fixed");
+        assert!((fixed["far_zero_m"].as_f64().unwrap() - 100.0).abs() < 2.0);
         let pending = apply_zero(
             &store,
             &json!({
@@ -1962,5 +2053,40 @@ mod tests {
             .as_f64()
             .unwrap();
         assert!((still - 100.0).abs() < 1e-6);
+
+        let mut right = json!({
+            "profile_id": id,
+            "range": {"text": "80 m", "unit": "m"},
+            "wind_speed": {"text": "0 mps", "unit": "mps"},
+            "wind_direction": "12oc",
+            "inclination": {"text": "0 deg", "unit": "deg"},
+            "current_air": air(),
+            "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": false},
+            "target_speed": {"text": "5.3 mps", "unit": "mps"},
+            "target_direction": "3oc",
+            "reaction_s": 0.0,
+            "angular": "mrad"
+        });
+        let to_the_right = solve(&store, &right).unwrap();
+        let lead = &to_the_right["lead"];
+        assert!(lead["mrad"].as_f64().unwrap().abs() > 0.2, "{lead}");
+        assert!(lead["moa"].as_f64().unwrap().abs() > lead["mrad"].as_f64().unwrap().abs());
+        assert!(lead["cm"].as_f64().unwrap().abs() > 1.0);
+        assert!(lead["tof_s"].as_f64().unwrap() > 0.0);
+        assert!(lead["outline"].as_str().unwrap().contains("not drawn"));
+        right["target_direction"] = json!("9oc");
+        let to_the_left = solve(&store, &right).unwrap();
+        assert!(
+            to_the_left["lead"]["mrad"].as_f64().unwrap()
+                * to_the_right["lead"]["mrad"].as_f64().unwrap()
+                < 0.0
+        );
+        right["target_speed"] = json!({"text": "2 mps", "unit": "mps"});
+        right["target_direction"] = json!("3oc");
+        let slower = solve(&store, &right).unwrap();
+        assert!(
+            slower["lead"]["mrad"].as_f64().unwrap().abs()
+                < to_the_right["lead"]["mrad"].as_f64().unwrap().abs()
+        );
     }
 }

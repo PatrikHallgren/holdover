@@ -263,6 +263,25 @@ th:first-child, td:first-child {
   stroke-dasharray: 4 3;
 }
 
+.chart .band {
+  stroke: var(--warning);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+
+.lead-result {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+body.field .lead-result,
+body.field .lead-result .hint,
+body.field .lead-result .meta,
+body.field .lead-result .clicks {
+  display: block;
+}
+
 .chart .tick,
 .chart .zero-label {
   fill: var(--text-secondary);
@@ -309,13 +328,17 @@ th:first-child, td:first-child {
 }
 
 .scale-bar {
-  box-sizing: border-box;
-  height: 6mm;
+  box-sizing: content-box;
+  height: 8mm;
   margin: 4mm 0 2mm;
   border: 0.4mm solid currentColor;
   border-top: none;
   print-color-adjust: exact;
   -webkit-print-color-adjust: exact;
+}
+
+.scale-bar-print {
+  display: none;
 }
 
 .scale-bar span {
@@ -325,16 +348,28 @@ th:first-child, td:first-child {
 }
 
 .impact {
+  display: block;
+  width: min(100%, 640px);
+  height: auto;
+  aspect-ratio: 640 / 520;
   background: var(--background);
   border: 1px solid var(--border);
-  max-width: 100%;
-  height: auto;
+}
+
+.impact .tick-mark {
+  stroke: var(--text-secondary);
+  stroke-width: 1;
 }
 
 .impact .ring {
   fill: none;
   stroke: var(--text-secondary);
-  stroke-width: 0.15;
+  stroke-width: 1.5;
+}
+
+.impact .spread {
+  stroke-width: 1.5;
+  fill: none;
 }
 
 .impact .poi {
@@ -439,5 +474,16 @@ body.field .figure {
   }
   .scale-bar {
     border-color: black;
+  }
+  .scale-bar-screen {
+    display: none !important;
+  }
+  .scale-bar-print {
+    display: block !important;
+    box-sizing: border-box !important;
+  }
+  .card, .page, .print-sheet {
+    transform: none !important;
+    zoom: 1 !important;
   }
 }

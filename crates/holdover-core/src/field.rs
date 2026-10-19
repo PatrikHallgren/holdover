@@ -45,6 +45,14 @@ pub struct Pbr {
     pub near_m: f64,
     pub far_m: f64,
     pub optimal_zero_m: f64,
+    /// Where the bullet first rises through the line of sight.
+    pub near_zero_m: Option<f64>,
+    /// Where the bullet comes back down through the line of sight.
+    pub far_zero_m: Option<f64>,
+    /// The muzzle is already inside the vital zone, so the point-blank interval starts at 0.
+    pub starts_inside: bool,
+    /// The path leaves through the top of the zone before it falls out the bottom.
+    pub exits_above: bool,
     pub ordinate_m: f64,
     pub ordinate_range_m: f64,
     pub bore_angle_rad: f64,
@@ -239,6 +247,40 @@ pub fn scale_bar_mm(page: &CardPage) -> f64 {
     }
 }
 
+/// Print stylesheet for one card size. Lengths are millimetres. There are no pixel sizes.
+pub fn print_sheet_css(page: &CardPage) -> String {
+    let bar = scale_bar_mm(page);
+    let margin_mm = 10.0;
+    let inner = (page.width_mm - 2.0 * margin_mm).max(bar);
+    format!(
+        "@media print {{\n\
+         @page {{ size: {width}mm {height}mm; margin: {margin}mm; }}\n\
+         html, body, .page, .card, .print-sheet {{\n\
+           width: {inner}mm; max-width: {inner}mm; margin: 0; padding: 0;\n\
+         }}\n\
+         .scale-bar-screen {{ display: none; }}\n\
+         .scale-bar-print {{\n\
+           display: block !important; box-sizing: border-box !important;\n\
+           width: {bar}mm !important; min-width: {bar}mm !important; max-width: {bar}mm !important;\n\
+           height: 8mm !important;\n\
+         }}\n\
+         }}\n",
+        width = trim_mm(page.width_mm),
+        height = trim_mm(page.height_mm),
+        margin = trim_mm(margin_mm),
+        inner = trim_mm(inner),
+        bar = trim_mm(bar),
+    )
+}
+
+fn trim_mm(value: f64) -> String {
+    if (value - value.round()).abs() < 1.0e-6 {
+        format!("{}", value.round() as i64)
+    } else {
+        format!("{value:.1}")
+    }
+}
+
 /// Optimise the bore so the apex reaches `+r`, then report where the path leaves `−r`.
 ///
 /// The search is in still air. `vital_diameter_m` is the full zone, so the radius is half of it.
@@ -285,22 +327,84 @@ pub fn pbr(shot: &Shot, vital_diameter_m: f64) -> Result<Pbr> {
         samples = sample_path(shot, bore, 1600.0)?;
     }
     let (apex_index, ordinate_range_m, ordinate_m) = apex(&samples);
-    let near_m = if samples.first().map(|sample| sample.1).unwrap_or(0.0) >= -radius {
+    Ok(finish_pbr(
+        radius,
+        bore,
+        samples,
+        apex_index,
+        ordinate_range_m,
+        ordinate_m,
+        true,
+    ))
+}
+
+/// Point-blank limits for the shot's own zero. The bore is not moved to touch the zone.
+pub fn pbr_fixed(shot: &Shot, vital_diameter_m: f64) -> Result<Pbr> {
+    if !(vital_diameter_m.is_finite() && vital_diameter_m > 0.0) {
+        return Err(Error::Invalid("the vital zone diameter must be positive"));
+    }
+    if shot.zero_range_m.is_none() && shot.bore_angle_rad.is_none() {
+        return Err(Error::Invalid("this profile has no zero range"));
+    }
+    let radius = vital_diameter_m * 0.5;
+    let bore = solve::solve_zero(shot)?.bore_angle_rad;
+    let mut samples = sample_path(shot, bore, 800.0)?;
+    if crossing(&samples, 0, -radius, true).is_none()
+        && crossing(&samples, 0, radius, false).is_none()
+    {
+        samples = sample_path(shot, bore, 1600.0)?;
+    }
+    let (apex_index, ordinate_range_m, ordinate_m) = apex(&samples);
+    Ok(finish_pbr(
+        radius,
+        bore,
+        samples,
+        apex_index,
+        ordinate_range_m,
+        ordinate_m,
+        false,
+    ))
+}
+
+fn finish_pbr(
+    radius: f64,
+    bore: f64,
+    samples: Vec<(f64, f64)>,
+    apex_index: usize,
+    ordinate_range_m: f64,
+    ordinate_m: f64,
+    bore_was_optimised: bool,
+) -> Pbr {
+    let first = samples.first().map(|sample| sample.1).unwrap_or(0.0);
+    let starts_inside = first >= -radius && first <= radius;
+    let exit_top = crossing(&samples, 0, radius, false);
+    let exits_above = exit_top.is_some_and(|range| range + 1.0e-6 < ordinate_range_m);
+    let near_m = if starts_inside {
         0.0
-    } else {
+    } else if first < -radius {
         crossing(&samples, 0, -radius, false).unwrap_or(0.0)
+    } else {
+        exit_top.unwrap_or(0.0)
     };
-    let optimal_zero_m = crossing(&samples, apex_index, 0.0, true).ok_or(Error::Invalid(
-        "the path does not cross the line of sight again inside the search",
-    ))?;
-    let far_m = crossing(&samples, apex_index, -radius, true).ok_or(Error::Invalid(
-        "the path stays inside the vital zone to the end of the search",
-    ))?;
-    Ok(Pbr {
+    let far_bottom = crossing(&samples, apex_index, -radius, true);
+    let far_m = if bore_was_optimised {
+        far_bottom.unwrap_or(samples.last().map(|sample| sample.0).unwrap_or(near_m))
+    } else if exits_above {
+        exit_top.unwrap_or(near_m)
+    } else {
+        far_bottom.unwrap_or(samples.last().map(|sample| sample.0).unwrap_or(near_m))
+    };
+    let near_zero_m = crossing(&samples, 0, 0.0, false);
+    let far_zero_m = crossing(&samples, apex_index, 0.0, true);
+    Pbr {
         radius_m: radius,
         near_m,
         far_m,
-        optimal_zero_m,
+        optimal_zero_m: far_zero_m.unwrap_or(0.0),
+        near_zero_m,
+        far_zero_m,
+        starts_inside,
+        exits_above,
         ordinate_m,
         ordinate_range_m,
         bore_angle_rad: bore,
@@ -309,7 +413,7 @@ pub fn pbr(shot: &Shot, vital_diameter_m: f64) -> Result<Pbr> {
             .map(|(range_m, path_m)| PbrSample { range_m, path_m })
             .collect(),
         warnings: vec![],
-    })
+    }
 }
 
 /// `lead = V · sin(angle) · TOF`, iterated three times so along-track motion can change the range.
