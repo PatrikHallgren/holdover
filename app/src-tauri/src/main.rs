@@ -9,9 +9,10 @@ mod store;
 mod strings;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use holdover_theme::{bundled_palette, text_scale_factor, Palette, ThemeFollower, ThemePaths};
 use serde_json::{json, Value};
@@ -42,9 +43,16 @@ fn main() {
             set_active_profile,
             solve,
             range_card,
+            card_pdf,
             chart,
             export_library,
-            import_library
+            import_library,
+            point_blank,
+            apply_zero,
+            truing,
+            chrono_session,
+            recoil_calc,
+            impact
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -147,6 +155,67 @@ fn range_card(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, S
     with_store(state, |store| session::range_card(store, &body))
 }
 
+/// Write the range card as a PDF at the physical page size and open it.
+#[tauri::command]
+fn card_pdf(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = session::card_pdf_bytes(store, &body)?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("holdover-range-card-{stamp}.pdf"));
+        fs::write(&path, &bytes).map_err(|err| err.to_string())?;
+        let opened = open_pdf(&path);
+        Ok(json!({
+            "path": path,
+            "opened": opened,
+            "pdf_base64": base64_encode(&bytes),
+        }))
+    })
+}
+
+fn open_pdf(path: &Path) -> bool {
+    Command::new("xdg-open")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        let packed = ((bytes[index] as u32) << 16)
+            | ((bytes[index + 1] as u32) << 8)
+            | bytes[index + 2] as u32;
+        out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 6) & 63) as usize] as char);
+        out.push(TABLE[(packed & 63) as usize] as char);
+        index += 3;
+    }
+    let rest = bytes.len() - index;
+    if rest == 1 {
+        let packed = (bytes[index] as u32) << 16;
+        out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rest == 2 {
+        let packed = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
+        out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 6) & 63) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
 #[tauri::command]
 fn chart(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
     with_store(state, |store| session::chart(store, &body))
@@ -167,6 +236,36 @@ fn export_library(state: tauri::State<'_, AppState>) -> Result<Value, String> {
         .map_err(|err| err.to_string())?;
         Ok(json!({ "path": path, "document": doc }))
     })
+}
+
+#[tauri::command]
+fn point_blank(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::point_blank(store, &body))
+}
+
+#[tauri::command]
+fn apply_zero(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::apply_zero(store, &body))
+}
+
+#[tauri::command]
+fn truing(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::truing(store, &body))
+}
+
+#[tauri::command]
+fn chrono_session(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::chrono_session(store, &body))
+}
+
+#[tauri::command]
+fn recoil_calc(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::recoil_calc(store, &body))
+}
+
+#[tauri::command]
+fn impact(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::impact(store, &body))
 }
 
 #[tauri::command]

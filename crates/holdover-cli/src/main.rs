@@ -8,8 +8,10 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use holdover_core::{
-    parse_quantity, parse_twist, parse_wind, Atmosphere, BcBand, BcReference, Bullet, Click,
-    Dimension, DragModel, DragSpec, Effects, PressureKind, Shot, TableSpec, TwistHand, DISCLAIMER,
+    chrono_stats, lead, parse_quantity, parse_twist, parse_wind, parse_wind_direction, pbr, recoil,
+    true_drag, true_mv, Atmosphere, BcBand, BcReference, Bullet, Click, Dimension, DragMode,
+    DragModel, DragSpec, Effects, PressureKind, RecoilInput, Shot, TableSpec, TwistHand,
+    DEFAULT_EJECTA_MPS, DISCLAIMER,
 };
 use serde::Deserialize;
 
@@ -52,6 +54,83 @@ enum Command {
         step: String,
         #[arg(long)]
         wind: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Point-blank range for a vital-zone diameter.
+    Pbr {
+        #[arg(long)]
+        profile: PathBuf,
+        /// Vital-zone diameter, for example `15cm`.
+        #[arg(long)]
+        zone: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Moving-target lead. Direction uses the same clock as wind.
+    Lead {
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long)]
+        range: String,
+        #[arg(long)]
+        speed: String,
+        /// Clock direction. 3 is to the right, 9 is to the left, 12 is away.
+        #[arg(long, default_value = "3oc")]
+        direction: String,
+        /// Optional reaction time in seconds. A user assumption, not a measured delay.
+        #[arg(long, default_value = "0")]
+        reaction: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fit an effective muzzle velocity to one observed elevation.
+    TrueMv {
+        #[arg(long)]
+        profile: PathBuf,
+        #[arg(long)]
+        range: String,
+        #[arg(long)]
+        elevation: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fit a drag multiplier to observed elevations (`400m=2.1mrad`).
+    TrueDrag {
+        #[arg(long)]
+        profile: PathBuf,
+        /// `range=elevation`, repeated.
+        #[arg(long = "observe", required = true)]
+        observations: Vec<String>,
+        /// One Cd scale per observation instead of a single multiplier.
+        #[arg(long)]
+        piecewise: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Free-recoil estimate. Charge weight is an input, never derived.
+    Recoil {
+        #[arg(long)]
+        rifle: String,
+        #[arg(long)]
+        bullet: String,
+        #[arg(long)]
+        charge: String,
+        #[arg(long)]
+        mv: String,
+        #[arg(long)]
+        ejecta: Option<String>,
+        /// Fraction removed from the energy, for example `0.2`. An estimate.
+        #[arg(long, default_value = "0")]
+        reduction: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Chronograph statistics. Outliers stay in the mean and the sample SD.
+    Chrono {
+        /// Shot speeds, separated by commas or spaces. `800, 900 mps`.
+        #[arg(long)]
+        shots: String,
         #[arg(long)]
         json: bool,
     },
@@ -116,6 +195,279 @@ fn run() -> Result<(), String> {
             };
             let solution = holdover_core::table(&shot, spec).map_err(|e| e.to_string())?;
             emit_solution(&solution, json);
+        }
+        Command::Pbr {
+            profile,
+            zone,
+            json,
+        } => {
+            let shot = load_shot(&profile)?;
+            let diameter = length(&zone)?;
+            let solved = pbr(&shot, diameter).map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "radius_m": solved.radius_m,
+                        "near_m": solved.near_m,
+                        "far_m": solved.far_m,
+                        "optimal_zero_m": solved.optimal_zero_m,
+                        "ordinate_m": solved.ordinate_m,
+                        "ordinate_range_m": solved.ordinate_range_m,
+                        "disclaimer": DISCLAIMER,
+                    })
+                );
+            } else {
+                println!(
+                    "near {:.1} m · far {:.1} m · zero {:.1} m · ordinate {:.1} cm at {:.1} m",
+                    solved.near_m,
+                    solved.far_m,
+                    solved.optimal_zero_m,
+                    solved.ordinate_m * 100.0,
+                    solved.ordinate_range_m
+                );
+                println!("{DISCLAIMER}");
+            }
+        }
+        Command::Lead {
+            profile,
+            range,
+            speed,
+            direction,
+            reaction,
+            json,
+        } => {
+            let shot = load_shot(&profile)?;
+            let range_m = length(&range)?;
+            let speed_mps = parse_quantity(&speed, Dimension::Velocity, Some("mps"))
+                .map_err(|e| e.to_string())?;
+            let direction_rad = parse_wind_direction(&direction).map_err(|e| e.to_string())?;
+            let reaction_s: f64 = reaction
+                .trim()
+                .parse()
+                .map_err(|_| "reaction must be seconds")?;
+            let solved = lead(&shot, range_m, speed_mps, direction_rad, reaction_s)
+                .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "lead_m": solved.lead_m,
+                        "reaction_lead_m": solved.reaction_lead_m,
+                        "reaction_s": solved.reaction_s,
+                        "tof_s": solved.tof_s,
+                        "impact_range_m": solved.impact_range_m,
+                        "lead_mrad": solved.with_reaction.mrad,
+                        "lead_moa": solved.with_reaction.moa,
+                        "flight_lead_mrad": solved.lead.mrad,
+                        "disclaimer": DISCLAIMER,
+                    })
+                );
+            } else {
+                println!(
+                    "lead {:.3} m · {:.2} mrad · {:.2} MOA · reaction {:.3} m",
+                    solved.lead_m,
+                    solved.with_reaction.mrad,
+                    solved.with_reaction.moa,
+                    solved.reaction_lead_m
+                );
+                println!("Reaction time is your assumption. It is added only when you enter one.");
+                println!("{DISCLAIMER}");
+            }
+        }
+        Command::TrueMv {
+            profile,
+            range,
+            elevation,
+            json,
+        } => {
+            let shot = load_shot(&profile)?;
+            let range_m = length(&range)?;
+            let elevation_rad = parse_quantity(&elevation, Dimension::Angle, Some("mrad"))
+                .map_err(|e| e.to_string())?;
+            let fit = true_mv(&shot, range_m, elevation_rad).map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "mv_mps": fit.mv_mps,
+                        "previous_mv_mps": fit.previous_mv_mps,
+                        "change_fraction": fit.change_fraction,
+                        "large_change": fit.large_change,
+                        "before_transonic": fit.before_transonic,
+                        "guidance": fit.guidance,
+                        "disclaimer": DISCLAIMER,
+                    })
+                );
+            } else {
+                println!(
+                    "MV {:.1} → {:.1} m/s ({:+.1}%). {}",
+                    fit.previous_mv_mps,
+                    fit.mv_mps,
+                    fit.change_fraction * 100.0,
+                    fit.guidance
+                );
+                if fit.large_change {
+                    println!("The muzzle-velocity change is larger than 3%.");
+                }
+                println!("{DISCLAIMER}");
+            }
+        }
+        Command::TrueDrag {
+            profile,
+            observations,
+            piecewise,
+            json,
+        } => {
+            let shot = load_shot(&profile)?;
+            let mut pairs = Vec::new();
+            for item in &observations {
+                let (range, elevation) = item
+                    .split_once('=')
+                    .ok_or_else(|| format!("observe '{item}' needs range=elevation"))?;
+                pairs.push((
+                    length(range)?,
+                    parse_quantity(elevation, Dimension::Angle, Some("mrad"))
+                        .map_err(|e| e.to_string())?,
+                ));
+            }
+            let mode = if piecewise {
+                DragMode::MachBands
+            } else {
+                DragMode::Multiplier
+            };
+            let fit = true_drag(&shot, &pairs, mode).map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "bc_multiplier": fit.bc_multiplier,
+                        "cd_multiplier": fit.cd_multiplier,
+                        "large_change": fit.large_change,
+                        "guidance": fit.guidance,
+                        "disclaimer": DISCLAIMER,
+                    })
+                );
+            } else {
+                println!(
+                    "BC ×{:.3} (Cd ×{:.3}). {}",
+                    fit.bc_multiplier, fit.cd_multiplier, fit.guidance
+                );
+                if fit.large_change {
+                    println!("The BC change is larger than 10%.");
+                }
+                println!("{DISCLAIMER}");
+            }
+        }
+        Command::Recoil {
+            rifle,
+            bullet,
+            charge,
+            mv,
+            ejecta,
+            reduction,
+            json,
+        } => {
+            let ejecta_mps = match ejecta {
+                Some(text) => parse_quantity(&text, Dimension::Velocity, Some("mps"))
+                    .map_err(|e| e.to_string())?,
+                None => DEFAULT_EJECTA_MPS,
+            };
+            let reduction_fraction: f64 = reduction
+                .trim()
+                .parse()
+                .map_err(|_| "reduction must be a fraction such as 0.2")?;
+            let result = recoil(RecoilInput {
+                rifle_mass_kg: parse_quantity(&rifle, Dimension::Mass, Some("kg"))
+                    .map_err(|e| e.to_string())?,
+                bullet_mass_kg: parse_quantity(&bullet, Dimension::Mass, Some("g"))
+                    .map_err(|e| e.to_string())?,
+                charge_mass_kg: parse_quantity(&charge, Dimension::Mass, Some("g"))
+                    .map_err(|e| e.to_string())?,
+                mv_mps: parse_quantity(&mv, Dimension::Velocity, Some("mps"))
+                    .map_err(|e| e.to_string())?,
+                ejecta_mps,
+                reduction_fraction,
+            })
+            .map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "velocity_mps": result.velocity_mps,
+                        "energy_j": result.energy_j,
+                        "velocity_fps": result.velocity_fps,
+                        "energy_ft_lbf": result.energy_ft_lbf,
+                        "convention": result.convention,
+                        "reduction_is_estimate": result.reduction_is_estimate,
+                        "disclaimer": DISCLAIMER,
+                    })
+                );
+            } else {
+                println!(
+                    "recoil {:.2} m/s · {:.1} J",
+                    result.velocity_mps, result.energy_j
+                );
+                println!("{}", result.convention);
+                if result.reduction_is_estimate {
+                    println!(
+                        "The reduction is an estimate. Brakes and suppressors are not modelled."
+                    );
+                }
+                println!("{DISCLAIMER}");
+            }
+        }
+        Command::Chrono { shots, json } => {
+            let mut speeds = Vec::new();
+            for part in shots.split([',', ';', '\n']) {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                speeds.push(
+                    parse_quantity(part, Dimension::Velocity, Some("mps"))
+                        .map_err(|e| e.to_string())?,
+                );
+            }
+            let stats = chrono_stats(&speeds).map_err(|e| e.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "count": stats.count,
+                        "mean_mps": stats.mean_mps,
+                        "sd_mps": stats.sd_mps,
+                        "es_mps": stats.es_mps,
+                        "min_mps": stats.min_mps,
+                        "max_mps": stats.max_mps,
+                        "outliers": stats.outliers,
+                        "outlier_note": "Flagged shots stay in the mean and the standard deviation.",
+                        "disclaimer": DISCLAIMER,
+                    })
+                );
+            } else {
+                println!(
+                    "n {} · mean {:.1} m/s · SD {:.1} · ES {:.1} · {:.1}–{:.1}",
+                    stats.count,
+                    stats.mean_mps,
+                    stats.sd_mps,
+                    stats.es_mps,
+                    stats.min_mps,
+                    stats.max_mps
+                );
+                if !stats.outliers.is_empty() {
+                    println!(
+                        "flagged (still included): {}",
+                        stats
+                            .outliers
+                            .iter()
+                            .map(|index| index.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                println!("{DISCLAIMER}");
+            }
         }
         Command::Atmosphere {
             temperature,

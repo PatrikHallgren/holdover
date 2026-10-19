@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-point-blank"
+description = "Enables the point_blank command without any pre-configured scope."
+commands.allow = ["point_blank"]
+
+[[permission]]
+identifier = "deny-point-blank"
+description = "Denies the point_blank command without any pre-configured scope."
+commands.deny = ["point_blank"]

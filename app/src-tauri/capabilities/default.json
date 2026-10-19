@@ -17,8 +17,15 @@
     "allow-set-active-profile",
     "allow-solve",
     "allow-range-card",
+    "allow-card-pdf",
     "allow-chart",
     "allow-export-library",
-    "allow-import-library"
+    "allow-import-library",
+    "allow-point-blank",
+    "allow-apply-zero",
+    "allow-truing",
+    "allow-chrono-session",
+    "allow-recoil-calc",
+    "allow-impact"
   ]
 }

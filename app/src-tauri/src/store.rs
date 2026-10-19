@@ -8,7 +8,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use holdover_core::{
-    format_number, parse_quantity, Dimension, SJF_MOOSE_RING_DIAMETER_CM,
+    card_page, card_pages, default_card_page, format_number, parse_quantity, running_presets,
+    Dimension, DEFAULT_EJECTA_MPS, EJECTA_CONVENTION, SJF_MOOSE_RING_DIAMETER_CM,
     SJF_ROE_BUCK_RING_DIAMETER_CM,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -233,6 +234,33 @@ impl Store {
                 "moose_cm": SJF_MOOSE_RING_DIAMETER_CM,
                 "roe_cm": SJF_ROE_BUCK_RING_DIAMETER_CM,
             },
+            "running": running_presets()
+                .iter()
+                .map(|preset| {
+                    json!({
+                        "id": preset.id,
+                        "name": preset.name,
+                        "range_m": preset.range_m,
+                        "speed_mps": preset.speed_mps,
+                        "speed_known": preset.speed_known,
+                        "note": preset.note,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "card_pages": card_pages()
+                .iter()
+                .map(|page| {
+                    json!({
+                        "id": page.id,
+                        "name": page.name,
+                        "width_mm": page.width_mm,
+                        "height_mm": page.height_mm,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "ejecta_mps": DEFAULT_EJECTA_MPS,
+            "ejecta_convention": EJECTA_CONVENTION,
+            "paper": self.paper_id()?,
         }))
     }
 
@@ -256,6 +284,11 @@ impl Store {
         if !matches!(appearance, "follow" | "light" | "dark") {
             return Err("appearance must be follow, light, or dark".into());
         }
+        if let Some(paper) = body.get("paper").and_then(|value| value.as_str()) {
+            if card_page(paper).is_none() {
+                return Err(format!("unknown card size {paper}"));
+            }
+        }
         self.conn.execute(
             "UPDATE settings SET preset = ?1, units_json = ?2, appearance = ?3, large_text = ?4,
              reduced_motion = ?5, card_pinned = ?6, angular = ?7 WHERE id = 1",
@@ -269,7 +302,47 @@ impl Store {
                 units.angular
             ],
         ).map_err(|err| err.to_string())?;
+        if let Some(paper) = body.get("paper").and_then(|value| value.as_str()) {
+            self.remember_paper(paper)?;
+        }
         Ok(())
+    }
+
+    /// Remember the range-card paper size. Unknown ids are refused.
+    pub fn remember_paper(&self, page_id: &str) -> Result<(), String> {
+        if card_page(page_id).is_none() {
+            return Err(format!("unknown card size {page_id}"));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('paper', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![page_id],
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    /// Saved paper size, or Letter for a US locale or yard unit, otherwise A4.
+    pub fn paper_id(&self) -> Result<String, String> {
+        let saved: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'paper'", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|err| err.to_string())?;
+        if let Some(saved) = saved {
+            if card_page(&saved).is_some() {
+                return Ok(saved);
+            }
+        }
+        let units = self.units()?;
+        let locale = std::env::var("LC_PAPER")
+            .or_else(|_| std::env::var("LC_ALL"))
+            .or_else(|_| std::env::var("LANG"))
+            .unwrap_or_default();
+        Ok(default_card_page(&units.length, &locale).to_string())
     }
 
     pub fn complete_onboarding(&self, body: &Value) -> Result<(), String> {
@@ -492,6 +565,17 @@ impl Store {
             "zero_powder",
             optional_qty(body, "zero_powder", Dimension::Temperature, "C")?,
         )?;
+        if let Some(id) = body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            if let Ok(existing) = self.body("profile", id) {
+                if let Some(truing) = existing.get("truing") {
+                    record["truing"] = truing.clone();
+                }
+            }
+        }
         let id = self.write_record("profile", body, record)?;
         if self.active_id()?.is_empty() {
             self.set_active(&id)?;
@@ -624,6 +708,7 @@ impl Store {
             "loads": self.kind_export("load")?,
             "atmospheres": self.kind_export("atmosphere")?,
             "profiles": self.kind_export("profile")?,
+            "chronos": self.kind_export("chrono")?,
         }))
     }
 
@@ -655,6 +740,7 @@ impl Store {
             "loads": doc["loads"].as_array().map(|v| v.len()).unwrap_or(0),
             "atmospheres": doc["atmospheres"].as_array().map(|v| v.len()).unwrap_or(0),
             "profiles": doc["profiles"].as_array().map(|v| v.len()).unwrap_or(0),
+            "chronos": doc.get("chronos").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
         });
         if !commit {
             return Ok(preview);
@@ -676,6 +762,11 @@ impl Store {
         ] {
             for item in doc[key].as_array().cloned().unwrap_or_default() {
                 insert_raw(&tx, kind, &item, &device)?;
+            }
+        }
+        if let Some(items) = doc.get("chronos").and_then(|v| v.as_array()) {
+            for item in items {
+                insert_raw(&tx, "chrono", item, &device)?;
             }
         }
         if let Some(settings) = doc.get("settings") {
@@ -778,6 +869,7 @@ impl Store {
             "bullets": self.list_kind("bullet", units)?,
             "loads": self.list_kind("load", units)?,
             "profiles": self.list_profiles(units)?,
+            "chronos": self.list_kind("chrono", units)?,
         }))
     }
 
@@ -982,6 +1074,60 @@ impl Store {
                 object.insert("created_at".into(), json!(created));
                 object.insert("updated_at".into(), json!(updated));
                 object.insert("revision".into(), json!(revision));
+            }
+            out.push(value);
+        }
+        Ok(out)
+    }
+
+    pub fn mutate_body(
+        &self,
+        kind: &str,
+        id: &str,
+        mutate: impl FnOnce(&mut serde_json::Map<String, Value>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let raw: String = self
+            .conn
+            .query_row(
+                "SELECT body FROM records WHERE id = ?1 AND kind = ?2 AND deleted_at IS NULL",
+                params![id, kind],
+                |row| row.get(0),
+            )
+            .map_err(|_| format!("{kind} {id} was not found"))?;
+        let mut value: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+        {
+            let object = value.as_object_mut().ok_or("record")?;
+            mutate(object)?;
+        }
+        self.write_record(kind, &json!({ "id": id }), value)?;
+        Ok(())
+    }
+
+    pub fn save_chrono_record(&self, body: &Value) -> Result<String, String> {
+        let load_id = body
+            .get("load_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        self.require_live("load", load_id)?;
+        self.write_record("chrono", &json!({}), body.clone())
+    }
+
+    pub fn live_bodies(&self, kind: &str) -> Result<Vec<Value>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, body FROM records WHERE kind = ?1 AND deleted_at IS NULL")
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![kind], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, raw) = row.map_err(|err| err.to_string())?;
+            let mut value: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("id".into(), json!(id));
             }
             out.push(value);
         }

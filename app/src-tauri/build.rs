@@ -13,9 +13,16 @@ fn main() {
             "set_active_profile",
             "solve",
             "range_card",
+            "card_pdf",
             "chart",
             "export_library",
             "import_library",
+            "point_blank",
+            "apply_zero",
+            "truing",
+            "chrono_session",
+            "recoil_calc",
+            "impact",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }
