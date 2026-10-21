@@ -70,7 +70,7 @@ PDF bytes are not in the JSON or the CSV. Copy `holdover.db` and `holdover.blobs
 
 ## Screens
 
-Solve, the range card, charts, the reticle, targets, point-blank range, truing, and equipment behave as in Milestones 2–5. This guide covers what Milestone 6 adds, plus the controls that apply everywhere.
+Solve keeps the profile, the summary line, truing, range, wind, direction, and inclination beside the hold. Air, the moving target, and the effect checkboxes are tabs under the hold, so that top stays on screen. The range card, charts, the reticle, targets, point-blank range, truing, and equipment behave as in Milestones 2–5. This guide covers what Milestone 6 adds, plus the controls that apply everywhere. Point-blank shows the five ranges in one row above the chart. The explanations sit under the chart.
 
 ### Compare
 

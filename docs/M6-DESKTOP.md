@@ -66,6 +66,17 @@ git tag -a v1.0.0 -m "Holdover 1.0.0"
 git push origin v1.0.0
 ```
 
+## Retest the layout
+
+The first pass on this machine worked. This pass changes layout only. The solver and the stored numbers are the same. Use the same window: 2880×1920, scale 1.6, `GDK_SCALE=2`. Check a light theme and a dark theme. The focus ring, labels, and the unit switch stay.
+
+- **Solve, no page scroll.** Maximize the window. Without scrolling, the left side shows the profile, the summary line (range, temperature, station or sea level, humidity), truing, range, wind speed, direction with its hint, and inclination. The right side shows the two holds with clicks, the detail line (velocity, energy, time of flight, Mach, drop, stability, density altitude), the nearby-ranges line, and the keyboard hint. Air, Moving target, and Effects are tabs under the hold. Fetch weather. A long reply scrolls inside the Air tab. The hold and the left column stay put.
+- **Solve, narrow window.** Drag the window narrow. The inputs stack above the hold, and the tabs follow. The fields stay readable. Widen it again and the two columns return.
+- **Units.** On Solve, switch the header to US and back to Metric. Range, wind, the Air tab, and the hold change unit. The typed numbers are not rewritten when the suffix was already explicit.
+- **Compact fields.** On Charts, Reticle, Targets, Point-blank, Truing, and Settings, a number field is about as wide as the number plus its unit button. Related fields share a row: Charts range, muzzle-velocity SD, and range error; Reticle magnification and calibrated magnification; Settings latitude, longitude, and stale-after; Truing range and elevation. Labels stay visible. Tab moves across a row, then to the next. The focus ring shows.
+- **Point-blank.** Above the chart, one row: Point-blank start, Near zero, Far zero, Point-blank end, and Maximum ordinate, each with a unit. The explanations, including the still-air note, are under the chart.
+- **Field mode.** F11 hides the inputs and the tabs and leaves the hold.
+
 ## Still open
 
 T2–T6 and the US rulebook targets stay on About and in the user guide. They wait on ruler photos and measurements. Spin drift stays unverified against Litz. Aerodynamic jump stays accepted and unapplied. The recoil ejecta default stays unconfirmed against SAAMI. No stand-in diameters were added for those items.

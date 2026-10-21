@@ -17,6 +17,7 @@ let lastSolve = null;
 let stale = false;
 let solveError = "";
 let fieldMode = false;
+let solveTab = "air";
 let paletteOpen = false;
 let unitsOpen = false;
 let equipKind = "rifle";
@@ -162,6 +163,7 @@ async function refresh() {
 function render() {
   window.clearInterval(weatherTimer);
   const app = document.getElementById("app");
+  document.body.classList.toggle("fit-solve", page === "solve" && boot.settings.onboarded);
   if (!boot.settings.onboarded) {
     app.innerHTML = onboardHtml();
     bindOnboard();
@@ -462,49 +464,35 @@ function bindWeather() {
   weatherTimer = window.setInterval(paintAirBadge, 15000);
 }
 
+function solveTabButton(id, label) {
+  const on = solveTab === id;
+  return `<button type="button" role="tab" id="solve-tab-${id}" data-tab="${id}" aria-controls="solve-panel-${id}" aria-selected="${on}" tabindex="${on ? "0" : "-1"}">${esc(label)}</button>`;
+}
+
+function solvePanel(id, body) {
+  const on = solveTab === id;
+  return `<div role="tabpanel" id="solve-panel-${id}" data-tab="${id}" aria-labelledby="solve-tab-${id}" ${on ? "" : "hidden"}>${body}</div>`;
+}
+
 function solveHtml() {
   const s = boot.settings;
   const profiles = boot.equipment.profiles;
   const options = profiles.map((item) => `<option value="${esc(item.id)}" ${item.id === s.active_profile_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
   const active = profiles.find((item) => item.id === s.active_profile_id);
-  return `<div class="layout">
-    <section class="panel inputs">
-      <label class="field">${esc(t("profile"))}
-        <select id="profile">${options || `<option value="">${esc(t("no-profile"))}</option>`}</select>
-      </label>
-      <p class="meta" id="zero-summary">${active ? esc(active.summary || "") : esc(t("no-profile"))}</p>
-      <p class="meta" id="truing-line">${esc((lastSolve && lastSolve.truing) || t("truing-none"))}</p>
-      <p class="banner hidden" id="differs">${esc(t("air-differs"))}</p>
-      ${qtyField("range", t("range"), s.last_range, s.last_range_unit || units().length, "length", s.last_range_si, s.last_range_display)}
-      ${qtyField("wind_speed", t("wind-speed"), s.last_wind_speed, s.last_wind_speed_unit || units().velocity, "velocity", s.last_wind_speed_si, s.last_wind_speed_display)}
-      <label class="field">${esc(t("wind-direction"))}
-        <input id="wind_direction" value="${esc(s.last_wind_direction || "12oc")}" />
-        <span class="hint">${esc(t("wind-clock-hint"))}</span>
-      </label>
-      ${qtyField("inclination", t("inclination"), s.last_inclination, "deg", "angle", s.last_inclination_si, s.last_inclination_display)}
-      <p class="meta">${esc(t("current-air"))}</p>
-      ${airFields(s.current_air || {}, "")}
-      <div id="weather-block">${weatherBlock()}</div>
-      <div class="checks" id="effects">
-        ${check("incline", true)}${check("spin_drift", true)}${check("coriolis", false)}${check("cant", false)}${check("aerodynamic_jump", false)}
-      </div>
-      <div id="extra" class="fields hidden">
-        ${qtyField("latitude", t("latitude"), "0 deg", "deg", "angle")}
-        ${qtyField("azimuth", t("azimuth"), "0 deg", "deg", "angle")}
-        ${qtyField("cant", t("cant-angle"), "0 deg", "deg", "angle")}
-      </div>
-      <p class="hint">${esc(t("field-suffix-hint"))}</p>
-      <p class="hint">${esc(t("spin-note"))}</p>
-      <p class="hint">${esc(t("jump-note"))}</p>
-      <details class="noprint" id="lead-box" ${moving.open ? "open" : ""}>
-        <summary>${esc(t("lead-title"))}</summary>
+  const air = `<p class="hint">${esc(t("solve-tab-air-intro"))}</p>
+    <div class="compact">
+      <div class="cluster">${airFields(s.current_air || {}, "")}</div>
+    </div>
+    <div id="weather-block">${weatherBlock()}</div>`;
+  const lead = `<p class="hint">${esc(t("solve-tab-lead-intro"))}</p>
+    <div class="compact">
+      <div class="cluster">
         <label class="field">${esc(t("lead-preset"))}
           <select id="lead-preset">
             <option value="">${esc(t("overlay-none"))}</option>
             ${(boot.running || []).map((item) => `<option value="${esc(item.id)}" ${moving.preset === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}
           </select>
         </label>
-        <p class="hint" id="lead-note">${esc(leadNote())}</p>
         ${qtyField("target_speed", t("target-speed"), moving.speedText, moving.speedUnit || units().velocity, "velocity")}
         <label class="field">${esc(t("lead-direction"))}
           <input id="target_direction" value="${esc(moving.direction || "3oc")}" />
@@ -514,6 +502,8 @@ function solveHtml() {
           <input id="reaction_s" value="${esc(moving.reaction || "0")}" inputmode="decimal" />
           <span class="hint">${esc(t("lead-reaction-note"))}</span>
         </label>
+      </div>
+      <div class="cluster">
         <label class="field" title="${esc(t("lead-target-tip"))}">${esc(t("impact-target"))}
           <select id="lead-target" title="${esc(t("lead-target-tip"))}">
             <option value="">${esc(t("lead-target-none"))}</option>
@@ -526,12 +516,54 @@ function solveHtml() {
             <option value="right" ${leadFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
           </select>
         </label>
-      </details>
+      </div>
+    </div>
+    <p class="hint" id="lead-note">${esc(leadNote())}</p>
+    <div id="lead-result">${leadHold()}</div>`;
+  const effects = `<p class="hint">${esc(t("solve-tab-effects-intro"))}</p>
+    <div class="checks" id="effects">
+      ${check("incline", true)}${check("spin_drift", true)}${check("coriolis", false)}${check("cant", false)}${check("aerodynamic_jump", false)}
+    </div>
+    <div id="extra" class="compact hidden">
+      <div class="cluster">
+        ${qtyField("latitude", t("latitude"), "0 deg", "deg", "angle")}
+        ${qtyField("azimuth", t("azimuth"), "0 deg", "deg", "angle")}
+        ${qtyField("cant", t("cant-angle"), "0 deg", "deg", "angle")}
+      </div>
+    </div>
+    <p class="hint">${esc(t("field-suffix-hint"))}</p>
+    <p class="hint">${esc(t("spin-note"))}</p>
+    <p class="hint">${esc(t("jump-note"))}</p>`;
+  return `<div class="solve">
+    <section class="panel inputs">
+      <label class="field">${esc(t("profile"))}
+        <select id="profile">${options || `<option value="">${esc(t("no-profile"))}</option>`}</select>
+      </label>
+      <p class="meta" id="zero-summary">${active ? esc(active.summary || "") : esc(t("no-profile"))}</p>
+      <p class="meta" id="truing-line">${esc((lastSolve && lastSolve.truing) || t("truing-none"))}</p>
+      <p class="banner hidden" id="differs">${esc(t("air-differs"))}</p>
+      ${qtyField("range", t("range"), s.last_range, s.last_range_unit || units().length, "length", s.last_range_si, s.last_range_display)}
+      ${qtyField("wind_speed", t("wind-speed"), s.last_wind_speed, s.last_wind_speed_unit || units().velocity, "velocity", s.last_wind_speed_si, s.last_wind_speed_display)}
+      <label class="field">${esc(t("wind-direction"))}
+        <input id="wind_direction" value="${esc(s.last_wind_direction || "12oc")}" title="${esc(t("wind-clock-hint"))}" />
+        <span class="hint">${esc(t("wind-clock-hint"))}</span>
+      </label>
+      ${qtyField("inclination", t("inclination"), s.last_inclination, "deg", "angle", s.last_inclination_si, s.last_inclination_display)}
     </section>
-    <section>
+    <section class="solve-result">
       <div id="hold" class="hold" aria-live="polite">${holdInner()}</div>
       <p class="error" id="solve-error"></p>
       <p class="hint">${esc(t("keys-hint"))}</p>
+    </section>
+    <section class="panel solve-tabs noprint">
+      <div class="tabs" role="tablist" aria-label="${esc(t("solve-tabs"))}">
+        ${solveTabButton("air", t("solve-tab-air"))}
+        ${solveTabButton("lead", t("solve-tab-lead"))}
+        ${solveTabButton("effects", t("solve-tab-effects"))}
+      </div>
+      ${solvePanel("air", air)}
+      ${solvePanel("lead", lead)}
+      ${solvePanel("effects", effects)}
     </section>
   </div>`;
 }
@@ -631,12 +663,11 @@ function holdInner() {
     if (item.kind === "range") return `${Number(item.range_m).toFixed(0)} m ${item.elevation.direction} ${item.elevation.primary}`;
     return `${t("wind-speed")} ${Number(item.speed_mps).toFixed(1)} ${item.windage.direction} ${item.windage.primary}`;
   }).join(" · ") : "";
-  return `${line(elev && elev.direction, elev && elev.primary, elev && elev.clicks)}
-    ${line(wind && wind.direction, wind && wind.primary, wind && wind.clicks)}
+  return `<div class="hold-grid">${line(elev && elev.direction, elev && elev.primary, elev && elev.clicks)}
+    ${line(wind && wind.direction, wind && wind.primary, wind && wind.clicks)}</div>
     <p class="secondary">${esc(secondary)}</p>
     <p class="sensitivity">${esc(near)}</p>
-    <p class="warning" id="warns">${lastSolve ? esc([].concat(lastSolve.warnings || [], lastSolve.station_pressure_note || []).join(" ")) : ""}</p>
-    ${leadHold()}`;
+    <p class="warning" id="warns">${lastSolve ? esc([].concat(lastSolve.warnings || [], lastSolve.station_pressure_note || []).join(" ")) : ""}</p>`;
 }
 
 function leadNote() {
@@ -768,34 +799,40 @@ function chartHtml() {
     <div id="chart-body"></div>
     <h3>${esc(t("impact-title"))}</h3>
     <p class="hint">${esc(t("impact-intro"))}</p>
-    <div class="fields noprint">
-      <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
-        <select id="impact-target" title="${esc(t("impact-target-tip"))}">
-          ${targetOptions(impactTarget)}
-          <option value="custom" ${impactTarget === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
-        </select>
-      </label>
-      <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
-        <select id="impact-facing" title="${esc(t("facing-tip"))}">
-          <option value="left" ${impactFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
-          <option value="right" ${impactFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
-        </select>
-      </label>
-      <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
-        <select id="impact-ringing" title="${esc(t("ringing-tip"))}">
-          <option value="primary" ${impactRinging === "primary" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
-          <option value="alt" ${impactRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
-        </select>
-      </label>
-      <label title="${esc(t("silhouette-tip"))}"><input id="impact-silhouette" type="checkbox" ${impactSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
-      <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length")}</span>
-      <span title="${esc(t("impact-mv-tip"))}">${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}</span>
-      <span title="${esc(t("impact-error-tip"))}">${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}</span>
-      <label class="field" title="${esc(t("impact-wind-tip"))}">${esc(t("card-winds"))}
-        <input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" />
-      </label>
-      <span title="${esc(t("impact-zone-tip"))}">${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}</span>
-      <button type="button" id="impact-draw" title="${esc(t("impact-draw-tip"))}">${esc(t("impact-draw"))}</button>
+    <div class="compact noprint">
+      <div class="cluster">
+        <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
+          <select id="impact-target" title="${esc(t("impact-target-tip"))}">
+            ${targetOptions(impactTarget)}
+            <option value="custom" ${impactTarget === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
+          </select>
+        </label>
+        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
+          <select id="impact-facing" title="${esc(t("facing-tip"))}">
+            <option value="left" ${impactFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+            <option value="right" ${impactFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+          </select>
+        </label>
+        <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
+          <select id="impact-ringing" title="${esc(t("ringing-tip"))}">
+            <option value="primary" ${impactRinging === "primary" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
+            <option value="alt" ${impactRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
+          </select>
+        </label>
+        <label title="${esc(t("silhouette-tip"))}"><input id="impact-silhouette" type="checkbox" ${impactSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+      </div>
+      <div class="cluster">
+        <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length")}</span>
+        <span title="${esc(t("impact-mv-tip"))}">${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}</span>
+        <span title="${esc(t("impact-error-tip"))}">${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}</span>
+      </div>
+      <div class="cluster">
+        <label class="field phrase" title="${esc(t("impact-wind-tip"))}">${esc(t("card-winds"))}
+          <input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" />
+        </label>
+        <span title="${esc(t("impact-zone-tip"))}">${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}</span>
+        <button type="button" id="impact-draw" title="${esc(t("impact-draw-tip"))}">${esc(t("impact-draw"))}</button>
+      </div>
     </div>
     <div id="impact-body"></div>
   </section>`;
@@ -914,7 +951,7 @@ function settingsHtml() {
   const rings = boot.targets || { moose_cm: [], roe_cm: [] };
   const lat = s.weather_latitude == null ? "" : String(s.weather_latitude);
   const lon = s.weather_longitude == null ? "" : String(s.weather_longitude);
-  return `<section class="panel fields">
+  return `<section class="panel">
     <p class="hint">${esc(t("settings-page-intro"))}</p>
     <h2>${esc(t("settings-appearance"))}</h2>
     <div class="checks">
@@ -926,18 +963,22 @@ function settingsHtml() {
     <p class="meta">${esc(t("palette"))}: ${esc(theme.source || "")} · ${esc(t("text-scale"))} ${esc(theme.text_scale || 1)}</p>
     <h2>${esc(t("settings-weather"))}</h2>
     <p class="hint">${esc(t("settings-weather-intro"))}</p>
-    <label class="field">${esc(t("weather-place"))}
-      <input id="weather-place" value="${esc(s.weather_place || "")}" title="${esc(t("weather-place-tip"))}" />
-    </label>
-    <label class="field">${esc(t("weather-latitude"))}
-      <input id="weather-lat" value="${esc(lat)}" inputmode="decimal" title="${esc(t("weather-latitude-tip"))}" />
-    </label>
-    <label class="field">${esc(t("weather-longitude"))}
-      <input id="weather-lon" value="${esc(lon)}" inputmode="decimal" title="${esc(t("weather-longitude-tip"))}" />
-    </label>
-    <label class="field">${esc(t("weather-stale-minutes"))}
-      <input id="weather-stale" value="${esc(s.weather_stale_minutes || 60)}" inputmode="numeric" title="${esc(t("weather-stale-tip"))}" />
-    </label>
+    <div class="compact">
+      <label class="field wide">${esc(t("weather-place"))}
+        <input id="weather-place" value="${esc(s.weather_place || "")}" title="${esc(t("weather-place-tip"))}" />
+      </label>
+      <div class="cluster">
+        <label class="field">${esc(t("weather-latitude"))}
+          <input id="weather-lat" value="${esc(lat)}" inputmode="decimal" title="${esc(t("weather-latitude-tip"))}" />
+        </label>
+        <label class="field">${esc(t("weather-longitude"))}
+          <input id="weather-lon" value="${esc(lon)}" inputmode="decimal" title="${esc(t("weather-longitude-tip"))}" />
+        </label>
+        <label class="field">${esc(t("weather-stale-minutes"))}
+          <input id="weather-stale" value="${esc(s.weather_stale_minutes || 60)}" inputmode="numeric" title="${esc(t("weather-stale-tip"))}" />
+        </label>
+      </div>
+    </div>
     <button type="button" id="weather-save" title="${esc(t("weather-save-tip"))}">${esc(t("weather-save"))}</button>
     <p id="weather-save-msg" class="meta"></p>
     <p class="hint">${esc(t("weather-attribution"))}</p>
@@ -953,7 +994,7 @@ function settingsHtml() {
     <p id="backup-path" class="meta"></p>
     <pre id="backup-json" class="hidden"></pre>
     <p class="hint">${esc(t("include-note"))}</p>
-    <label class="field">${esc(t("settings-restore"))}<input id="restore-file" type="file" accept="application/json,.json,text/csv,.csv" title="${esc(t("settings-library-intro"))}" /></label>
+    <div class="compact"><label class="field">${esc(t("settings-restore"))}<input id="restore-file" type="file" accept="application/json,.json,text/csv,.csv" title="${esc(t("settings-library-intro"))}" /></label></div>
     <pre id="restore-preview"></pre>
     <div class="row">
       <button type="button" id="restore-commit" class="hidden">${esc(t("settings-replace"))}</button>
@@ -1139,9 +1180,42 @@ function bindSolve() {
     moving.open = true;
     scheduleSolve(0);
   });
-  const details = document.getElementById("lead-box");
-  if (details) details.addEventListener("toggle", () => { moving.open = details.open; });
+  bindSolveTabs();
   paintLeadFace();
+}
+
+function bindSolveTabs() {
+  const list = document.querySelector(".solve-tabs [role=tablist]");
+  if (!list) return;
+  const tabs = [...list.querySelectorAll("[role=tab]")];
+  tabs.forEach((button) => {
+    button.addEventListener("click", () => selectSolveTab(button.dataset.tab, button));
+    button.addEventListener("keydown", (event) => {
+      const index = tabs.indexOf(button);
+      let next = -1;
+      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      if (next < 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selectSolveTab(tabs[next].dataset.tab, tabs[next]);
+    });
+  });
+}
+
+function selectSolveTab(id, focus) {
+  solveTab = id;
+  document.querySelectorAll(".solve-tabs [role=tab]").forEach((button) => {
+    const on = button.dataset.tab === id;
+    button.setAttribute("aria-selected", on ? "true" : "false");
+    button.tabIndex = on ? 0 : -1;
+  });
+  document.querySelectorAll(".solve-tabs [role=tabpanel]").forEach((panel) => {
+    panel.hidden = panel.dataset.tab !== id;
+  });
+  if (focus) focus.focus();
 }
 
 function needsExtra() {
@@ -1893,6 +1967,8 @@ async function runSolve() {
     solveError = "";
     hold.classList.remove("stale");
     hold.innerHTML = holdInner();
+    const leadHost = document.getElementById("lead-result");
+    if (leadHost) leadHost.innerHTML = leadHold();
     paintLeadFace();
     error.textContent = "";
     const differs = document.getElementById("differs");
@@ -2239,18 +2315,21 @@ function pbrHtml() {
       <label title="${esc(t("pbr-optimal-tip"))}"><input type="radio" name="pbr-mode" value="optimal" ${pbrMode !== "fixed" ? "checked" : ""} /> ${esc(t("pbr-optimal"))}</label>
       <label title="${esc(t("pbr-fixed-tip"))}"><input type="radio" name="pbr-mode" value="fixed" ${pbrMode === "fixed" ? "checked" : ""} /> ${esc(t("pbr-fixed"))}</label>
     </div>
-    <label class="field">${esc(t("pbr-preset"))}
-      <select id="pbr-preset">
-        <option value="moose" ${pbrZonePreset === "moose" ? "selected" : ""}>${esc(t("pbr-moose"))}</option>
-        <option value="roe" ${pbrZonePreset === "roe" ? "selected" : ""}>${esc(t("pbr-roe"))}</option>
-        <option value="custom" ${pbrZonePreset === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
-      </select>
-    </label>
-    ${qtyField("zone", t("pbr-zone"), pbrZoneText(), pbrZoneUnit(), "length")}
-    <div class="${pbrMode === "fixed" ? "" : "hidden"}">${qtyField("pbr-zero", t("pbr-zero-input"), pbrZeroText, units().length, "length")}</div>
-    <button type="button" id="pbr-build">${esc(t("apply"))}</button>
-    <p class="hint">${esc(pbrMode === "fixed" ? "pbr-fixed-note" : "pbr-note")}</p>
-    <div id="pbr-body">${pbrResult ? pbrView(pbrResult) : ""}</div>
+    <div class="compact">
+      <div class="cluster">
+        <label class="field">${esc(t("pbr-preset"))}
+          <select id="pbr-preset">
+            <option value="moose" ${pbrZonePreset === "moose" ? "selected" : ""}>${esc(t("pbr-moose"))}</option>
+            <option value="roe" ${pbrZonePreset === "roe" ? "selected" : ""}>${esc(t("pbr-roe"))}</option>
+            <option value="custom" ${pbrZonePreset === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
+          </select>
+        </label>
+        ${qtyField("zone", t("pbr-zone"), pbrZoneText(), pbrZoneUnit(), "length")}
+        <div class="${pbrMode === "fixed" ? "" : "hidden"}">${qtyField("pbr-zero", t("pbr-zero-input"), pbrZeroText, units().length, "length")}</div>
+        <button type="button" id="pbr-build">${esc(t("apply"))}</button>
+      </div>
+    </div>
+    <div id="pbr-body">${pbrResult ? pbrView(pbrResult) : `<div class="pbr-notes"><p class="hint">${esc(t(pbrMode === "fixed" ? "pbr-fixed-note" : "pbr-note"))}</p></div>`}</div>
   </section>`;
 }
 
@@ -2271,23 +2350,32 @@ function pbrView(data) {
     : `<button type="button" id="pbr-apply">${esc(t("pbr-apply"))}</button>`);
   const inside = data.starts_inside ? `<p class="hint">${esc(t("pbr-starts-inside"))}</p>` : "";
   const above = data.exits_above ? `<p class="hint">${esc(t("pbr-exits-above"))}</p>` : "";
-  return `<p><strong>${esc(t("pbr-start-label"))}</strong> ${esc(data.near_display)} ${esc(data.length_unit)}</p>
-    <p class="hint">${esc(t("pbr-start-help"))}</p>
-    ${inside}
-    <p><strong>${esc(t("pbr-near-zero-label"))}</strong> ${esc(data.near_zero_display)} ${esc(data.length_unit)}</p>
-    <p class="hint">${esc(t("pbr-near-zero-help"))}</p>
-    <p><strong>${esc(t("pbr-far-zero-label"))}</strong> ${esc(data.far_zero_display)} ${esc(data.length_unit)}</p>
-    <p class="hint">${esc(t("pbr-far-zero-help"))}</p>
-    <p><strong>${esc(t("pbr-end-label"))}</strong> ${esc(data.far_display)} ${esc(data.length_unit)}</p>
-    <p class="hint">${esc(t("pbr-end-help"))}</p>
-    ${above}
-    <p><strong>${esc(t("pbr-ordinate"))}</strong> ${esc(data.ordinate_display)} ${esc(t("pbr-at"))} ${esc(data.ordinate_range_display)} ${esc(data.length_unit)}</p>
-    <p class="hint">${esc(t("pbr-ordinate-help"))}</p>
-    <div class="row" id="pbr-spans">${pbrSpanButtons(data)}</div>
-    <p class="hint">${esc(t("pbr-zoom-hint"))}</p>
+  const unit = data.length_unit || "";
+  const cell = (label, value) => `<div><dt>${esc(label)}</dt><dd>${esc(value)} ${esc(unit)}</dd></div>`;
+  const ordinate = `${data.ordinate_display} ${unit} ${t("pbr-at")} ${data.ordinate_range_display} ${unit}`;
+  return `<dl class="pbr-results">
+      ${cell(t("pbr-start-label"), data.near_display)}
+      ${cell(t("pbr-near-zero-label"), data.near_zero_display)}
+      ${cell(t("pbr-far-zero-label"), data.far_zero_display)}
+      ${cell(t("pbr-end-label"), data.far_display)}
+      <div><dt>${esc(t("pbr-ordinate"))}</dt><dd>${esc(ordinate)}</dd></div>
+    </dl>
     <div id="pbr-chart"></div>
-    <p class="hint">${esc(t("pbr-still-air"))}</p>
-    ${confirm}`;
+    <div class="row" id="pbr-spans">${pbrSpanButtons(data)}</div>
+    ${confirm}
+    <div class="pbr-notes">
+      <p class="hint">${esc(t(data.mode === "fixed" ? "pbr-fixed-note" : "pbr-note"))}</p>
+      <p class="hint">${esc(t("pbr-start-help"))}</p>
+      ${inside}
+      <p class="hint">${esc(t("pbr-near-zero-help"))}</p>
+      <p class="hint">${esc(t("pbr-far-zero-help"))}</p>
+      <p class="hint">${esc(t("pbr-end-help"))}</p>
+      ${above}
+      <p class="hint">${esc(t("pbr-ordinate-help"))}</p>
+      <p class="hint">${esc(t("pbr-band"))}</p>
+      <p class="hint">${esc(t("pbr-still-air"))}</p>
+      <p class="hint">${esc(t("pbr-zoom-hint"))}</p>
+    </div>`;
 }
 
 function pbrSpanButtons(data) {
@@ -2653,17 +2741,19 @@ function truingHtml() {
     <button type="button" data-history="${esc(entry.id)}" data-action="activate">${esc(t("truing-activate"))}</button>
     <button type="button" data-history="${esc(entry.id)}" data-action="revert">${esc(t("truing-revert"))}</button>
   </li>`).join("");
-  return `<section class="panel fields">
+  return `<section class="panel">
     <p>${esc(t("truing-intro"))}</p>
     <p class="meta">${esc(t("truing-active"))}: ${esc(active)}</p>
-    <label class="field" title="${esc(t("truing-kind-tip"))}">${esc(t("truing-kind"))}
-      <select id="truing-kind" title="${esc(t("truing-kind-tip"))}">
-        <option value="mv" ${truingKind === "mv" ? "selected" : ""}>${esc(t("truing-mv"))}</option>
-        <option value="drag" ${truingKind === "drag" ? "selected" : ""}>${esc(t("truing-drag"))}</option>
-        <option value="tracking" ${truingKind === "tracking" ? "selected" : ""}>${esc(t("truing-tracking"))}</option>
-      </select>
-    </label>
-    <div id="truing-fields">${truingFields()}</div>
+    <div class="compact">
+      <label class="field" title="${esc(t("truing-kind-tip"))}">${esc(t("truing-kind"))}
+        <select id="truing-kind" title="${esc(t("truing-kind-tip"))}">
+          <option value="mv" ${truingKind === "mv" ? "selected" : ""}>${esc(t("truing-mv"))}</option>
+          <option value="drag" ${truingKind === "drag" ? "selected" : ""}>${esc(t("truing-drag"))}</option>
+          <option value="tracking" ${truingKind === "tracking" ? "selected" : ""}>${esc(t("truing-tracking"))}</option>
+        </select>
+      </label>
+    </div>
+    <div id="truing-fields" class="compact">${truingFields()}</div>
     <button type="button" id="truing-preview">${esc(t("settings-preview"))}</button>
     <div id="truing-result">${truingPreview ? truingDiff(truingPreview) : ""}</div>
     <h3>${esc(t("truing-history"))}</h3>
@@ -2674,26 +2764,32 @@ function truingHtml() {
 
 function truingFields() {
   if (truingKind === "drag") {
-    return `<label class="field" title="${esc(t("truing-lines-tip"))}">${esc(t("truing-lines"))}<textarea id="truing-lines" rows="5" title="${esc(t("truing-lines-tip"))}">${esc(truingForm.lines)}</textarea></label>
+    return `<label class="field wide" title="${esc(t("truing-lines-tip"))}">${esc(t("truing-lines"))}<textarea id="truing-lines" rows="5" title="${esc(t("truing-lines-tip"))}">${esc(truingForm.lines)}</textarea></label>
       <p class="hint">${esc(t("truing-lines-hint"))}</p>
       <label title="${esc(t("truing-piecewise-tip"))}"><input type="checkbox" id="truing-piecewise" ${truingForm.piecewise ? "checked" : ""} /> ${esc(t("truing-piecewise"))}</label>
       <p class="hint">${esc(t("truing-piecewise-tip"))}</p>
       <p class="hint">${esc(t("truing-drag-guidance"))}</p>`;
   }
   if (truingKind === "tracking") {
-    return `<span title="${esc(t("truing-advertised-tip"))}">${qtyField("advertised", t("truing-advertised"), truingForm.advertised, "mrad", "angle")}</span>
+    return `<div class="cluster">
+        <span title="${esc(t("truing-advertised-tip"))}">${qtyField("advertised", t("truing-advertised"), truingForm.advertised, "mrad", "angle")}</span>
+        <span title="${esc(t("truing-observed-tip"))}">${qtyField("observed", t("truing-observed"), truingForm.observed, "mrad", "angle")}</span>
+      </div>
       <p class="hint">${esc(t("truing-advertised-tip"))}</p>
-      <span title="${esc(t("truing-observed-tip"))}">${qtyField("observed", t("truing-observed"), truingForm.observed, "mrad", "angle")}</span>
       <p class="hint">${esc(t("truing-observed-tip"))}</p>
       <p class="hint">${esc(t("truing-tracking-guidance"))}</p>`;
   }
-  return `<span title="${esc(t("truing-range-tip"))}">${qtyField("observe_range", t("range"), truingForm.range, units().length, "length")}</span>
+  return `<div class="cluster">
+      <span title="${esc(t("truing-range-tip"))}">${qtyField("observe_range", t("range"), truingForm.range, units().length, "length")}</span>
+      <span title="${esc(t("truing-elev-tip"))}">${qtyField("observe_elevation", t("elevation"), truingForm.elevation, "mrad", "angle")}</span>
+    </div>
+    <div class="cluster">
+      <label class="field" title="${esc(t("truing-shots-tip"))}">${esc(t("truing-shots"))}<input id="truing-shots" value="${esc(truingForm.shots)}" title="${esc(t("truing-shots-tip"))}" /></label>
+      <label class="field" title="${esc(t("truing-group-tip"))}">${esc(t("truing-group"))}<input id="truing-group" value="${esc(truingForm.group)}" title="${esc(t("truing-group-tip"))}" /></label>
+    </div>
     <p class="hint">${esc(t("truing-range-tip"))}</p>
-    <span title="${esc(t("truing-elev-tip"))}">${qtyField("observe_elevation", t("elevation"), truingForm.elevation, "mrad", "angle")}</span>
     <p class="hint">${esc(t("truing-elev-tip"))}</p>
-    <label class="field" title="${esc(t("truing-shots-tip"))}">${esc(t("truing-shots"))}<input id="truing-shots" value="${esc(truingForm.shots)}" title="${esc(t("truing-shots-tip"))}" /></label>
     <p class="hint">${esc(t("truing-shots-tip"))}</p>
-    <label class="field" title="${esc(t("truing-group-tip"))}">${esc(t("truing-group"))}<input id="truing-group" value="${esc(truingForm.group)}" title="${esc(t("truing-group-tip"))}" /></label>
     <p class="hint">${esc(t("truing-group-tip"))}</p>
     <p class="hint">${esc(t("truing-mv-guidance"))}</p>`;
 }
@@ -3180,49 +3276,53 @@ function reticleHtml() {
   return `<section class="panel">
     <h2>${esc(t("reticle-title"))}</h2>
     <p class="hint">${esc(t("reticle-intro"))}</p>
-    <div class="fields">
-      <label class="field" title="${esc(t("reticle-pick-tip"))}">${esc(t("reticle-pick"))}
+    <div class="compact">
+      <label class="field wide" title="${esc(t("reticle-pick-tip"))}">${esc(t("reticle-pick"))}
         <select id="reticle-pick" title="${esc(t("reticle-pick-tip"))}">${reticleChoices()}</select>
       </label>
-      <label class="field" title="${esc(t("reticle-mag-tip"))}">${esc(t("reticle-mag"))}
-        <input id="reticle-mag" value="${esc(reticleState.mag)}" inputmode="decimal" title="${esc(t("reticle-mag-tip"))}" />
-      </label>
-      <div class="row">
-        ${[5, 10, 20].map((mag) => `<button type="button" data-mag="${mag}" title="${esc(t("reticle-mag-check"))}">${mag}×</button>`).join("")}
+      <div class="cluster">
+        <label class="field" title="${esc(t("reticle-mag-tip"))}">${esc(t("reticle-mag"))}
+          <input id="reticle-mag" value="${esc(reticleState.mag)}" inputmode="decimal" title="${esc(t("reticle-mag-tip"))}" />
+        </label>
+        <div class="row">
+          ${[5, 10, 20].map((mag) => `<button type="button" data-mag="${mag}" title="${esc(t("reticle-mag-check"))}">${mag}×</button>`).join("")}
+        </div>
+        <label class="field" title="${esc(t("reticle-cal-tip"))}">${esc(t("reticle-cal"))}
+          <input id="reticle-cal" value="${esc(reticleState.cal)}" inputmode="decimal" title="${esc(t("reticle-cal-tip"))}" />
+        </label>
+        <label class="field" title="${esc(t("reticle-fov-tip"))}">${esc(t("reticle-fov"))}
+          <input id="reticle-fov" value="${esc(reticleState.fov)}" inputmode="decimal" title="${esc(t("reticle-fov-tip"))}" />
+        </label>
+        <label class="field" title="${esc(t("reticle-focal-tip"))}">${esc(t("reticle-focal"))}
+          <select id="reticle-focal" title="${esc(t("reticle-focal-tip"))}">
+            <option value="ffp" ${reticleState.focal === "ffp" ? "selected" : ""}>${esc(t("focal-ffp"))}</option>
+            <option value="sfp" ${reticleState.focal === "sfp" ? "selected" : ""}>${esc(t("focal-sfp"))}</option>
+          </select>
+        </label>
       </div>
-      <label class="field" title="${esc(t("reticle-fov-tip"))}">${esc(t("reticle-fov"))}
-        <input id="reticle-fov" value="${esc(reticleState.fov)}" inputmode="decimal" title="${esc(t("reticle-fov-tip"))}" />
-      </label>
-      <label class="field" title="${esc(t("reticle-focal-tip"))}">${esc(t("reticle-focal"))}
-        <select id="reticle-focal" title="${esc(t("reticle-focal-tip"))}">
-          <option value="ffp" ${reticleState.focal === "ffp" ? "selected" : ""}>${esc(t("focal-ffp"))}</option>
-          <option value="sfp" ${reticleState.focal === "sfp" ? "selected" : ""}>${esc(t("focal-sfp"))}</option>
-        </select>
-      </label>
-      <label class="field" title="${esc(t("reticle-cal-tip"))}">${esc(t("reticle-cal"))}
-        <input id="reticle-cal" value="${esc(reticleState.cal)}" inputmode="decimal" title="${esc(t("reticle-cal-tip"))}" />
-      </label>
-      <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
-        <select id="reticle-target" title="${esc(t("impact-target-tip"))}">
-          <option value="">${esc(t("reticle-no-target"))}</option>
-          ${targetOptions(reticleState.target)}
-        </select>
-      </label>
-      <span title="${esc(t("reticle-range-tip"))}">${qtyField("reticle-range", t("range"), reticleState.rangeText, units().length, "length")}</span>
-      <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
-        <select id="reticle-facing" title="${esc(t("facing-tip"))}">
-          <option value="left" ${reticleState.facing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
-          <option value="right" ${reticleState.facing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
-        </select>
-      </label>
-      <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
-        <select id="reticle-ringing" title="${esc(t("ringing-tip"))}">
-          <option value="primary" ${reticleState.ringing !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
-          <option value="alt" ${reticleState.ringing === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
-        </select>
-      </label>
-      <label title="${esc(t("reticle-hold-tip"))}"><input id="reticle-hold" type="checkbox" ${reticleState.showHold ? "checked" : ""} /> ${esc(t("reticle-hold"))}</label>
-      <label title="${esc(t("silhouette-tip"))}"><input id="reticle-silhouette" type="checkbox" ${reticleState.showSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+      <div class="cluster">
+        <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
+          <select id="reticle-target" title="${esc(t("impact-target-tip"))}">
+            <option value="">${esc(t("reticle-no-target"))}</option>
+            ${targetOptions(reticleState.target)}
+          </select>
+        </label>
+        <span title="${esc(t("reticle-range-tip"))}">${qtyField("reticle-range", t("range"), reticleState.rangeText, units().length, "length")}</span>
+        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
+          <select id="reticle-facing" title="${esc(t("facing-tip"))}">
+            <option value="left" ${reticleState.facing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+            <option value="right" ${reticleState.facing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+          </select>
+        </label>
+        <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
+          <select id="reticle-ringing" title="${esc(t("ringing-tip"))}">
+            <option value="primary" ${reticleState.ringing !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
+            <option value="alt" ${reticleState.ringing === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
+          </select>
+        </label>
+        <label title="${esc(t("reticle-hold-tip"))}"><input id="reticle-hold" type="checkbox" ${reticleState.showHold ? "checked" : ""} /> ${esc(t("reticle-hold"))}</label>
+        <label title="${esc(t("silhouette-tip"))}"><input id="reticle-silhouette" type="checkbox" ${reticleState.showSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+      </div>
     </div>
     <p id="reticle-readout" class="hint"></p>
     <p id="reticle-warn" class="badge hidden"></p>
@@ -3230,30 +3330,34 @@ function reticleHtml() {
     <div id="reticle-face"></div>
     <h3>${esc(t("editor-title"))}</h3>
     <p class="hint">${esc(t("editor-intro"))}</p>
-    <div class="fields">
-      <label class="field" title="${esc(t("editor-name-tip"))}">${esc(t("editor-name"))}
+    <div class="compact">
+      <label class="field wide" title="${esc(t("editor-name-tip"))}">${esc(t("editor-name"))}
         <input id="reticle-name" title="${esc(t("editor-name-tip"))}" />
       </label>
-      <label class="field" title="${esc(t("editor-tool-tip"))}">${esc(t("editor-tool"))}
-        <select id="reticle-tool" title="${esc(t("editor-tool-tip"))}">
-          ${["line", "hash", "dot", "circle", "text"].map((tool) => `<option value="${tool}" ${reticleState.tool === tool ? "selected" : ""}>${esc(t("tool-" + tool))}</option>`).join("")}
-        </select>
-      </label>
-      <label class="field" title="${esc(t("editor-text-tip"))}">${esc(t("editor-text"))}
-        <input id="reticle-text" value="1" title="${esc(t("editor-text-tip"))}" />
-      </label>
-      <label class="field" title="${esc(t("editor-snap-tip"))}">${esc(t("editor-snap"))}
-        <input id="reticle-snap" value="${esc(reticleState.snap)}" inputmode="decimal" title="${esc(t("editor-snap-tip"))}" />
-      </label>
-      <label class="field" title="${esc(t("editor-repeat-tip"))}">${esc(t("editor-repeat"))}
-        <input id="reticle-copies" value="3" inputmode="decimal" title="${esc(t("editor-repeat-tip"))}" />
-      </label>
-      <label class="field" title="${esc(t("editor-dx-tip"))}">${esc(t("editor-dx"))}
-        <input id="reticle-dx" value="1" inputmode="decimal" title="${esc(t("editor-dx-tip"))}" />
-      </label>
-      <label class="field" title="${esc(t("editor-dy-tip"))}">${esc(t("editor-dy"))}
-        <input id="reticle-dy" value="0" inputmode="decimal" title="${esc(t("editor-dy-tip"))}" />
-      </label>
+      <div class="cluster">
+        <label class="field" title="${esc(t("editor-tool-tip"))}">${esc(t("editor-tool"))}
+          <select id="reticle-tool" title="${esc(t("editor-tool-tip"))}">
+            ${["line", "hash", "dot", "circle", "text"].map((tool) => `<option value="${tool}" ${reticleState.tool === tool ? "selected" : ""}>${esc(t("tool-" + tool))}</option>`).join("")}
+          </select>
+        </label>
+        <label class="field" title="${esc(t("editor-text-tip"))}">${esc(t("editor-text"))}
+          <input id="reticle-text" value="1" title="${esc(t("editor-text-tip"))}" />
+        </label>
+        <label class="field" title="${esc(t("editor-snap-tip"))}">${esc(t("editor-snap"))}
+          <input id="reticle-snap" value="${esc(reticleState.snap)}" inputmode="decimal" title="${esc(t("editor-snap-tip"))}" />
+        </label>
+      </div>
+      <div class="cluster">
+        <label class="field" title="${esc(t("editor-repeat-tip"))}">${esc(t("editor-repeat"))}
+          <input id="reticle-copies" value="3" inputmode="decimal" title="${esc(t("editor-repeat-tip"))}" />
+        </label>
+        <label class="field" title="${esc(t("editor-dx-tip"))}">${esc(t("editor-dx"))}
+          <input id="reticle-dx" value="1" inputmode="decimal" title="${esc(t("editor-dx-tip"))}" />
+        </label>
+        <label class="field" title="${esc(t("editor-dy-tip"))}">${esc(t("editor-dy"))}
+          <input id="reticle-dy" value="0" inputmode="decimal" title="${esc(t("editor-dy-tip"))}" />
+        </label>
+      </div>
     </div>
     <div class="row">
       <button type="button" id="reticle-mirror-x" title="${esc(t("editor-mirror-x-tip"))}">${esc(t("editor-mirror-x"))}</button>
@@ -3664,33 +3768,35 @@ function targetsHtml() {
     <h3>${esc(t("open-items"))}</h3>
     <p class="hint">${esc(t("open-items-intro"))}</p>
     <div id="open-items">${openItemsHtml()}</div>
-    <div class="fields">
-      <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
-        <select id="target-pick" title="${esc(t("impact-target-tip"))}">${targetOptions(targetPickId())}</select>
-      </label>
-      <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
-        <select id="target-facing" title="${esc(t("facing-tip"))}">
-          <option value="left" ${targetFacing !== "right" ? "selected" : ""}>${esc(t("facing-left"))}</option>
-          <option value="right" ${targetFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
-        </select>
-      </label>
-      <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
-        <select id="target-ringing" title="${esc(t("ringing-tip"))}">
-          <option value="primary" ${targetRinging !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
-          <option value="alt" ${targetRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
-        </select>
-      </label>
-      <label title="${esc(t("silhouette-tip"))}"><input id="target-silhouette" type="checkbox" ${targetSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
-      <label class="field" title="${esc(t("card-size"))}">${esc(t("card-size"))}
-        <select id="target-page" title="${esc(t("card-size"))}">${pages}</select>
-      </label>
+    <div class="compact">
+      <div class="cluster">
+        <label class="field wide" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
+          <select id="target-pick" title="${esc(t("impact-target-tip"))}">${targetOptions(targetPickId())}</select>
+        </label>
+        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
+          <select id="target-facing" title="${esc(t("facing-tip"))}">
+            <option value="left" ${targetFacing !== "right" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+            <option value="right" ${targetFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+          </select>
+        </label>
+        <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
+          <select id="target-ringing" title="${esc(t("ringing-tip"))}">
+            <option value="primary" ${targetRinging !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
+            <option value="alt" ${targetRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
+          </select>
+        </label>
+        <label title="${esc(t("silhouette-tip"))}"><input id="target-silhouette" type="checkbox" ${targetSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+        <label class="field" title="${esc(t("card-size"))}">${esc(t("card-size"))}
+          <select id="target-page" title="${esc(t("card-size"))}">${pages}</select>
+        </label>
+      </div>
     </div>
     <div id="target-flags">${spec ? flagHtml(spec.flags) : ""}</div>
     <p class="hint">${spec ? esc(spec.subtitle || "") : ""} ${spec && spec.distance_note ? "· " + esc(spec.distance_note) : ""}</p>
     <div id="target-face">${spec ? faceSvg(spec, { showSilhouette: true, ringing: "primary", label: spec.name }) : ""}</div>
     <h3>${esc(t("target-edit-title"))}</h3>
     <p class="hint">${esc(t("target-edit-intro"))}</p>
-    <div id="target-editor">${targetEditorHtml(spec)}</div>
+    <div id="target-editor" class="compact">${targetEditorHtml(spec)}</div>
     <div class="row">
       <button type="button" id="target-save" title="${esc(t("target-save-tip"))}">${esc(t("target-save"))}</button>
       <button type="button" id="target-pdf" title="${esc(t("target-pdf-tip"))}">${esc(t("target-pdf"))}</button>
@@ -3698,11 +3804,13 @@ function targetsHtml() {
     <p id="target-notice" class="hint">${esc(targetNotice)}</p>
     <h3>${esc(t("svg-title"))}</h3>
     <p class="hint">${esc(t("svg-intro"))}</p>
-    <div class="fields">
-      <label class="field" title="${esc(t("svg-file-tip"))}">${esc(t("svg-file"))}<input id="svg-file" type="file" accept=".svg,image/svg+xml" title="${esc(t("svg-file-tip"))}" /></label>
-      <span title="${esc(t("svg-width-tip"))}">${qtyField("svg-width", t("svg-width"), "20 cm", units().small, "length")}</span>
-      <span title="${esc(t("svg-height-tip"))}">${qtyField("svg-height", t("svg-height"), "20 cm", units().small, "length")}</span>
-      <button type="button" id="svg-save" title="${esc(t("svg-save-tip"))}">${esc(t("svg-save"))}</button>
+    <div class="compact">
+      <div class="cluster">
+        <label class="field" title="${esc(t("svg-file-tip"))}">${esc(t("svg-file"))}<input id="svg-file" type="file" accept=".svg,image/svg+xml" title="${esc(t("svg-file-tip"))}" /></label>
+        <span title="${esc(t("svg-width-tip"))}">${qtyField("svg-width", t("svg-width"), "20 cm", units().small, "length")}</span>
+        <span title="${esc(t("svg-height-tip"))}">${qtyField("svg-height", t("svg-height"), "20 cm", units().small, "length")}</span>
+        <button type="button" id="svg-save" title="${esc(t("svg-save-tip"))}">${esc(t("svg-save"))}</button>
+      </div>
     </div>
   </section>`;
 }
