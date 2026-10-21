@@ -710,7 +710,39 @@ body.field .figure {
   font-weight: 600;
 }
 
-.solve-tabs [hidden] {
+.sync-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0.35rem 0 0.6rem;
+}
+
+.sync-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.75rem;
+  align-items: center;
+  padding: 0.28rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sync-row .kind,
+.sync-row .status,
+.sync-more {
+  color: var(--text-secondary);
+}
+
+.sync-row .kind {
+  min-width: 6.5rem;
+}
+
+.sync-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.solve-tabs [hidden],
+.sync-page [hidden] {
   display: none !important;
 }
 

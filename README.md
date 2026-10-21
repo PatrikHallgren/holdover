@@ -4,7 +4,7 @@ Holdover is a personal, non-commercial, local-first ballistic calculator for the
 
 > All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.
 
-The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 6 prepares 1.0.0: compare, documents, the load log, archive, the Arch package, and About. The guide is [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md). Check the window with [`docs/M6-DESKTOP.md`](docs/M6-DESKTOP.md). Earlier checklists are [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md), [`docs/M3-DESKTOP.md`](docs/M3-DESKTOP.md), [`docs/M4-DESKTOP.md`](docs/M4-DESKTOP.md), and [`docs/M5-DESKTOP.md`](docs/M5-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 7 prepares 1.1.0: a `.holdover` bundle with a merge preview. The guide is [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md). Check the window with [`docs/M7-DESKTOP.md`](docs/M7-DESKTOP.md). Milestone 6 prepared 1.0.0: compare, documents, the load log, archive, the Arch package, and About ([`docs/M6-DESKTOP.md`](docs/M6-DESKTOP.md)). Earlier checklists are [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md), [`docs/M3-DESKTOP.md`](docs/M3-DESKTOP.md), [`docs/M4-DESKTOP.md`](docs/M4-DESKTOP.md), and [`docs/M5-DESKTOP.md`](docs/M5-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Layout
 
@@ -15,7 +15,7 @@ The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 6 prepares 1.0.0: 
 | `crates/holdover-theme` | Omarchy 4 template and `colors.toml` adapter. |
 | `share/holdover` | `holdover.json.tpl` and the optional theme-set hook. |
 | `packaging/` | `PKGBUILD`, desktop entry, and icon. |
-| `app/` | Tauri 2 window. Solve, range card, charts, equipment, compare, documents, settings, About. |
+| `app/` | Tauri 2 window. Solve, range card, charts, equipment, compare, documents, sync, settings, About. |
 | `locales/en.ftl` | English strings. The only shipped locale. |
 | `docs/references/vectors.md` | Documented reference vectors. |
 | `docs/schema/holdover.schema.json` | Draft library schema, including sync fields. |

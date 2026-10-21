@@ -154,7 +154,7 @@ pub struct WeatherPlace {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     db_path: PathBuf,
 }
 
@@ -189,6 +189,17 @@ impl Store {
                 params![units.to_json().to_string(), default_air().to_string(), default_effects().to_string()],
             ).map_err(|err| err.to_string())?;
         }
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sync_base (
+                id TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted INTEGER NOT NULL,
+                suppress TEXT NOT NULL DEFAULT ''
+            );",
+        )
+        .map_err(|err| err.to_string())?;
         Ok(Self {
             conn,
             db_path: path.to_path_buf(),
@@ -658,12 +669,14 @@ impl Store {
     pub fn delete_record(&self, kind: &str, id: &str) -> Result<(), String> {
         self.ensure_unlinked(kind, id)?;
         let now = now_iso();
+        let device = self.device_id()?;
         let changed = self
             .conn
             .execute(
-                "UPDATE records SET deleted_at = ?1, updated_at = ?1, revision = revision + 1
+                "UPDATE records SET deleted_at = ?1, updated_at = ?1, revision = revision + 1,
+                    device_id = ?4
              WHERE id = ?2 AND kind = ?3 AND deleted_at IS NULL",
-                params![now, id, kind],
+                params![now, id, kind, device],
             )
             .map_err(|err| err.to_string())?;
         if changed == 0 {
@@ -686,12 +699,14 @@ impl Store {
             return Err("use restore history for an older version".into());
         }
         let now = now_iso();
+        let device = self.device_id()?;
         let changed = self
             .conn
             .execute(
-                "UPDATE records SET deleted_at = NULL, updated_at = ?1, revision = revision + 1
+                "UPDATE records SET deleted_at = NULL, updated_at = ?1, revision = revision + 1,
+                    device_id = ?4
              WHERE id = ?2 AND kind = ?3 AND deleted_at IS NOT NULL",
-                params![now, id, kind],
+                params![now, id, kind, device],
             )
             .map_err(|err| err.to_string())?;
         if changed == 0 {
@@ -1244,12 +1259,14 @@ impl Store {
             if kind != "history" {
                 self.snapshot_previous(kind, id, &body)?;
             }
+            let device = self.device_id()?;
             let changed = self
                 .conn
                 .execute(
-                    "UPDATE records SET body = ?1, updated_at = ?2, revision = revision + 1
+                    "UPDATE records SET body = ?1, updated_at = ?2, revision = revision + 1,
+                    device_id = ?5
                  WHERE id = ?3 AND kind = ?4 AND deleted_at IS NULL",
-                    params![body.to_string(), now, id, kind],
+                    params![body.to_string(), now, id, kind, device],
                 )
                 .map_err(|err| err.to_string())?;
             if changed == 0 {
@@ -1438,6 +1455,15 @@ impl Store {
         }
         let hash = self.write_blob(&bytes)?;
         Ok((hash, filename, bytes.len() as u64))
+    }
+
+    pub(crate) fn read_blob(&self, hash: &str) -> Result<Vec<u8>, String> {
+        let path = self.blob_path(hash)?;
+        fs::read(&path).map_err(|_| "bundle-missing-pdf".to_string())
+    }
+
+    pub(crate) fn put_blob(&self, bytes: &[u8]) -> Result<String, String> {
+        self.write_blob(bytes)
     }
 
     fn write_blob(&self, bytes: &[u8]) -> Result<String, String> {
@@ -2578,7 +2604,7 @@ fn pdf_filename(raw: &str) -> Result<String, String> {
     Ok(name)
 }
 
-fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
     let cleaned: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
     if cleaned.len() % 4 != 0 {
         return Err("the PDF data is not valid".into());
@@ -2624,7 +2650,7 @@ fn base64_value(byte: u8) -> Option<u32> {
     }
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -2782,14 +2808,15 @@ fn bc_warning(model: &str, bc: f64) -> Option<String> {
 }
 
 pub fn now_iso() -> String {
-    let secs = SystemTime::now()
+    let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
+    let secs = elapsed.as_secs();
+    let millis = elapsed.subsec_millis();
     let (year, month, day) = civil_from_days(secs as i64 / 86_400);
     let tod = secs % 86_400;
     format!(
-        "{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z",
+        "{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}.{millis:03}Z",
         hh = tod / 3600,
         mm = (tod / 60) % 60,
         ss = tod % 60

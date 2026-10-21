@@ -2,7 +2,7 @@
 
 Holdover is a personal, non-commercial ballistic calculator and equipment notebook for the Omarchy 4 desktop. Predictions come from the model and the numbers you type. Confirm them with live fire. You are responsible for safe and lawful shooting.
 
-The window is English. Version 1.0.0 is prepared in this tree. The `v1.0.0` tag is not created here; the commands are in [`M6-DESKTOP.md`](M6-DESKTOP.md).
+The window is English. Version 1.1.0 is prepared in this tree. No tag is created here. The 1.0.0 tag commands stay in [`M6-DESKTOP.md`](M6-DESKTOP.md). The sync checklist is [`M7-DESKTOP.md`](M7-DESKTOP.md).
 
 ## Install
 
@@ -100,9 +100,19 @@ Archive is a soft delete. The row stays in the library with a timestamp. Equipme
 
 Each save that changes a live record keeps the previous copy. Archive, Older versions, lists the newest 100. Restore asks, writes that copy back, and keeps the current body as a new older version. Restore an archived record before restoring an older version of it. Truing still has its own activate and revert.
 
+### Sync
+
+Sync copies this library to another Holdover library as a `.holdover` file. The file is every record plus the document PDFs those records use. Move it however you like. The other library shows a preview before anything is written.
+
+Export is on Sync. The file lands in the backups folder next to the database. With the usual library that is `~/.local/share/holdover/backups/`. With `HOLDOVER_DB=/tmp/holdover-m7/a.db` it is `/tmp/holdover-m7/backups/`. Rifle serials are left out. Precise coordinates are left out unless Include precise coordinates is checked. The weather place stays on this computer.
+
+Import lists each record as new, updated, deleted, unchanged, or in conflict. A conflict needs Keep mine, Take theirs, or Keep both before Apply. Keep both is there when both copies are still in use and the row is not an older version. Apply is one step. If it fails, the library is unchanged. This computer's device id is not replaced.
+
+A newer bundle, a file that is not a Holdover bundle, and a damaged or cut-off file are refused. Nothing is written. Two libraries on one computer use two `HOLDOVER_DB` paths. The steps are in [`M7-DESKTOP.md`](M7-DESKTOP.md).
+
 ### About
 
-About is in the footer, on Settings, and in the Ctrl+K list. It shows version 1.0.0, the MIT licence (Copyright (c) 2026 Patrik Hallgren), the Open-Meteo CC BY 4.0 attribution, the personal non-commercial note, the JBM drag-table source, the direct crate licences, and the known limitations below. py-ballisticcalc 3.1.1 is a CI oracle under LGPL-3.0 and is not installed with the app. The window has no npm packages. WebKitGTK and GTK come from the system.
+About is in the footer, on Settings, and in the Ctrl+K list. It shows version 1.1.0, the MIT licence (Copyright (c) 2026 Patrik Hallgren), the Open-Meteo CC BY 4.0 attribution, the personal non-commercial note, the JBM drag-table source, the direct crate licences (including zip 2.6.1), and the known limitations below. py-ballisticcalc 3.1.1 is a CI oracle under LGPL-3.0 and is not installed with the app. The window has no npm packages. WebKitGTK and GTK come from the system.
 
 ## Keyboard, type, and themes
 
@@ -138,4 +148,4 @@ These are open. The app badges the target items and repeats the sentences on Abo
 - **Aerodynamic jump.** The flag is accepted. The shot is solved without it, and the warning says aerodynamic jump was requested and not applied.
 - **Recoil ejecta.** The default is the stored sentence: “Constant 1219.2 m/s (4000 ft/s). This is a common published powder-gas assumption. It has not been confirmed against the SAAMI publication.”
 
-Group photographs, a phone companion, and manufacturer bullet catalogues are later work. They are not in this version.
+Group photographs, the phone companion, and manufacturer bullet catalogues are later work. The `.holdover` bundle is the desktop copy those later steps can reuse. They are not a phone app in this version.

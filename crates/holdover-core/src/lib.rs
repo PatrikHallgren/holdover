@@ -14,6 +14,7 @@ mod pdf;
 mod reticle;
 mod solve;
 mod stability;
+mod sync;
 mod targets;
 mod traj;
 mod units;
@@ -44,6 +45,13 @@ pub use solve::{
     Integrator, Shot, Solution, TableSpec, TrajectoryPoint, Warning, ZeroSolution,
 };
 pub use stability::SPIN_DRIFT_PROVENANCE;
+pub use sync::{
+    bundle_doc_value, choices_for, classify, classify_pair, comparable_body, copied_record, effect,
+    is_deleted, merge_plan, merge_private, parse_bundle_doc, record_label, record_value,
+    referenced_blobs, strip_private, BundleDoc, CopyStamp, Effect, MergeRow, MergeStatus,
+    Resolution, SeenRevision, SyncBase, SyncError, SyncRecord, BUNDLE_FORMAT,
+    BUNDLE_SCHEMA_VERSION, RECORD_KINDS,
+};
 pub use targets::{
     apply_target_edit, bounds_cm, library_value, mirror_paths, sanitize_svg, target_by_id,
     target_json, target_library, FlagDoc, PathDoc, RingDoc, TargetDoc, MOOSE_HIT_AREA_CM,

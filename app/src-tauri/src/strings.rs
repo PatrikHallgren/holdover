@@ -39,6 +39,7 @@ mod tests {
             assert!(limits.contains(marker), "{marker}");
         }
         assert!(text.contains("rusqlite 0.32.1"));
+        assert!(text.contains("zip 2.6.1"));
         assert!(text.contains("CC BY 4.0"));
         assert!(text.contains("py-ballisticcalc 3.1.1"));
     }

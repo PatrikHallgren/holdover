@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/PatrikHallgren/holdover/docs/schema/holdover.schema.json",
   "title": "Holdover library and solve profile (draft, M0)",
-  "description": "Draft only. A library file is schema_version 1, as JSON or as Holdover CSV with the same records. Every stored record carries the sync fields (id, created_at, updated_at, revision, deleted_at, device_id). Rifle serials and precise coordinates are omitted from an export unless coordinates are requested. Quantities in a solve profile are strings with a unit suffix. Stored records keep the SI value beside the original text.",
+  "description": "Draft only. A library file is schema_version 1, as JSON or as Holdover CSV with the same records. A .holdover bundle is a zip of those same records, with the same sync fields, plus the PDF blobs they reference. Every stored record carries the sync fields (id, created_at, updated_at, revision, deleted_at, device_id). Rifle serials and precise coordinates are omitted from an export unless coordinates are requested. Quantities in a solve profile are strings with a unit suffix. Stored records keep the SI value beside the original text.",
   "type": "object",
   "properties": {
     "schema_version": { "type": "integer", "minimum": 1 },
