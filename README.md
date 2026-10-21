@@ -4,7 +4,7 @@ Holdover is a personal, non-commercial, local-first ballistic calculator for the
 
 > All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.
 
-The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 2 is the Solve window: profiles, a separate zero atmosphere, the unit switch, the range card, and charts. Build and check it with [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 5 adds Open-Meteo weather and Holdover’s own JSON/CSV library file. Check it with [`docs/M5-DESKTOP.md`](docs/M5-DESKTOP.md). Earlier checklists are [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md), [`docs/M3-DESKTOP.md`](docs/M3-DESKTOP.md), and [`docs/M4-DESKTOP.md`](docs/M4-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Layout
 

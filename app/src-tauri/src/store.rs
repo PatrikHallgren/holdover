@@ -8,8 +8,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use holdover_core::{
-    card_page, card_pages, default_card_page, format_number, parse_quantity, running_presets,
-    Dimension, DEFAULT_EJECTA_MPS, EJECTA_CONVENTION, SJF_MOOSE_RING_DIAMETER_CM,
+    card_page, card_pages, default_card_page, format_number, format_quantity, parse_quantity,
+    running_presets, Dimension, DEFAULT_EJECTA_MPS, EJECTA_CONVENTION, SJF_MOOSE_RING_DIAMETER_CM,
     SJF_ROE_BUCK_RING_DIAMETER_CM,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -142,6 +142,13 @@ impl UnitSet {
             angular: pick("angular", &base.angular),
         }
     }
+}
+
+pub struct WeatherPlace {
+    pub name: String,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub stale_minutes: u64,
 }
 
 pub struct Store {
@@ -310,7 +317,59 @@ impl Store {
         if let Some(paper) = body.get("paper").and_then(|value| value.as_str()) {
             self.remember_paper(paper)?;
         }
+        if body.get("weather_place").is_some()
+            || body.get("weather_latitude").is_some()
+            || body.get("weather_longitude").is_some()
+            || body.get("weather_stale_minutes").is_some()
+        {
+            self.save_weather_place(body)?;
+        }
         Ok(())
+    }
+
+    pub fn save_weather_place(&self, body: &Value) -> Result<(), String> {
+        if let Some(name) = body.get("weather_place").and_then(|v| v.as_str()) {
+            self.meta_put("weather_place", name.trim())?;
+        }
+        if body.get("weather_latitude").is_some() {
+            match parse_coord(&coord_text(body, "weather_latitude"), -90.0, 90.0) {
+                Ok(Some(value)) => self.meta_put("weather_latitude", &value.to_string())?,
+                Ok(None) => self.meta_del("weather_latitude")?,
+                Err(_) => return Err("place-latitude".into()),
+            }
+        }
+        if body.get("weather_longitude").is_some() {
+            match parse_coord(&coord_text(body, "weather_longitude"), -180.0, 180.0) {
+                Ok(Some(value)) => self.meta_put("weather_longitude", &value.to_string())?,
+                Ok(None) => self.meta_del("weather_longitude")?,
+                Err(_) => return Err("place-longitude".into()),
+            }
+        }
+        if body.get("weather_stale_minutes").is_some() {
+            let minutes = stale_minutes(body.get("weather_stale_minutes"))?;
+            self.meta_put("weather_stale_minutes", &minutes.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn weather_place(&self) -> Result<WeatherPlace, String> {
+        let name = self.meta_get("weather_place")?.unwrap_or_default();
+        let latitude = self
+            .meta_get("weather_latitude")?
+            .and_then(|text| text.parse().ok());
+        let longitude = self
+            .meta_get("weather_longitude")?
+            .and_then(|text| text.parse().ok());
+        let stale_minutes = self
+            .meta_get("weather_stale_minutes")?
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(60);
+        Ok(WeatherPlace {
+            name,
+            latitude,
+            longitude,
+            stale_minutes,
+        })
     }
 
     /// Remember the range-card paper size. Unknown ids are refused.
@@ -627,16 +686,14 @@ impl Store {
     }
 
     pub fn remember_solve(&self, body: &Value) -> Result<(), String> {
+        let air = self.merged_air(body.get("current_air").unwrap_or(&default_air()))?;
         self.conn
             .execute(
                 "UPDATE settings SET current_air_json = ?1, effects_json = ?2, last_range = ?3,
              last_wind_speed = ?4, last_wind_direction = ?5, last_inclination = ?6,
              angular = ?7, active_profile_id = ?8, range_step = ?9, wind_step = ?10 WHERE id = 1",
                 params![
-                    body.get("current_air")
-                        .cloned()
-                        .unwrap_or(default_air())
-                        .to_string(),
+                    air.to_string(),
                     body.get("effects")
                         .cloned()
                         .unwrap_or(default_effects())
@@ -692,9 +749,27 @@ impl Store {
     }
 
     pub fn export_library(&self) -> Result<Value, String> {
+        self.export_library_with(false)
+    }
+
+    /// Library JSON. Rifle serials are cleared. Precise coordinates are omitted
+    /// unless `include_location` is set. Sync fields on each record stay.
+    pub fn export_library_with(&self, include_location: bool) -> Result<Value, String> {
         let mut settings = self.settings_json()?;
         if let Some(object) = settings.as_object_mut() {
             object.remove("onboarded");
+            // Age is computed when settings are read. A backup must not freeze it.
+            object.remove("weather_age_secs");
+            object.remove("weather_stale");
+            if !include_location {
+                object.remove("weather_latitude");
+                object.remove("weather_longitude");
+            }
+        }
+        if !include_location {
+            if let Some(air) = settings.get_mut("current_air") {
+                strip_coordinates(air);
+            }
         }
         let mut rifles = self.kind_export("rifle")?;
         for rifle in &mut rifles {
@@ -702,94 +777,59 @@ impl Store {
                 object.insert("serial".into(), json!(""));
             }
         }
-        Ok(json!({
-            "schema_version": 1,
+        let mut doc = json!({
+            "schema_version": crate::library::SCHEMA_VERSION,
             "exported_at": now_iso(),
             "device_id": self.device_id()?,
             "settings": settings,
             "rifles": rifles,
-            "scopes": self.kind_export("scope")?,
-            "bullets": self.kind_export("bullet")?,
-            "loads": self.kind_export("load")?,
-            "atmospheres": self.kind_export("atmosphere")?,
-            "profiles": self.kind_export("profile")?,
-            "chronos": self.kind_export("chrono")?,
-            "reticles": self.kind_export("reticle")?,
-            "targets": self.kind_export("target")?,
-        }))
+        });
+        for (key, kind) in crate::library::RECORD_SECTIONS.iter().skip(1) {
+            doc[*key] = json!(self.kind_export(kind)?);
+        }
+        Ok(doc)
+    }
+
+    pub fn export_library_csv(&self, include_location: bool) -> Result<String, String> {
+        crate::library::document_to_csv(&self.export_library_with(include_location)?)
     }
 
     pub fn import_library(&self, doc: &Value, commit: bool) -> Result<Value, String> {
-        let version = doc
-            .get("schema_version")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
-        if version != 1 {
-            return Err("backup schema_version must be 1".into());
+        self.import_prepared(doc, commit, "replace", None)
+    }
+
+    pub fn import_prepared(
+        &self,
+        doc: &Value,
+        commit: bool,
+        policy: &str,
+        abort_after: Option<usize>,
+    ) -> Result<Value, String> {
+        if policy != "replace" && policy != "merge" {
+            return Err("policy".into());
         }
-        for key in [
-            "rifles",
-            "scopes",
-            "bullets",
-            "loads",
-            "atmospheres",
-            "profiles",
-        ] {
-            if !doc.get(key).map(|v| v.is_array()).unwrap_or(false) {
-                return Err(format!("backup is missing {key}"));
-            }
-        }
-        let preview = json!({
-            "replaces": true,
-            "rifles": doc["rifles"].as_array().map(|v| v.len()).unwrap_or(0),
-            "scopes": doc["scopes"].as_array().map(|v| v.len()).unwrap_or(0),
-            "bullets": doc["bullets"].as_array().map(|v| v.len()).unwrap_or(0),
-            "loads": doc["loads"].as_array().map(|v| v.len()).unwrap_or(0),
-            "atmospheres": doc["atmospheres"].as_array().map(|v| v.len()).unwrap_or(0),
-            "profiles": doc["profiles"].as_array().map(|v| v.len()).unwrap_or(0),
-            "chronos": doc.get("chronos").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
-            "reticles": doc.get("reticles").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
-            "targets": doc.get("targets").and_then(|v| v.as_array()).map(|v| v.len()).unwrap_or(0),
-        });
+        crate::library::validate_document(doc)?;
+        let preview = self.import_preview(doc, policy)?;
         if !commit {
             return Ok(preview);
         }
-        let tx = self
-            .conn
-            .unchecked_transaction()
-            .map_err(|err| err.to_string())?;
-        tx.execute("DELETE FROM records", [])
-            .map_err(|err| err.to_string())?;
-        let device = self.device_id()?;
-        for (key, kind) in [
-            ("atmospheres", "atmosphere"),
-            ("rifles", "rifle"),
-            ("scopes", "scope"),
-            ("bullets", "bullet"),
-            ("loads", "load"),
-            ("profiles", "profile"),
-        ] {
-            for item in doc[key].as_array().cloned().unwrap_or_default() {
-                insert_raw(&tx, kind, &item, &device)?;
-            }
+        self.apply_import(doc, policy, abort_after)?;
+        let mut written = preview;
+        if let Some(object) = written.as_object_mut() {
+            object.insert("written".into(), json!(true));
         }
-        if let Some(items) = doc.get("chronos").and_then(|v| v.as_array()) {
-            for item in items {
-                insert_raw(&tx, "chrono", item, &device)?;
-            }
-        }
-        for (key, kind) in [("reticles", "reticle"), ("targets", "target")] {
-            if let Some(items) = doc.get(key).and_then(|v| v.as_array()) {
-                for item in items {
-                    insert_raw(&tx, kind, item, &device)?;
-                }
-            }
-        }
-        if let Some(settings) = doc.get("settings") {
-            apply_settings(&tx, settings)?;
-        }
-        tx.commit().map_err(|err| err.to_string())?;
-        Ok(preview)
+        Ok(written)
+    }
+
+    /// Read a Holdover CSV or JSON document. Nothing is written when `commit` is false.
+    pub fn import_text(&self, text: &str, commit: bool, policy: &str) -> Result<Value, String> {
+        let trimmed = text.trim_start();
+        let doc = if trimmed.starts_with('{') {
+            serde_json::from_str(trimmed).map_err(|_| "not-holdover".to_string())?
+        } else {
+            crate::library::csv_to_document(trimmed)?
+        };
+        self.import_prepared(&doc, commit, policy, None)
     }
 
     pub fn seed_example(&self) -> Result<String, String> {
@@ -839,7 +879,7 @@ impl Store {
     }
 
     fn settings_json(&self) -> Result<Value, String> {
-        self.conn.query_row(
+        let mut value = self.conn.query_row(
             "SELECT onboarded, preset, units_json, appearance, large_text, reduced_motion, card_pinned,
                     angular, active_profile_id, current_air_json, effects_json, range_step, wind_step,
                     last_range, last_wind_speed, last_wind_direction, last_inclination
@@ -875,7 +915,42 @@ impl Store {
                     "last_inclination": row.get::<_, String>(16)?,
                 }))
             },
-        ).map_err(|err| err.to_string())
+        ).map_err(|err| err.to_string())?;
+        let place = self.weather_place()?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert("weather_place".into(), json!(place.name));
+            object.insert(
+                "weather_latitude".into(),
+                match place.latitude {
+                    Some(latitude) => json!(latitude),
+                    None => Value::Null,
+                },
+            );
+            object.insert(
+                "weather_longitude".into(),
+                match place.longitude {
+                    Some(longitude) => json!(longitude),
+                    None => Value::Null,
+                },
+            );
+            object.insert("weather_stale_minutes".into(), json!(place.stale_minutes));
+        }
+        if let Some(fetched) = value
+            .pointer("/current_air/provenance/fetched_at")
+            .and_then(|item| item.as_str())
+        {
+            if let Ok((age, stale)) = crate::weather::weather_age(
+                fetched,
+                &now_iso(),
+                place.stale_minutes.saturating_mul(60),
+            ) {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("weather_age_secs".into(), json!(age));
+                    object.insert("weather_stale".into(), json!(stale));
+                }
+            }
+        }
+        Ok(value)
     }
 
     fn equipment_json(&self, units: &UnitSet) -> Result<Value, String> {
@@ -1069,9 +1144,13 @@ impl Store {
     }
 
     fn kind_export(&self, kind: &str) -> Result<Vec<Value>, String> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, created_at, updated_at, revision, body FROM records WHERE kind = ?1 AND deleted_at IS NULL",
-        ).map_err(|err| err.to_string())?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, created_at, updated_at, revision, deleted_at, device_id, body
+             FROM records WHERE kind = ?1 ORDER BY id",
+            )
+            .map_err(|err| err.to_string())?;
         let rows = stmt
             .query_map(params![kind], |row| {
                 Ok((
@@ -1079,19 +1158,30 @@ impl Store {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })
             .map_err(|err| err.to_string())?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, created, updated, revision, body) = row.map_err(|err| err.to_string())?;
+            let (id, created, updated, revision, deleted, device, body) =
+                row.map_err(|err| err.to_string())?;
             let mut value: Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
             if let Some(object) = value.as_object_mut() {
                 object.insert("id".into(), json!(id));
                 object.insert("created_at".into(), json!(created));
                 object.insert("updated_at".into(), json!(updated));
                 object.insert("revision".into(), json!(revision));
+                object.insert(
+                    "deleted_at".into(),
+                    match deleted {
+                        Some(text) => json!(text),
+                        None => Value::Null,
+                    },
+                );
+                object.insert("device_id".into(), json!(device));
             }
             out.push(value);
         }
@@ -1200,6 +1290,277 @@ impl Store {
         }
         Ok(out)
     }
+
+    fn import_preview(&self, doc: &Value, policy: &str) -> Result<Value, String> {
+        let mut counts = crate::library::empty_counts();
+        let mut duplicates = Vec::new();
+        let mut incoming = Vec::new();
+        for (key, kind) in crate::library::RECORD_SECTIONS {
+            let items = doc
+                .get(*key)
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if let Some(count) = counts.get_mut(*key) {
+                *count = json!(items.len());
+            }
+            for item in items {
+                let id = item
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                incoming.push(id.clone());
+                let live = self.record_is_live(&id)?;
+                if live && item.get("deleted_at").and_then(|v| v.as_str()).is_none() {
+                    duplicates.push(json!({
+                        "kind": kind,
+                        "id": id,
+                        "label": item.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+                    }));
+                }
+            }
+        }
+        let local_only = self
+            .live_ids()?
+            .into_iter()
+            .filter(|id| !incoming.contains(id))
+            .count();
+        Ok(json!({
+            "written": false,
+            "schema_version": doc.get("schema_version").and_then(|v| v.as_i64()).unwrap_or(0),
+            "policy": policy,
+            "counts": counts,
+            "duplicates": duplicates,
+            "local_only": local_only,
+            "coordinates_omitted": doc
+                .pointer("/settings/weather_latitude")
+                .and_then(|v| v.as_f64())
+                .is_none(),
+        }))
+    }
+
+    fn apply_import(
+        &self,
+        doc: &Value,
+        policy: &str,
+        abort_after: Option<usize>,
+    ) -> Result<(), String> {
+        let local_device = self.device_id()?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|err| err.to_string())?;
+        if policy == "replace" {
+            tx.execute("DELETE FROM records", [])
+                .map_err(|err| err.to_string())?;
+        }
+        let mut written = 0usize;
+        for (key, kind) in crate::library::RECORD_SECTIONS {
+            let Some(items) = doc.get(*key).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for item in items {
+                if abort_after == Some(written) {
+                    return Err("aborted".into());
+                }
+                if policy == "merge" {
+                    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    tx.execute("DELETE FROM records WHERE id = ?1", params![id])
+                        .map_err(|err| err.to_string())?;
+                }
+                insert_raw(&tx, kind, item, &local_device)?;
+                written += 1;
+            }
+        }
+        if let Some(settings) = doc.get("settings") {
+            if abort_after == Some(written) {
+                return Err("aborted".into());
+            }
+            apply_settings(&tx, settings)?;
+            apply_weather_meta(&tx, settings)?;
+        }
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    pub fn apply_weather(&self, body: &Value) -> Result<(), String> {
+        if bool_or(body, "accept_wind", false) {
+            let speed = body
+                .get("wind_speed_mps")
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite())
+                .ok_or("wind")?;
+            let units = self.units()?;
+            let text = quantity_text(speed, &units.velocity);
+            self.conn
+                .execute(
+                    "UPDATE settings SET last_wind_speed = ?1 WHERE id = 1",
+                    params![text],
+                )
+                .map_err(|err| err.to_string())?;
+            let mut air = self.current_air_raw()?;
+            if let Some(provenance) = air.get_mut("provenance").and_then(|v| v.as_object_mut()) {
+                provenance.insert("wind_accepted".into(), json!(true));
+                provenance.insert("wind_speed_mps".into(), json!(speed));
+            }
+            self.write_current_air(&air)?;
+            return Ok(());
+        }
+        let temperature_c = body
+            .get("temperature_c")
+            .and_then(|v| v.as_f64())
+            .ok_or("temperature")?;
+        let humidity = body
+            .get("humidity")
+            .and_then(|v| v.as_f64())
+            .ok_or("humidity")?;
+        let elevation_m = body
+            .get("elevation_m")
+            .and_then(|v| v.as_f64())
+            .ok_or("elevation")?;
+        let surface = body
+            .get("surface_pressure_pa")
+            .and_then(|v| v.as_f64())
+            .ok_or("surface_pressure")?;
+        let sea = body
+            .get("sea_level_pressure_pa")
+            .and_then(|v| v.as_f64())
+            .ok_or("pressure_msl")?;
+        let use_sea = body.get("pressure_used").and_then(|v| v.as_str()) == Some("sea-level");
+        let units = self.units()?;
+        let pressure_pa = if use_sea { sea } else { surface };
+        let kind = if use_sea { "sea-level" } else { "station" };
+        let field = if use_sea {
+            "pressure_msl"
+        } else {
+            "surface_pressure"
+        };
+        let humidity_text = format!("{}%", format_number(humidity * 100.0));
+        let air = json!({
+            "temperature": {"text": quantity_text(temperature_c, &units.temperature), "unit": units.temperature},
+            "pressure": {"text": quantity_text(pressure_pa, &units.pressure), "unit": units.pressure},
+            "pressure_kind": kind,
+            "humidity": humidity_text,
+            "altitude": {"text": quantity_text(elevation_m, &units.length), "unit": units.length},
+            "provenance": {
+                "source": "fetched",
+                "provider": "open-meteo",
+                "fetched_at": text_or(body, "fetched_at"),
+                "valid_time": text_or(body, "valid_time"),
+                "pressure_used": kind,
+                "pressure_field": field,
+                "surface_pressure_pa": surface,
+                "sea_level_pressure_pa": sea,
+                "elevation_m": elevation_m,
+                "grid_latitude": body.get("grid_latitude").cloned().unwrap_or(Value::Null),
+                "grid_longitude": body.get("grid_longitude").cloned().unwrap_or(Value::Null),
+                "place_name": text_or(body, "place_name"),
+                "wind_speed_mps": body.get("wind_speed_mps").cloned().unwrap_or(Value::Null),
+                "wind_from_deg": body.get("wind_from_deg").cloned().unwrap_or(Value::Null),
+                "wind_gust_mps": body.get("wind_gust_mps").cloned().unwrap_or(Value::Null),
+                "wind_accepted": false
+            }
+        });
+        atmosphere_from_form(&air)?;
+        self.write_current_air(&air)?;
+        Ok(())
+    }
+
+    fn merged_air(&self, incoming: &Value) -> Result<Value, String> {
+        let mut air = incoming.clone();
+        if air.get("provenance").is_some() {
+            return Ok(air);
+        }
+        let previous = self.current_air_raw().unwrap_or_else(|_| default_air());
+        if same_air(&previous, &air) {
+            if let Some(provenance) = previous.get("provenance") {
+                air["provenance"] = provenance.clone();
+            }
+        } else {
+            air["provenance"] = json!({ "source": "manual" });
+        }
+        Ok(air)
+    }
+
+    fn current_air_raw(&self) -> Result<Value, String> {
+        let raw: String = self
+            .conn
+            .query_row(
+                "SELECT current_air_json FROM settings WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
+        serde_json::from_str(&raw).map_err(|err| err.to_string())
+    }
+
+    fn write_current_air(&self, air: &Value) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE settings SET current_air_json = ?1 WHERE id = 1",
+                params![air.to_string()],
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    fn meta_get(&self, key: &str) -> Result<Option<String>, String> {
+        self.conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())
+    }
+
+    fn meta_put(&self, key: &str, value: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    fn meta_del(&self, key: &str) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM meta WHERE key = ?1", params![key])
+            .map_err(|err| err.to_string())?;
+        Ok(())
+    }
+
+    fn record_is_live(&self, id: &str) -> Result<bool, String> {
+        let found: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM records WHERE id = ?1 AND deleted_at IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        Ok(found.is_some())
+    }
+
+    fn live_ids(&self) -> Result<Vec<String>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM records WHERE deleted_at IS NULL")
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|err| err.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|err| err.to_string())?);
+        }
+        Ok(out)
+    }
 }
 
 struct ParsedAir {
@@ -1268,6 +1629,85 @@ fn parse_air(body: &Value, prefix: &str) -> Result<ParsedAir, String> {
         altitude_m,
         altitude_text,
     })
+}
+
+fn quantity_text(si: f64, unit: &str) -> String {
+    match format_quantity(si, unit) {
+        Ok(number) => format!("{number} {unit}"),
+        Err(_) => format!("{} {unit}", format_number(si)),
+    }
+}
+
+fn same_air(left: &Value, right: &Value) -> bool {
+    let Ok(before) = atmosphere_from_form(left) else {
+        return false;
+    };
+    let Ok(after) = atmosphere_from_form(right) else {
+        return false;
+    };
+    (before.temperature_c - after.temperature_c).abs() < 0.05
+        && (before.pressure_pa - after.pressure_pa).abs() < 50.0
+        && (before.altitude_m - after.altitude_m).abs() < 0.5
+        && (before.humidity - after.humidity).abs() < 0.005
+        && before.pressure_kind == after.pressure_kind
+}
+
+fn strip_coordinates(value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    for key in ["grid_latitude", "grid_longitude", "latitude", "longitude"] {
+        object.remove(key);
+    }
+    if let Some(provenance) = object.get_mut("provenance") {
+        if let Some(nested) = provenance.as_object_mut() {
+            for key in ["grid_latitude", "grid_longitude", "latitude", "longitude"] {
+                nested.remove(key);
+            }
+        }
+    }
+}
+
+fn coord_text(body: &Value, key: &str) -> String {
+    match body.get(key) {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn parse_coord(text: &str, min: f64, max: f64) -> Result<Option<f64>, ()> {
+    let trimmed = text.trim().replace(',', ".");
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let value: f64 = trimmed.parse().map_err(|_| ())?;
+    if !value.is_finite() || !(min..=max).contains(&value) {
+        return Err(());
+    }
+    Ok(Some(value))
+}
+
+fn stale_minutes(value: Option<&Value>) -> Result<u64, String> {
+    let Some(value) = value else {
+        return Ok(60);
+    };
+    let minutes = match value {
+        Value::Number(number) => number
+            .as_u64()
+            .or_else(|| number.as_f64().map(|v| v as u64)),
+        Value::String(text) => text
+            .trim()
+            .replace(',', ".")
+            .parse::<f64>()
+            .ok()
+            .map(|v| v as u64),
+        _ => None,
+    };
+    match minutes {
+        Some(minutes) if (1..=7 * 24 * 60).contains(&minutes) => Ok(minutes),
+        _ => Err("place-stale".into()),
+    }
 }
 
 fn default_air() -> Value {
@@ -1524,22 +1964,46 @@ fn insert_raw(
         .unwrap_or("")
         .to_string();
     if id.is_empty() {
-        return Err(format!("backup {kind} is missing an id"));
+        return Err(format!("missing:{kind}-id"));
     }
     let created = item
         .get("created_at")
         .and_then(|v| v.as_str())
-        .unwrap_or(&now_iso())
+        .filter(|text| !text.is_empty())
+        .ok_or("bad-row")?
         .to_string();
     let updated = item
         .get("updated_at")
         .and_then(|v| v.as_str())
+        .filter(|text| !text.is_empty())
         .unwrap_or(&created)
         .to_string();
-    let revision = item.get("revision").and_then(|v| v.as_i64()).unwrap_or(1);
+    let revision = item
+        .get("revision")
+        .and_then(|v| v.as_i64())
+        .ok_or("bad-row")?;
+    let record_device = item
+        .get("device_id")
+        .and_then(|v| v.as_str())
+        .filter(|text| !text.is_empty())
+        .unwrap_or(device)
+        .to_string();
+    let deleted_at = item
+        .get("deleted_at")
+        .and_then(|v| v.as_str())
+        .filter(|text| !text.is_empty())
+        .map(|text| text.to_string());
     let mut body = item.clone();
     if let Some(object) = body.as_object_mut() {
-        for key in ["id", "created_at", "updated_at", "revision", "kind"] {
+        for key in [
+            "id",
+            "created_at",
+            "updated_at",
+            "revision",
+            "deleted_at",
+            "device_id",
+            "kind",
+        ] {
             object.remove(key);
         }
         if kind == "rifle" {
@@ -1548,9 +2012,50 @@ fn insert_raw(
     }
     tx.execute(
         "INSERT INTO records (id, kind, created_at, updated_at, revision, deleted_at, device_id, body)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7)",
-        params![id, kind, created, updated, revision, device, body.to_string()],
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![id, kind, created, updated, revision, deleted_at, record_device, body.to_string()],
     ).map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn apply_weather_meta(tx: &rusqlite::Transaction<'_>, settings: &Value) -> Result<(), String> {
+    if let Some(name) = settings.get("weather_place").and_then(|v| v.as_str()) {
+        meta_put_tx(tx, "weather_place", name)?;
+    }
+    if settings.get("weather_latitude").is_some() {
+        match settings.get("weather_latitude").and_then(|v| v.as_f64()) {
+            Some(value) => meta_put_tx(tx, "weather_latitude", &value.to_string())?,
+            None => meta_del_tx(tx, "weather_latitude")?,
+        }
+    }
+    if settings.get("weather_longitude").is_some() {
+        match settings.get("weather_longitude").and_then(|v| v.as_f64()) {
+            Some(value) => meta_put_tx(tx, "weather_longitude", &value.to_string())?,
+            None => meta_del_tx(tx, "weather_longitude")?,
+        }
+    }
+    if let Some(minutes) = settings
+        .get("weather_stale_minutes")
+        .and_then(|v| v.as_u64())
+    {
+        meta_put_tx(tx, "weather_stale_minutes", &minutes.to_string())?;
+    }
+    Ok(())
+}
+
+fn meta_put_tx(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Result<(), String> {
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn meta_del_tx(tx: &rusqlite::Transaction<'_>, key: &str) -> Result<(), String> {
+    tx.execute("DELETE FROM meta WHERE key = ?1", params![key])
+        .map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -1906,5 +2411,273 @@ mod tests {
             assert_eq!(again["weight_si"].as_f64().unwrap().to_bits(), before);
             assert_eq!(again["weight_text"], "175 gr");
         }
+    }
+
+    fn rifle_body(label: &str, serial: &str) -> Value {
+        json!({
+            "label": label,
+            "serial": serial,
+            "sight_height": {"text": "45 mm", "unit": "mm"}
+        })
+    }
+
+    fn sync_of(record: &Value) -> Value {
+        json!({
+            "id": record["id"],
+            "created_at": record["created_at"],
+            "updated_at": record["updated_at"],
+            "revision": record["revision"],
+            "deleted_at": record["deleted_at"],
+            "device_id": record["device_id"],
+            "label": record.get("label").cloned().unwrap_or(Value::Null),
+            "serial": record.get("serial").cloned().unwrap_or(Value::Null),
+        })
+    }
+
+    #[test]
+    fn json_and_csv_round_trip_keep_sync_fields_and_schema() {
+        let store = temp_store();
+        let rifle = store.save_rifle(&rifle_body("Kept", "SN-SECRET")).unwrap();
+        let rifle_id = rifle["id"].as_str().unwrap();
+        assert_eq!(
+            store.record_value("rifle", rifle_id).unwrap()["serial"],
+            "SN-SECRET"
+        );
+        let scope = store
+            .save_scope(&json!({
+                "label": "Gone",
+                "focal_plane": "ffp",
+                "click": {"text": "0.1 mrad", "unit": "mrad"}
+            }))
+            .unwrap();
+        store
+            .delete_record("scope", scope["id"].as_str().unwrap())
+            .unwrap();
+        store
+            .save_weather_place(&json!({
+                "weather_place": "Home",
+                "weather_latitude": "59.33",
+                "weather_longitude": "18.07",
+                "weather_stale_minutes": 30
+            }))
+            .unwrap();
+        let doc = store.export_library().unwrap();
+        assert_eq!(doc["schema_version"], 1);
+        assert_eq!(doc["rifles"][0]["serial"], "");
+        assert!(doc["settings"].get("weather_latitude").is_none());
+        assert!(doc["settings"].get("weather_longitude").is_none());
+        assert_eq!(doc["settings"]["weather_place"], "Home");
+        assert_eq!(doc["rifles"][0]["device_id"], store.device_id().unwrap());
+        let deleted = doc["scopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["label"] == "Gone")
+            .unwrap();
+        assert!(deleted["deleted_at"].as_str().is_some());
+
+        let other = temp_store();
+        let other_device = other.device_id().unwrap();
+        let preview = other.import_library(&doc, false).unwrap();
+        assert_eq!(preview["written"], false);
+        assert!(other.export_library().unwrap()["rifles"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        other.import_library(&doc, true).unwrap();
+        assert_eq!(other.device_id().unwrap(), other_device);
+        let again = other.export_library().unwrap();
+        assert_eq!(again["schema_version"], 1);
+        assert_eq!(again["device_id"], other_device);
+        assert_eq!(sync_of(&doc["rifles"][0]), sync_of(&again["rifles"][0]));
+        assert_eq!(sync_of(deleted), sync_of(&again["scopes"][0]));
+        assert_eq!(
+            other.weather_place().unwrap().latitude,
+            None,
+            "a backup without coordinates does not invent any"
+        );
+
+        let csv = store.export_library_csv(false).unwrap();
+        let parsed = crate::library::csv_to_document(&csv).unwrap();
+        let third = temp_store();
+        third.import_library(&parsed, true).unwrap();
+        let from_csv = third.export_library().unwrap();
+        assert_eq!(from_csv["schema_version"], 1);
+        assert_eq!(sync_of(&doc["rifles"][0]), sync_of(&from_csv["rifles"][0]));
+        assert_eq!(sync_of(deleted), sync_of(&from_csv["scopes"][0]));
+
+        let with_place = store.export_library_with(true).unwrap();
+        assert_eq!(with_place["settings"]["weather_latitude"], 59.33);
+        let placed = temp_store();
+        placed.import_library(&with_place, true).unwrap();
+        let latitude = placed.weather_place().unwrap().latitude.unwrap();
+        assert!((latitude - 59.33).abs() < 1e-6);
+    }
+
+    #[test]
+    fn import_preview_and_refusal_write_nothing() {
+        let store = temp_store();
+        let rifle = store.save_rifle(&rifle_body("Local", "SN")).unwrap();
+        let id = rifle["id"].as_str().unwrap().to_string();
+        let before = store.export_library().unwrap();
+        let mut newer = before.clone();
+        newer["schema_version"] = json!(2);
+        assert_eq!(
+            store.import_library(&newer, true).unwrap_err(),
+            "schema-newer"
+        );
+        assert_eq!(store.record_value("rifle", &id).unwrap()["serial"], "SN");
+        let err = store
+            .import_text("Name,BC\nHornady,0.2\n", true, "replace")
+            .unwrap_err();
+        assert_eq!(err, "not-holdover");
+        assert_eq!(store.record_value("rifle", &id).unwrap()["label"], "Local");
+        let mut duplicate = store.export_library().unwrap();
+        duplicate["scopes"] = duplicate["rifles"].clone();
+        assert!(store
+            .import_library(&duplicate, true)
+            .unwrap_err()
+            .starts_with("duplicate:"));
+        assert_eq!(store.record_value("rifle", &id).unwrap()["serial"], "SN");
+    }
+
+    #[test]
+    fn import_failure_rolls_back_the_whole_library() {
+        let store = temp_store();
+        let rifle = store.save_rifle(&rifle_body("Local", "SN-SECRET")).unwrap();
+        let id = rifle["id"].as_str().unwrap().to_string();
+        store.set_preferences(&json!({"preset": "us"})).unwrap();
+        let incoming = {
+            let other = temp_store();
+            other.save_rifle(&rifle_body("Incoming", "")).unwrap();
+            other.export_library().unwrap()
+        };
+        let err = store
+            .import_prepared(&incoming, true, "replace", Some(0))
+            .unwrap_err();
+        assert_eq!(err, "aborted");
+        let kept = store.record_value("rifle", &id).unwrap();
+        assert_eq!(kept["label"], "Local");
+        assert_eq!(kept["serial"], "SN-SECRET");
+        assert_eq!(store.export_library().unwrap()["settings"]["preset"], "us");
+        assert_eq!(
+            store.export_library().unwrap()["rifles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn merge_replaces_duplicates_and_keeps_local_only_rows() {
+        let store = temp_store();
+        let local = store.save_rifle(&rifle_body("Stay", "")).unwrap();
+        let shared = store.save_rifle(&rifle_body("Old", "")).unwrap();
+        let mut doc = store.export_library().unwrap();
+        doc["rifles"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|item| item["id"] == shared["id"]);
+        doc["rifles"][0]["label"] = json!("New");
+        let preview = store.import_prepared(&doc, false, "merge", None).unwrap();
+        assert_eq!(preview["written"], false);
+        assert_eq!(preview["duplicates"].as_array().unwrap().len(), 1);
+        assert_eq!(preview["local_only"], 1);
+        store.import_prepared(&doc, true, "merge", None).unwrap();
+        assert_eq!(
+            store
+                .record_value("rifle", local["id"].as_str().unwrap())
+                .unwrap()["label"],
+            "Stay"
+        );
+        assert_eq!(
+            store
+                .record_value("rifle", shared["id"].as_str().unwrap())
+                .unwrap()["label"],
+            "New"
+        );
+    }
+
+    #[test]
+    fn fetched_weather_uses_surface_pressure_and_manual_edit_clears_it() {
+        let store = temp_store();
+        store.set_preferences(&json!({"preset": "us"})).unwrap();
+        store
+            .apply_weather(&json!({
+                "temperature_c": 7.4,
+                "humidity": 0.86,
+                "elevation_m": 28.0,
+                "surface_pressure_pa": 100420.0,
+                "sea_level_pressure_pa": 100780.0,
+                "pressure_used": "station",
+                "fetched_at": "2026-10-21T01:00:12Z",
+                "valid_time": "2026-10-21T01:00",
+                "grid_latitude": 59.3294,
+                "grid_longitude": 18.0686,
+                "place_name": "Home",
+                "wind_speed_mps": 4.5,
+                "wind_from_deg": 210
+            }))
+            .unwrap();
+        let air = store.export_library_with(true).unwrap()["settings"]["current_air"].clone();
+        assert_eq!(air["pressure_kind"], "station");
+        assert_eq!(air["provenance"]["pressure_field"], "surface_pressure");
+        assert_eq!(air["provenance"]["source"], "fetched");
+        assert!(air["pressure"]["text"].as_str().unwrap().ends_with(" inHg"));
+        assert!(air["temperature"]["text"].as_str().unwrap().ends_with(" F"));
+        assert!(air["altitude"]["text"].as_str().unwrap().ends_with(" yd"));
+        assert!(air["provenance"]["grid_latitude"].as_f64().is_some());
+        let stripped = store.export_library().unwrap();
+        assert!(stripped["settings"]["current_air"]["provenance"]
+            .get("grid_latitude")
+            .is_none());
+        assert!(stripped["settings"]["current_air"]["provenance"]
+            .get("grid_longitude")
+            .is_none());
+        assert!(stripped["settings"].get("weather_age_secs").is_none());
+        assert!(stripped["settings"].get("weather_stale").is_none());
+        assert!(stripped["settings"].get("weather_stale_minutes").is_some());
+
+        let (age, stale) =
+            crate::weather::weather_age("2026-10-21T01:00:12Z", "2026-10-21T03:00:12Z", 30 * 60)
+                .unwrap();
+        assert_eq!(age, 7200);
+        assert!(stale);
+
+        store
+            .remember_solve(&json!({
+                "current_air": air,
+                "wind_direction": "9oc",
+                "wind_speed": "0 mph"
+            }))
+            .unwrap();
+        let kept = store.export_library_with(true).unwrap()["settings"]["current_air"].clone();
+        assert_eq!(kept["provenance"]["fetched_at"], "2026-10-21T01:00:12Z");
+
+        let mut edited = air.clone();
+        edited["temperature"] = json!({"text": "90 F", "unit": "F"});
+        edited.as_object_mut().unwrap().remove("provenance");
+        store
+            .remember_solve(&json!({
+                "current_air": edited,
+                "wind_direction": "9oc"
+            }))
+            .unwrap();
+        let manual = store.export_library().unwrap()["settings"]["current_air"].clone();
+        assert_eq!(manual["provenance"]["source"], "manual");
+
+        store
+            .apply_weather(&json!({
+                "accept_wind": true,
+                "wind_speed_mps": 4.5
+            }))
+            .unwrap();
+        let settings = store.export_library().unwrap()["settings"].clone();
+        assert!(settings["last_wind_speed"]
+            .as_str()
+            .unwrap()
+            .ends_with(" mph"));
+        assert_eq!(settings["last_wind_direction"], "9oc");
     }
 }

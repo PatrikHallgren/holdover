@@ -418,12 +418,25 @@ textarea {
   stroke: none;
 }
 
-.badge {
+.badge, .badge-stale, .badge-fresh {
   display: inline-block;
   margin: 0.3rem 0;
   padding: 0.15rem 0.4rem;
   border: 1px solid var(--warning);
   color: var(--warning);
+}
+
+.badge-fresh {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.weather-error {
+  color: var(--error);
+}
+
+button:disabled {
+  opacity: 0.55;
 }
 
 details {

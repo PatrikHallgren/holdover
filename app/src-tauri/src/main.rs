@@ -4,9 +4,11 @@
 //! current conditions, and the hold. SQLite lives in this crate because the
 //! core library does no I/O.
 
+mod library;
 mod session;
 mod store;
 mod strings;
+mod weather;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,7 +48,10 @@ fn main() {
             card_pdf,
             chart,
             export_library,
+            export_library_csv,
             import_library,
+            fetch_weather,
+            apply_weather,
             point_blank,
             apply_zero,
             truing,
@@ -226,9 +231,16 @@ fn chart(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String
 }
 
 #[tauri::command]
-fn export_library(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+fn export_library(
+    state: tauri::State<'_, AppState>,
+    include_location: Option<bool>,
+) -> Result<Value, String> {
     with_store(state, |store| {
-        let doc = store.export_library()?;
+        let doc = if include_location.unwrap_or(false) {
+            store.export_library_with(true)?
+        } else {
+            store.export_library()?
+        };
         let path = backup_dir()?.join(format!(
             "holdover-{}.json",
             store::now_iso().replace(':', "")
@@ -239,6 +251,74 @@ fn export_library(state: tauri::State<'_, AppState>) -> Result<Value, String> {
         )
         .map_err(|err| err.to_string())?;
         Ok(json!({ "path": path, "document": doc }))
+    })
+}
+
+#[tauri::command]
+fn export_library_csv(
+    state: tauri::State<'_, AppState>,
+    include_location: Option<bool>,
+) -> Result<Value, String> {
+    with_store(state, |store| {
+        let csv = store.export_library_csv(include_location.unwrap_or(false))?;
+        let path = backup_dir()?.join(format!(
+            "holdover-{}.csv",
+            store::now_iso().replace(':', "")
+        ));
+        fs::write(&path, &csv).map_err(|err| err.to_string())?;
+        Ok(json!({ "path": path, "csv": csv }))
+    })
+}
+
+/// Open-Meteo lookup. The webview stays responsive: this command does not run
+/// on the UI thread, and the request gives up after a few seconds.
+#[tauri::command]
+async fn fetch_weather(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let (latitude, longitude, temperature, pressure, length, velocity) = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| "the library is busy".to_string())?;
+        let place = store.weather_place()?;
+        let units = store.units()?;
+        (
+            place.latitude,
+            place.longitude,
+            units.temperature,
+            units.pressure,
+            units.length,
+            units.velocity,
+        )
+    };
+    let (Some(latitude), Some(longitude)) = (latitude, longitude) else {
+        return Ok(weather::place_missing());
+    };
+    let fetched = tauri::async_runtime::spawn_blocking(move || {
+        weather::fetch(
+            latitude,
+            longitude,
+            weather::FETCH_TIMEOUT,
+            weather::FORECAST_URL,
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    Ok(match fetched {
+        Ok(value) => value.presented(weather::PresentUnits {
+            temperature: &temperature,
+            pressure: &pressure,
+            length: &length,
+            velocity: &velocity,
+        }),
+        Err(err) => err.body(),
+    })
+}
+
+#[tauri::command]
+fn apply_weather(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        store.apply_weather(&body)?;
+        store.bootstrap()
     })
 }
 
@@ -314,8 +394,18 @@ fn import_library(
     state: tauri::State<'_, AppState>,
     document: Value,
     commit: bool,
+    policy: Option<String>,
 ) -> Result<Value, String> {
-    with_store(state, |store| store.import_library(&document, commit))
+    with_store(state, |store| {
+        let policy = policy.unwrap_or_else(|| "replace".into());
+        if let Some(csv) = document.get("csv").and_then(|value| value.as_str()) {
+            store.import_text(csv, commit, &policy)
+        } else if policy == "replace" {
+            store.import_library(&document, commit)
+        } else {
+            store.import_prepared(&document, commit, &policy, None)
+        }
+    })
 }
 
 fn backup_dir() -> Result<PathBuf, String> {
