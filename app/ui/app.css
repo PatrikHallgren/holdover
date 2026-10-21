@@ -56,8 +56,33 @@ button:focus, input:focus, select:focus {
 }
 
 button.active, button[aria-pressed="true"] {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--focus);
+  color: var(--text);
+  font-weight: 600;
+}
+
+a {
+  color: var(--text);
+}
+
+.skip {
+  position: absolute;
+  left: 0.6rem;
+  top: -4rem;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--focus);
+  padding: 0.4rem 0.6rem;
+  z-index: 5;
+}
+
+.skip:focus {
+  top: 0.6rem;
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .shell {
@@ -220,6 +245,39 @@ th, td {
 
 th:first-child, td:first-child {
   text-align: left;
+}
+
+caption {
+  text-align: left;
+  color: var(--text);
+  font-weight: 560;
+  padding: 0.4rem 0;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table.words th, table.words td {
+  text-align: left;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem 1rem;
+}
+
+.licence {
+  white-space: pre-wrap;
+  font: 0.85rem/1.4 ui-monospace, "IBM Plex Mono", monospace;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  padding: 0.7rem 0.8rem;
 }
 
 .chart-block {

@@ -87,6 +87,15 @@ let weatherBusy = false;
 let weatherTimer = 0;
 let recoilForm = null;
 let recoilResult = null;
+let compareIds = [];
+let compareReady = false;
+let compareEffects = null;
+let compareForm = { rangeSi: null, windSi: null, direction: "9oc" };
+let compareResult = null;
+let compareError = "";
+let compareTimer = 0;
+let docId = "";
+let docNotice = "";
 const DASH = ["none", "7 4", "2 3", "9 3 2 3", "12 4", "1 3"];
 
 function t(key) {
@@ -158,28 +167,30 @@ function render() {
     bindOnboard();
     return;
   }
-  app.innerHTML = `${shellHtml()}<div class="page" id="page">${pageHtml()}</div><footer class="footer disclaimer">${esc(boot.disclaimer)}</footer>${overlays()}`;
+  app.innerHTML = `${shellHtml()}<main class="page" id="page" tabindex="-1">${pageHtml()}</main><footer class="footer"><p class="disclaimer">${esc(boot.disclaimer)}</p><button type="button" id="open-about">${esc(t("nav-about"))}</button></footer>${overlays()}`;
   bindShell();
   bindPage();
   if (page === "solve") scheduleSolve(0);
+  if (page === "compare") scheduleCompare(0);
 }
 
 function shellHtml() {
   const preset = boot.settings.preset;
-  return `<div class="shell"><header class="top">
+  return `<div class="shell"><a class="skip" href="#page">${esc(t("skip"))}</a><header class="top">
     <span class="brand">${esc(t("app-name"))}</span>
-    <nav>
-      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("settings")}
+    <nav aria-label="${esc(t("nav-label"))}">
+      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("compare")}${nav("documents")}${nav("settings")}
     </nav>
     <div class="presets">
       ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
-      <button type="button" id="units-open">${esc(t("units-button"))}</button>
+      <button type="button" id="units-open" aria-expanded="${unitsOpen}">${esc(t("units-button"))}</button>
     </div>
   </header>`;
   function nav(id) {
-    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", settings: "nav-settings" };
+    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", settings: "nav-settings" };
     const key = keys[id] || "nav-solve";
-    return `<button type="button" data-page="${id}" class="${page === id ? "active" : ""}">${esc(t(key))}</button>`;
+    const current = page === id ? ` aria-current="page"` : "";
+    return `<button type="button" data-page="${id}" class="${page === id ? "active" : ""}"${current}>${esc(t(key))}</button>`;
   }
   function presetButton(id) {
     return `<button type="button" data-preset="${id}" aria-pressed="${preset === id}">${esc(t("preset-" + id))}</button>`;
@@ -187,7 +198,7 @@ function shellHtml() {
 }
 
 function overlays() {
-  return `<div id="palette" class="dialog ${paletteOpen ? "" : "hidden"}"></div>
+  return `<div id="palette" class="dialog ${paletteOpen ? "" : "hidden"}" role="dialog" aria-modal="true" aria-label="${esc(t("commands"))}"></div>
     <div id="units-pop" class="popover ${unitsOpen ? "" : "hidden"}">${unitsPopover()}</div>`;
 }
 
@@ -218,6 +229,9 @@ function pageHtml() {
   if (page === "pbr") return pbrHtml();
   if (page === "truing") return truingHtml();
   if (page === "equipment") return equipmentHtml();
+  if (page === "compare") return compareHtml();
+  if (page === "documents") return documentsHtml();
+  if (page === "about") return aboutHtml();
   if (page === "settings") return settingsHtml();
   return solveHtml();
 }
@@ -788,9 +802,12 @@ function chartHtml() {
 }
 
 function equipmentHtml() {
-  const tabs = ["rifle", "scope", "bullet", "load", "profile", "chrono", "recoil"].map((kind) =>
+  const tabs = ["rifle", "scope", "bullet", "load", "profile", "chrono", "recoil", "log", "archive"].map((kind) =>
     `<button type="button" data-kind="${kind}" class="${equipKind === kind ? "active" : ""}">${esc(t("equip-" + kind))}</button>`).join("");
-  const items = (boot.equipment[equipKind + "s"] || boot.equipment[equipKind] || []).map((item) =>
+  if (equipKind === "archive") {
+    return `<section class="panel"><div class="row">${tabs}</div>${archiveHtml()}</section>`;
+  }
+  const items = equipList().map((item) =>
     `<button type="button" data-pick="${esc(item.id)}">${esc(item.label)}</button>`).join("");
   const library = equipKind === "recoil" ? "" : (items || `<p>${esc(t("equip-empty"))}</p>`);
   const newer = equipKind === "recoil" || equipKind === "chrono" ? "" : `<button type="button" id="equip-new">${esc(t("new"))}</button>`;
@@ -800,14 +817,20 @@ function equipmentHtml() {
   </div>`;
 }
 
+function equipList() {
+  if (equipKind === "log") return boot.equipment.load_logs || [];
+  return boot.equipment[equipKind + "s"] || boot.equipment[equipKind] || [];
+}
+
 function currentRecord() {
-  const list = boot.equipment[equipKind + "s"] || [];
+  const list = equipKind === "log" ? (boot.equipment.load_logs || []) : (boot.equipment[equipKind + "s"] || []);
   return list.find((item) => item.id === selectedId) || null;
 }
 
 function equipForm() {
   if (equipKind === "chrono") return chronoHtml();
   if (equipKind === "recoil") return recoilHtml();
+  if (equipKind === "log") return logForm();
   const record = currentRecord() || {};
   const id = record.id ? `<input type="hidden" id="record-id" value="${esc(record.id)}" />` : `<input type="hidden" id="record-id" value="" />`;
   let fields = "";
@@ -874,7 +897,7 @@ function equipForm() {
   equipNotice = "";
   return `${id}<div class="fields">${fields}</div>
     <div class="row"><button type="button" id="equip-save">${esc(t("save"))}</button>
-    ${record.id ? `<button type="button" id="equip-delete">${esc(t("delete"))}</button>` : ""}</div>
+    ${record.id ? `<button type="button" id="equip-delete">${esc(t("archive"))}</button>` : ""}</div>
     <p id="equip-msg" class="meta">${esc(notice)}</p>`;
 }
 
@@ -942,6 +965,9 @@ function settingsHtml() {
     <p>${esc(t("rings-roe"))}: ${esc((rings.roe_cm || []).join(" / "))} cm</p>
     <p class="hint">${esc(t("targets-note"))} ${esc(t("older-rings"))}</p>
     <p class="hint">${esc(boot.spin_provenance || "")}</p>
+    <h2>${esc(t("nav-about"))}</h2>
+    <p class="hint">${esc(t("settings-about"))}</p>
+    <button type="button" id="open-about-settings">${esc(t("nav-about"))}</button>
   </section>`;
 }
 
@@ -992,6 +1018,8 @@ function bindShell() {
   document.querySelectorAll("[data-page]").forEach((button) => {
     button.addEventListener("click", () => { page = button.dataset.page; paletteOpen = false; render(); });
   });
+  const about = document.getElementById("open-about");
+  if (about) about.addEventListener("click", () => { page = "about"; render(); });
   document.querySelectorAll("[data-preset]").forEach((button) => {
     button.addEventListener("click", () => setPreset(button.dataset.preset));
   });
@@ -1021,8 +1049,15 @@ function bindPage() {
         if (input.id === "temperature" || input.id === "pressure" || input.id === "altitude") noteAirEdit();
         scheduleSolve(120);
       }
+      if (page === "compare") {
+        rememberCompareNumbers();
+        scheduleCompare(150);
+      }
     });
-    input.addEventListener("change", () => { if (page === "solve") scheduleSolve(0); });
+    input.addEventListener("change", () => {
+      if (page === "solve") scheduleSolve(0);
+      if (page === "compare") scheduleCompare(0);
+    });
   });
   if (page === "solve") bindSolve();
   if (page === "card") bindCard();
@@ -1032,6 +1067,8 @@ function bindPage() {
   if (page === "pbr") bindPbr();
   if (page === "truing") bindTruing();
   if (page === "equipment") bindEquipment();
+  if (page === "compare") bindCompare();
+  if (page === "documents") bindDocuments();
   if (page === "settings") bindSettings();
 }
 
@@ -1527,13 +1564,16 @@ function bindEquipment() {
   if (remove) remove.addEventListener("click", deleteEquipment);
   if (equipKind === "chrono") bindChrono();
   if (equipKind === "recoil") bindRecoil();
+  if (equipKind === "log") bindLog();
+  if (equipKind === "archive") bindArchive();
 }
 
 async function saveEquipment() {
   const msg = document.getElementById("equip-msg");
   try {
     const body = equipPayload();
-    const saved = await call("save_" + equipKind, { body });
+    const command = equipKind === "log" ? "save_load_log" : "save_" + equipKind;
+    const saved = await call(command, { body });
     selectedId = saved.id;
     equipNotice = saved.warning ? `${t("saved")} ${saved.warning}` : t("saved");
     boot = await call("bootstrap");
@@ -1544,7 +1584,7 @@ async function saveEquipment() {
 }
 
 async function deleteEquipment() {
-  if (!selectedId || !window.confirm(t("delete-confirm"))) return;
+  if (!selectedId || !window.confirm(t("archive-confirm"))) return;
   try {
     await call("delete_record", { kind: equipKind, id: selectedId });
     selectedId = "";
@@ -1574,10 +1614,19 @@ function equipPayload() {
     body.zero_humidity = document.getElementById("zero_humidity").value;
     body.zero_altitude = qtyPayload("zero_altitude");
   }
+  if (equipKind === "log") {
+    ["powder", "powder_lot", "primer", "primer_lot", "case_brand", "case_lot", "bullet_lot", "notes", "load_id"].forEach(take);
+    if (document.getElementById("charge")) body.charge = qtyPayload("charge");
+    if (document.getElementById("coal")) body.coal = qtyPayload("coal");
+    body.chrono_ids = [...document.querySelectorAll(".log-chrono:checked")].map((box) => box.value);
+    body.document_ids = [...document.querySelectorAll(".log-doc:checked")].map((box) => box.value);
+  }
   return body;
 }
 
 function bindSettings() {
+  const about = document.getElementById("open-about-settings");
+  if (about) about.addEventListener("click", () => { page = "about"; render(); });
   document.querySelectorAll("input[name=appearance]").forEach((input) => input.addEventListener("change", async () => {
     boot = await call("set_preferences", { body: preferencesBody({ appearance: input.value }) });
   }));
@@ -1714,6 +1763,10 @@ function cycleChip(chip) {
     buildImpact(ids);
   }
   if (page === "targets") paintTarget();
+  if (page === "compare") {
+    rememberCompareNumbers();
+    scheduleCompare(0);
+  }
 }
 
 function showPreview(input) {
@@ -1900,6 +1953,13 @@ function formatLocal(si, dim, unit) {
 
 document.addEventListener("keydown", (event) => {
   if (!boot || !boot.settings || !boot.settings.onboarded) return;
+  if (event.key === "Escape" && (paletteOpen || unitsOpen)) {
+    event.preventDefault();
+    paletteOpen = false;
+    unitsOpen = false;
+    render();
+    return;
+  }
   const typing = event.target && (event.target.matches("input, textarea, select"));
   if (event.ctrlKey && event.key.toLowerCase() === "u") {
     event.preventDefault();
@@ -2020,6 +2080,9 @@ function fillPalette() {
     ["pbr", t("nav-pbr")],
     ["truing", t("nav-truing")],
     ["equipment", t("nav-equipment")],
+    ["compare", t("nav-compare")],
+    ["documents", t("nav-documents")],
+    ["about", t("nav-about")],
     ["settings", t("nav-settings")],
     ["metric", t("command-metric")],
     ["us", t("command-us")],
@@ -2029,6 +2092,8 @@ function fillPalette() {
   ];
   box.innerHTML = `<p>${esc(t("commands"))}</p>` + items.map(([id, label]) => `<button type="button" data-cmd="${id}">${esc(label)}</button>`).join("");
   box.querySelectorAll("[data-cmd]").forEach((button) => button.addEventListener("click", () => runCommand(button.dataset.cmd)));
+  const first = box.querySelector("button");
+  if (first) first.focus();
 }
 
 function runCommand(id) {
@@ -3868,6 +3933,452 @@ document.addEventListener("click", (event) => {
     downloadPng("holdover-impact.png", "#impact-body svg");
   }
 });
+
+function ensureCompare() {
+  if (compareReady) return;
+  compareReady = true;
+  const active = boot.settings.active_profile_id;
+  if (active) compareIds = [active];
+  const range = parseLocal(boot.settings.last_range || "300 m", "length", units().length);
+  compareForm.rangeSi = range ? range.si : 300;
+  const wind = parseLocal(boot.settings.last_wind_speed || "4 mps", "velocity", units().velocity);
+  compareForm.windSi = wind ? wind.si : 4;
+  compareForm.direction = boot.settings.last_wind_direction || "9oc";
+}
+
+function compareFlags() {
+  if (!compareEffects) {
+    compareEffects = Object.assign({ incline: true, spin_drift: true, coriolis: false, cant: false, aerodynamic_jump: false }, boot.settings.effects || {});
+  }
+  return compareEffects;
+}
+
+function compareHtml() {
+  ensureCompare();
+  const profiles = boot.equipment.profiles || [];
+  const picks = profiles.map((item) => `<label><input type="checkbox" class="compare-pick" value="${esc(item.id)}" ${compareIds.includes(item.id) ? "checked" : ""} /> ${esc(item.label)}</label>`).join("");
+  const flags = compareFlags();
+  const effect = (name, key) => `<label><input type="checkbox" data-compare-effect="${name}" ${flags[name] ? "checked" : ""} /> ${esc(t(key))}</label>`;
+  return `<section class="panel">
+    <h2>${esc(t("nav-compare"))}</h2>
+    <p class="hint">${esc(t("compare-intro"))}</p>
+    <div class="checks">${picks || `<p>${esc(t("compare-empty"))}</p>`}</div>
+    <div class="row">
+      ${qtyField("compare-range", t("range"), "", units().length, "length", compareForm.rangeSi)}
+      ${qtyField("compare-wind", t("wind-speed"), "", units().velocity, "velocity", compareForm.windSi)}
+      <label class="field">${esc(t("wind-direction"))}
+        <input id="compare-direction" value="${esc(compareForm.direction || "9oc")}" title="${esc(t("compare-wind-tip"))}" />
+      </label>
+    </div>
+    <div class="checks">
+      ${effect("incline", "effect-incline")}
+      ${effect("spin_drift", "effect-spin")}
+      ${effect("coriolis", "effect-coriolis")}
+      ${effect("cant", "effect-cant")}
+      ${effect("aerodynamic_jump", "effect-jump")}
+    </div>
+    <p class="hint">${esc(boot.spin_provenance || "")}</p>
+    <p class="hint">${esc(t("jump-note"))}</p>
+    <div id="compare-result"></div>
+  </section>`;
+}
+
+function bindCompare() {
+  document.querySelectorAll(".compare-pick").forEach((box) => {
+    box.addEventListener("change", () => {
+      const id = box.value;
+      if (box.checked) {
+        if (compareIds.length >= 6) {
+          box.checked = false;
+          compareError = t("compare-limit");
+        } else if (!compareIds.includes(id)) compareIds.push(id);
+      } else compareIds = compareIds.filter((item) => item !== id);
+      scheduleCompare(0);
+    });
+  });
+  document.querySelectorAll("[data-compare-effect]").forEach((box) => {
+    box.addEventListener("change", () => {
+      compareFlags()[box.dataset.compareEffect] = box.checked;
+      scheduleCompare(0);
+    });
+  });
+  const direction = document.getElementById("compare-direction");
+  if (direction) direction.addEventListener("input", () => {
+    compareForm.direction = direction.value;
+    scheduleCompare(150);
+  });
+}
+
+function rememberCompareNumbers() {
+  const range = document.getElementById("compare-range");
+  if (range) {
+    const parsed = parseLocal(range.value, "length", range.dataset.unit);
+    if (parsed) {
+      compareForm.rangeSi = parsed.si;
+      range.dataset.si = String(parsed.si);
+    }
+  }
+  const wind = document.getElementById("compare-wind");
+  if (wind) {
+    const parsed = parseLocal(wind.value, "velocity", wind.dataset.unit);
+    if (parsed) {
+      compareForm.windSi = parsed.si;
+      wind.dataset.si = String(parsed.si);
+    }
+  }
+}
+
+function scheduleCompare(delay) {
+  window.clearTimeout(compareTimer);
+  compareTimer = window.setTimeout(runCompare, delay);
+}
+
+function compareBody() {
+  const air = boot.settings.current_air || {};
+  return {
+    profile_ids: compareIds.slice(0, 6),
+    range: qtyPayload("compare-range"),
+    wind_speed: qtyPayload("compare-wind"),
+    wind_direction: (document.getElementById("compare-direction") || {}).value || compareForm.direction || "9oc",
+    inclination: storedQuantity(boot.settings.last_inclination, "deg"),
+    current_air: {
+      temperature: air.temperature || { text: "15 C", unit: "C" },
+      pressure: air.pressure || { text: "1013.25 hPa", unit: "hPa" },
+      pressure_kind: air.pressure_kind || "station",
+      humidity: typeof air.humidity === "string" ? air.humidity : (air.humidity_text || "0%"),
+      altitude: air.altitude || { text: "0 m", unit: "m" },
+    },
+    effects: compareFlags(),
+    angular: boot.settings.angular || "mrad",
+  };
+}
+
+async function runCompare() {
+  const node = document.getElementById("compare-result");
+  if (!node) return;
+  if (!compareIds.length) {
+    node.innerHTML = `<p class="hint">${esc(t("compare-need"))}</p>`;
+    return;
+  }
+  try {
+    compareResult = await call("compare", { body: compareBody() });
+    compareError = "";
+    node.innerHTML = compareResultHtml(compareResult);
+  } catch (error) {
+    compareError = String(error);
+    node.innerHTML = `<p class="error">${esc(compareError)}</p>` + (compareResult ? `<div class="hold stale">${compareResultHtml(compareResult)}</div>` : "");
+  }
+}
+
+function compareResultHtml(result) {
+  const rows = (result && result.rows) || [];
+  if (!rows.length) return `<p class="hint">${esc(t("compare-need"))}</p>`;
+  const head = (cells) => cells.map((cell) => `<th scope="col">${esc(cell)}</th>`).join("");
+  const descriptive = rows.map((row) => `<tr>
+    <th scope="row">${esc(row.label)}</th>
+    <td>${esc(row.rifle)}</td><td>${esc(row.barrel)}</td><td>${esc(row.twist)} ${esc(row.twist_hand)}</td>
+    <td>${esc(row.sight_height)}</td><td>${esc(row.weight)}</td><td>${esc(row.scope)}</td>
+    <td>${esc(row.focal_plane)}</td><td>${esc(row.click)}</td><td>${esc(row.bullet)}</td>
+    <td>${esc(row.drag)}</td><td>${esc(row.bc)}</td><td>${esc(row.bullet_weight)}</td>
+    <td>${esc(row.load)}</td><td>${esc(row.mv)}</td><td>${esc(row.zero)}</td><td>${esc(row.truing)}</td>
+  </tr>`).join("");
+  const ballistic = rows.map((row) => `<tr>
+    <th scope="row">${esc(row.label)}</th>
+    <td>${esc(row.drop)}</td>
+    <td>${esc(row.elevation.direction)} ${esc(row.elevation.primary)}</td>
+    <td>${esc(row.windage.direction)} ${esc(row.windage.primary)}</td>
+    <td>${esc(row.velocity)}</td><td>${esc(row.energy)}</td>
+    <td>${esc(Number(row.tof_s).toFixed(3))} s</td><td>${esc(Number(row.mach).toFixed(2))}</td>
+  </tr>`).join("");
+  const warnings = rows.flatMap((row) => (row.warnings || []).map((item) => `${row.label}: ${item}`));
+  const need = rows.length < 2 ? `<p class="hint">${esc(t("compare-need"))}</p>` : "";
+  const limit = compareError ? `<p class="error">${esc(compareError)}</p>` : "";
+  return `${limit}${need}
+    <div class="table-wrap"><table class="words"><caption>${esc(t("compare-descriptive"))}</caption>
+      <thead><tr><th scope="col">${esc(t("profile"))}</th>${head([t("equip-rifle"), t("barrel"), t("twist"), t("sight-height"), t("weight"), t("equip-scope"), t("focal-plane"), t("click"), t("equip-bullet"), t("compare-drag"), t("compare-bc"), t("weight"), t("equip-load"), t("mv"), t("zero"), t("compare-truing")])}</tr></thead>
+      <tbody>${descriptive}</tbody></table></div>
+    <div class="table-wrap"><table class="words"><caption>${esc(t("compare-ballistic"))}</caption>
+      <thead><tr><th scope="col">${esc(t("profile"))}</th>${head([t("drop"), t("elevation"), t("windage"), t("velocity"), t("energy"), t("tof"), t("mach")])}</tr></thead>
+      <tbody>${ballistic}</tbody></table></div>
+    ${warnings.length ? `<p class="hint">${esc(warnings.join(" "))}</p>` : ""}`;
+}
+
+function documentsHtml() {
+  const docs = boot.equipment.documents || [];
+  const current = docs.find((item) => item.id === docId) || {};
+  const list = docs.map((item) => `<button type="button" data-doc="${esc(item.id)}">${esc(item.title || item.label)}</button>`).join("") || `<p>${esc(t("documents-none"))}</p>`;
+  const loads = (boot.equipment.loads || []).map((item) => `<option value="${esc(item.id)}" ${item.id === current.load_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+  const rifles = (boot.equipment.rifles || []).map((item) => `<option value="${esc(item.id)}" ${item.id === current.rifle_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+  const bullets = (boot.equipment.bullets || []).map((item) => `<option value="${esc(item.id)}" ${item.id === current.bullet_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+  const attached = current.filename ? `<p class="meta">${esc(t("documents-attached"))}: ${esc(current.filename)}</p>` : "";
+  return `<div class="layout">
+    <section class="panel list"><button type="button" id="doc-new">${esc(t("new"))}</button>${list}</section>
+    <section class="panel">
+      <h2>${esc(t("nav-documents"))}</h2>
+      <p class="hint">${esc(t("documents-intro"))}</p>
+      <input type="hidden" id="doc-id" value="${esc(current.id || "")}" />
+      <div class="fields">
+        ${textInput("doc-title", t("documents-title"), current.title || "")}
+        ${textInput("doc-edition", t("documents-edition"), current.edition || "")}
+        ${textInput("doc-date", t("documents-date"), current.edition_date || "")}
+        <label class="field">${esc(t("documents-link"))}<input id="doc-link" value="${esc(current.link_url || "")}" title="${esc(t("documents-link-tip"))}" /></label>
+        <label class="field">${esc(t("documents-file"))}<input id="doc-file" type="file" accept="application/pdf,.pdf" title="${esc(t("documents-file-tip"))}" /></label>
+        ${attached}
+        <label class="field">${esc(t("equip-load"))}<select id="doc-load"><option value=""></option>${loads}</select></label>
+        <label class="field">${esc(t("equip-rifle"))}<select id="doc-rifle"><option value=""></option>${rifles}</select></label>
+        <label class="field">${esc(t("equip-bullet"))}<select id="doc-bullet"><option value=""></option>${bullets}</select></label>
+        ${textInput("doc-notes", t("log-notes"), current.notes || "")}
+      </div>
+      <div class="row">
+        <button type="button" id="doc-save">${esc(t("save"))}</button>
+        ${current.id ? `<button type="button" id="doc-open">${esc(t("documents-open"))}</button>` : ""}
+        ${current.id ? `<button type="button" id="doc-archive">${esc(t("archive"))}</button>` : ""}
+      </div>
+      <p id="doc-msg" class="meta">${esc(docNotice)}</p>
+    </section>
+  </div>`;
+}
+
+function bindDocuments() {
+  document.querySelectorAll("[data-doc]").forEach((button) => button.addEventListener("click", () => {
+    docId = button.dataset.doc;
+    docNotice = "";
+    render();
+  }));
+  const newer = document.getElementById("doc-new");
+  if (newer) newer.addEventListener("click", () => { docId = ""; docNotice = ""; render(); });
+  const save = document.getElementById("doc-save");
+  if (save) save.addEventListener("click", saveDocument);
+  const open = document.getElementById("doc-open");
+  if (open) open.addEventListener("click", () => openDocument(docId));
+  const archive = document.getElementById("doc-archive");
+  if (archive) archive.addEventListener("click", archiveDocument);
+  const date = document.getElementById("doc-date");
+  if (date) date.title = t("documents-date-tip");
+}
+
+async function saveDocument() {
+  const msg = document.getElementById("doc-msg");
+  try {
+    const body = {
+      id: (document.getElementById("doc-id") || {}).value || "",
+      title: (document.getElementById("doc-title") || {}).value || "",
+      edition: (document.getElementById("doc-edition") || {}).value || "",
+      edition_date: (document.getElementById("doc-date") || {}).value || "",
+      link_url: (document.getElementById("doc-link") || {}).value || "",
+      notes: (document.getElementById("doc-notes") || {}).value || "",
+      load_id: (document.getElementById("doc-load") || {}).value || "",
+      rifle_id: (document.getElementById("doc-rifle") || {}).value || "",
+      bullet_id: (document.getElementById("doc-bullet") || {}).value || "",
+    };
+    const file = document.getElementById("doc-file") && document.getElementById("doc-file").files[0];
+    if (file) body.file = { filename: file.name, base64: await fileBase64(file) };
+    const saved = await call("save_document", { body });
+    docId = saved.id;
+    docNotice = t("saved");
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    if (msg) msg.textContent = String(error);
+  }
+}
+
+function fileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const comma = text.indexOf(",");
+      resolve(comma >= 0 ? text.slice(comma + 1) : text);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function openDocument(id) {
+  const msg = document.getElementById("doc-msg");
+  try {
+    const result = await call("open_document", { id });
+    if (msg) msg.textContent = result.path || "";
+  } catch (error) {
+    const text = String(error);
+    if (msg) msg.textContent = text.indexOf("not on this computer") >= 0 ? t("documents-missing") : text;
+  }
+}
+
+async function archiveDocument() {
+  if (!docId || !window.confirm(t("archive-confirm"))) return;
+  try {
+    await call("delete_record", { kind: "document", id: docId });
+    docId = "";
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    const msg = document.getElementById("doc-msg");
+    if (msg) msg.textContent = String(error);
+  }
+}
+
+function logForm() {
+  const record = currentRecord() || {};
+  const loads = boot.equipment.loads || [];
+  const loadOptions = loads.map((item) => `<option value="${esc(item.id)}" ${item.id === record.load_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+  const load = loads.find((item) => item.id === (record.load_id || (loads[0] && loads[0].id))) || null;
+  const mv = load ? `${t("log-mv")}: ${load.mv_display || ""} ${load.mv_unit || ""}`.trim() : t("log-load-missing");
+  const chronos = (boot.equipment.chronos || []).filter((item) => !load || item.load_id === load.id);
+  const chosen = new Set(record.chrono_ids || []);
+    const chronoBoxes = chronos.map((item) => chronoRow(item, chosen.has(item.id))).join("") || `<p class="hint">${esc(t("log-chronos-none"))}</p>`;
+  const docs = boot.equipment.documents || [];
+  const docChosen = new Set(record.document_ids || []);
+  const docBoxes = docs.map((item) => `<label><input type="checkbox" class="log-doc" value="${esc(item.id)}" ${docChosen.has(item.id) ? "checked" : ""} /> ${esc(item.title || item.label)}</label>`).join("") || `<p class="hint">${esc(t("log-docs-none"))}</p>`;
+  const notice = equipNotice;
+  equipNotice = "";
+  return `<p class="hint">${esc(t("log-intro"))}</p>
+    <p class="hint">${esc(t("log-boundary"))}</p>
+    <input type="hidden" id="record-id" value="${esc(record.id || "")}" />
+    <div class="fields">
+      ${textInput("label", t("label"), record.label)}
+      <label class="field">${esc(t("equip-load"))}<select id="load_id">${loadOptions}</select></label>
+      <p class="meta" id="log-mv">${esc(mv)}</p>
+      ${textInput("powder", t("log-powder"), record.powder)}
+      ${textInput("powder_lot", t("log-powder-lot"), record.powder_lot)}
+      ${textInput("primer", t("log-primer"), record.primer)}
+      ${textInput("primer_lot", t("log-primer-lot"), record.primer_lot)}
+      ${textInput("case_brand", t("log-case"), record.case_brand)}
+      ${textInput("case_lot", t("log-case-lot"), record.case_lot)}
+      ${textInput("bullet_lot", t("log-bullet-lot"), record.bullet_lot)}
+      ${recordField(record, "charge", t("log-charge"), "mass", units().mass)}
+      ${recordField(record, "coal", t("log-coal"), "length", units().small)}
+      ${textInput("notes", t("log-notes"), record.notes)}
+      <p class="meta">${esc(t("log-chronos"))}</p>
+      <div class="checks" id="log-chronos">${chronoBoxes}</div>
+      <p class="meta">${esc(t("log-docs"))}</p>
+      <div class="checks">${docBoxes}</div>
+    </div>
+    <div class="row"><button type="button" id="equip-save">${esc(t("save"))}</button>
+    ${record.id ? `<button type="button" id="equip-delete">${esc(t("archive"))}</button>` : ""}</div>
+    <p id="equip-msg" class="meta">${esc(notice)}</p>`;
+}
+
+function chronoRow(item, checked) {
+  const mean = Number.isFinite(Number(item.mean_mps)) ? `${formatLocal(Number(item.mean_mps), "velocity", units().velocity)} ${units().velocity}` : "";
+  return `<div class="row"><label><input type="checkbox" class="log-chrono" value="${esc(item.id)}" ${checked ? "checked" : ""} /> ${esc(item.label)} ${esc(mean)}</label>
+    <button type="button" data-use-mv="${esc(item.id)}">${esc(t("chrono-set-mv"))}</button></div>`;
+}
+
+function bindLog() {
+  const select = document.getElementById("load_id");
+  if (!select) return;
+  select.addEventListener("change", () => {
+    const load = (boot.equipment.loads || []).find((item) => item.id === select.value);
+    const node = document.getElementById("log-mv");
+    if (node && load) node.textContent = `${t("log-mv")}: ${load.mv_display || ""} ${load.mv_unit || ""}`.trim();
+    const box = document.getElementById("log-chronos");
+    if (!box || !load) return;
+    const chronos = (boot.equipment.chronos || []).filter((item) => item.load_id === load.id);
+    box.innerHTML = chronos.map((item) => chronoRow(item, false)).join("") || `<p class="hint">${esc(t("log-chronos-none"))}</p>`;
+    bindLogMv();
+  });
+  bindLogMv();
+}
+
+function bindLogMv() {
+  document.querySelectorAll("[data-use-mv]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      const chrono = (boot.equipment.chronos || []).find((item) => item.id === button.dataset.useMv);
+      if (!chrono || !window.confirm(t("chrono-mv-confirm"))) return;
+      try {
+        await call("chrono_session", { body: { op: "set_mv", confirm: true, load_id: chrono.load_id, mean_mps: chrono.mean_mps, temperature_c: chrono.temperature_c } });
+        boot = await call("bootstrap");
+        equipNotice = t("saved");
+        render();
+      } catch (error) {
+        const msg = document.getElementById("equip-msg");
+        if (msg) msg.textContent = String(error);
+      }
+    });
+  });
+}
+
+function archiveHtml() {
+  const archived = boot.equipment.archived || [];
+  const history = (boot.equipment.history && boot.equipment.history.rows) || [];
+  const count = (boot.equipment.history && boot.equipment.history.count) || 0;
+  const archivedRows = archived.map((item) => `<tr>
+    <td>${esc(kindLabel(item.kind))}</td><td>${esc(item.label)}</td><td>${esc(item.deleted_at)}</td>
+    <td><button type="button" data-restore-kind="${esc(item.kind)}" data-restore-id="${esc(item.id)}">${esc(t("archive-restore"))}</button></td>
+  </tr>`).join("");
+  const historyRows = history.map((item) => `<tr>
+    <td>${esc(kindLabel(item.subject_kind))}</td><td>${esc(item.subject_label || "")}</td>
+    <td>${esc(item.subject_revision)}</td><td>${esc(item.created_at)}</td>
+    <td><button type="button" data-history="${esc(item.id)}">${esc(t("history-restore"))}</button></td>
+  </tr>`).join("");
+  const more = count > history.length ? `<p class="hint">${esc(t("history-more"))}</p>` : "";
+  return `<p class="hint">${esc(t("archive-intro"))}</p>
+    <h2>${esc(t("archive-title"))}</h2>
+    ${archived.length ? `<div class="table-wrap"><table class="words"><thead><tr><th scope="col">${esc(t("archive-kind"))}</th><th scope="col">${esc(t("archive-name"))}</th><th scope="col">${esc(t("archive-when"))}</th><th scope="col">${esc(t("archive-restore"))}</th></tr></thead><tbody>${archivedRows}</tbody></table></div>` : `<p>${esc(t("archive-empty"))}</p>`}
+    <h2>${esc(t("history-title"))}</h2>
+    <p class="hint">${esc(t("history-intro"))}</p>
+    ${history.length ? `<div class="table-wrap"><table class="words"><thead><tr><th scope="col">${esc(t("archive-kind"))}</th><th scope="col">${esc(t("archive-name"))}</th><th scope="col">${esc(t("history-revision"))}</th><th scope="col">${esc(t("history-when"))}</th><th scope="col">${esc(t("history-restore"))}</th></tr></thead><tbody>${historyRows}</tbody></table></div>${more}` : `<p>${esc(t("history-empty"))}</p>`}`;
+}
+
+function kindLabel(kind) {
+  const keys = { rifle: "equip-rifle", scope: "equip-scope", bullet: "equip-bullet", load: "equip-load", profile: "equip-profile", chrono: "equip-chrono", reticle: "nav-reticle", target: "nav-targets", document: "nav-documents", load_log: "equip-log", atmosphere: "zero-air" };
+  return t(keys[kind] || "archive");
+}
+
+function bindArchive() {
+  document.querySelectorAll("[data-restore-kind]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await call("restore_record", { kind: button.dataset.restoreKind, id: button.dataset.restoreId });
+        boot = await call("bootstrap");
+        render();
+      } catch (error) {
+        window.alert(String(error));
+      }
+    });
+  });
+  document.querySelectorAll("[data-history]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm(t("history-confirm"))) return;
+      try {
+        await call("restore_history", { id: button.dataset.history });
+        boot = await call("bootstrap");
+        render();
+      } catch (error) {
+        window.alert(String(error));
+      }
+    });
+  });
+}
+
+function aboutHtml() {
+  return `<section class="panel">
+    <h2>${esc(t("nav-about"))}</h2>
+    <p class="hint">${esc(t("about-intro"))}</p>
+    <p>${esc(t("about-version"))} ${esc(boot.version || "")}</p>
+    <h2>${esc(t("about-mit-heading"))}</h2>
+    <p>${esc(t("about-mit"))}</p>
+    <pre class="licence">${esc(boot.licence || "")}</pre>
+    <h2>${esc(t("about-weather-heading"))}</h2>
+    <p>${esc(t("weather-attribution"))}</p>
+    <p class="hint">${esc(t("weather-noncommercial"))}</p>
+    <p>${esc(t("about-personal"))}</p>
+    <h2>${esc(t("about-drag-heading"))}</h2>
+    <p>${esc(t("about-drag"))}</p>
+    <h2>${esc(t("about-crates-heading"))}</h2>
+    <p>${esc(t("about-crates"))}</p>
+    <h2>${esc(t("about-limits-heading"))}</h2>
+    <p>${esc(t("about-limits"))}</p>
+    <p class="hint">${esc(boot.spin_provenance || "")}</p>
+    <p class="hint">${esc(boot.ejecta_convention || "")}</p>
+    <p class="hint">${esc(t("about-keys"))}</p>
+    <p class="hint">${esc(t("about-package"))}</p>
+  </section>`;
+}
 
 listenTheme();
 refresh().catch((error) => {

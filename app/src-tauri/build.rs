@@ -30,6 +30,12 @@ fn main() {
             "reticle_save",
             "target_save",
             "target_pdf",
+            "compare",
+            "save_document",
+            "open_document",
+            "save_load_log",
+            "restore_record",
+            "restore_history",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

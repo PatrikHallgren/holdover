@@ -49,3 +49,10 @@ __pycache__/
 .firecrawl/
 /build/
 /out/
+
+# makepkg output from packaging/PKGBUILD
+packaging/src/
+packaging/pkg/
+packaging/*.pkg.tar*
+packaging/*.pkg.tar.*.sig
+packaging/*.log

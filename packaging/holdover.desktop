@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Holdover
+GenericName=Ballistic calculator
+Comment=Personal ballistic calculator and equipment notebook
+Exec=/usr/bin/holdover
+Icon=se.hallgren.holdover
+Terminal=false
+Categories=Science;Utility;
+Keywords=ballistics;shooting;range;
+StartupWMClass=se.hallgren.holdover

@@ -19,6 +19,9 @@ pub const RECORD_SECTIONS: &[(&str, &str)] = &[
     ("chronos", "chrono"),
     ("reticles", "reticle"),
     ("targets", "target"),
+    ("documents", "document"),
+    ("load_logs", "load_log"),
+    ("history", "history"),
 ];
 
 const REQUIRED: &[&str] = &[
@@ -117,6 +120,9 @@ pub fn csv_to_document(text: &str) -> Result<Value, String> {
         "chronos": [],
         "reticles": [],
         "targets": [],
+        "documents": [],
+        "load_logs": [],
+        "history": [],
     });
     for row in rows.iter().skip(1) {
         if row.iter().all(|cell| cell.is_empty()) {

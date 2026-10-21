@@ -42,7 +42,7 @@
           "required": ["kind"],
           "properties": {
             "kind": {
-              "enum": ["rifle", "scope", "bullet", "load", "profile", "zero", "atmosphere", "target"]
+              "enum": ["rifle", "scope", "bullet", "load", "profile", "zero", "atmosphere", "target", "chrono", "reticle", "document", "load_log", "history"]
             },
             "label": { "type": "string" },
             "fields": { "type": "object" }

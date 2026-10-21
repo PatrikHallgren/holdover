@@ -407,6 +407,117 @@ pub fn chart(store: &Store, body: &Value) -> Result<Value, String> {
     }))
 }
 
+pub fn compare(store: &Store, body: &Value) -> Result<Value, String> {
+    let ids = body
+        .get("profile_ids")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if ids.len() > 6 {
+        return Err("compare at most six profiles".into());
+    }
+    let units = store.units()?;
+    let angular = body
+        .get("angular")
+        .and_then(|v| v.as_str())
+        .unwrap_or(units.angular.as_str());
+    let mut rows = Vec::new();
+    for id in ids {
+        let id = id.as_str().unwrap_or("").to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let mut request = body.clone();
+        request["profile_id"] = json!(id);
+        let (shot, meta) = build_shot(store, &request)?;
+        let bundle = store.profile_bundle(&id)?;
+        let range_m = qty(body, "range", Dimension::Length, "m")?;
+        if range_m <= 0.0 {
+            return Err("range must be positive".into());
+        }
+        let solution = holdover_core::solve(&shot, range_m).map_err(|err| err.to_string())?;
+        let point = solution
+            .points
+            .first()
+            .ok_or("the solver returned no point")?;
+        let bullet = &bundle["bullet"];
+        let bc = bullet
+            .get("bands")
+            .and_then(|v| v.as_array())
+            .and_then(|bands| bands.first())
+            .and_then(|band| band.get("bc"))
+            .and_then(|v| v.as_f64());
+        rows.push(json!({
+            "id": id,
+            "label": meta.profile_label,
+            "rifle": text_of(&bundle["rifle"], "label"),
+            "barrel": qty_line(&bundle["rifle"], "barrel_length", &units.small),
+            "twist": text_of(&bundle["rifle"], "twist_text"),
+            "twist_hand": text_of(&bundle["rifle"], "twist_hand"),
+            "sight_height": qty_line(&bundle["rifle"], "sight_height", &units.small),
+            "weight": qty_line(&bundle["rifle"], "weight", &units.mass),
+            "scope": text_of(&bundle["scope"], "label"),
+            "focal_plane": text_of(&bundle["scope"], "focal_plane"),
+            "click": qty_line(&bundle["scope"], "click", &units.angle),
+            "bullet": text_of(bullet, "label"),
+            "drag": text_of(bullet, "drag_model"),
+            "bc": bc,
+            "bullet_weight": qty_line(bullet, "weight", &units.mass),
+            "load": text_of(&bundle["load"], "label"),
+            "mv": qty_line(&bundle["load"], "mv", &units.velocity),
+            "zero": meta.zero_summary,
+            "truing": meta.truing_label,
+            "drop": format!("{} {}", shown(point.drop_m.abs(), &units.small), units.small),
+            "drop_m": point.drop_m,
+            "elevation": hold_json(&point.elevation, angular),
+            "windage": hold_json(&point.windage, angular),
+            "velocity": format!("{} {}", shown(point.velocity_mps, &units.velocity), units.velocity),
+            "energy": format!("{} {}", shown(point.energy_j, &units.energy), units.energy),
+            "tof_s": point.tof_s,
+            "mach": point.mach,
+            "warnings": solution.warnings.iter().map(warning_text).collect::<Vec<_>>(),
+        }));
+    }
+    Ok(json!({
+        "rows": rows,
+        "range_unit": units.length,
+        "angular": angular,
+        "small_unit": units.small,
+        "velocity_unit": units.velocity,
+    }))
+}
+
+fn text_of(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn qty_line(value: &Value, name: &str, unit: &str) -> String {
+    let si = value
+        .get(format!("{name}_si"))
+        .and_then(|v| v.as_f64())
+        .or_else(|| value.get(format!("{name}_m")).and_then(|v| v.as_f64()))
+        .or_else(|| value.get(format!("{name}_mps")).and_then(|v| v.as_f64()))
+        .or_else(|| value.get(format!("{name}_kg")).and_then(|v| v.as_f64()))
+        .or_else(|| {
+            value
+                .get("click_rad")
+                .filter(|_| name == "click")
+                .and_then(|v| v.as_f64())
+        });
+    if let Some(si) = si {
+        return format!("{} {unit}", shown(si, unit));
+    }
+    value
+        .get(format!("{name}_text"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 fn hold_scale(angular: &str) -> (String, String, bool) {
     match angular.to_ascii_lowercase().as_str() {
         "moa" => ("MOA".into(), "MOA".into(), false),
@@ -2586,5 +2697,112 @@ mod tests {
         let diameter = 0.15_f64;
         let got = impact["rings_cm"].as_array().unwrap()[0].as_f64().unwrap() / 100.0;
         assert!((got - diameter).abs() < 1e-9);
+    }
+
+    #[test]
+    fn compare_lists_two_loads_and_a_faster_one_drops_less() {
+        let store = store();
+        let id = store.bootstrap().unwrap()["settings"]["active_profile_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let bundle = store.profile_bundle(&id).unwrap();
+        let before = solve(
+            &store,
+            &json!({
+                "profile_id": id,
+                "range": {"text": "300 m", "unit": "m"},
+                "wind_speed": {"text": "0 mps", "unit": "mps"},
+                "wind_direction": "12oc",
+                "current_air": air(),
+                "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": true}
+            }),
+        )
+        .unwrap();
+        let load = store
+            .save_load(&json!({
+                "label": "Faster",
+                "bullet_id": bundle["load"]["bullet_id"],
+                "mv": {"text": "900 mps", "unit": "mps"}
+            }))
+            .unwrap();
+        store
+            .save_load_log(&json!({
+                "label": "Notebook",
+                "load_id": bundle["load"]["id"],
+                "charge": {"text": "50 gr", "unit": "gr"}
+            }))
+            .unwrap();
+        let after = solve(
+            &store,
+            &json!({
+                "profile_id": id,
+                "range": {"text": "300 m", "unit": "m"},
+                "wind_speed": {"text": "0 mps", "unit": "mps"},
+                "wind_direction": "12oc",
+                "current_air": air(),
+                "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": true}
+            }),
+        )
+        .unwrap();
+        assert_eq!(before["drop_m"], after["drop_m"]);
+        assert!(after["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap_or("").contains("not applied")));
+        let faster = store
+            .save_profile(&json!({
+                "label": "Faster",
+                "rifle_id": bundle["profile"]["rifle_id"],
+                "scope_id": bundle["profile"]["scope_id"],
+                "load_id": load["id"],
+                "zero_range": {"text": "100 m", "unit": "m"},
+                "zero_offset": {"text": "0 cm", "unit": "cm"},
+                "zero_temperature": {"text": "15 C", "unit": "C"},
+                "zero_pressure": {"text": "1013.25 hPa", "unit": "hPa"},
+                "zero_pressure_kind": "station",
+                "zero_humidity": "0%",
+                "zero_altitude": {"text": "0 m", "unit": "m"}
+            }))
+            .unwrap();
+        let compared = compare(
+            &store,
+            &json!({
+                "profile_ids": [id, faster["id"]],
+                "range": {"text": "300 m", "unit": "m"},
+                "wind_speed": {"text": "4 mps", "unit": "mps"},
+                "wind_direction": "9oc",
+                "current_air": air(),
+                "effects": {"incline": true, "spin_drift": false, "coriolis": false, "cant": false, "aerodynamic_jump": false}
+            }),
+        )
+        .unwrap();
+        let rows = compared["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0]["sight_height"].as_str().unwrap().contains("cm"));
+        assert_eq!(rows[0]["bc"].as_f64().unwrap(), 0.243);
+        let slow = rows[0]["drop_m"].as_f64().unwrap().abs();
+        let fast = rows[1]["drop_m"].as_f64().unwrap().abs();
+        assert!(fast < slow, "faster muzzle velocity should drop less");
+        store.set_preferences(&json!({"preset": "us"})).unwrap();
+        let us = compare(
+            &store,
+            &json!({
+                "profile_ids": [id],
+                "range": {"text": "300 m", "unit": "m"},
+                "wind_speed": {"text": "0 mps", "unit": "mps"},
+                "wind_direction": "12oc",
+                "current_air": air(),
+                "effects": {"spin_drift": false}
+            }),
+        )
+        .unwrap();
+        assert_eq!(us["velocity_unit"], "mph");
+        assert!(us["rows"][0]["velocity"].as_str().unwrap().contains("mph"));
+        assert!(us["rows"][0]["elevation"]["primary"]
+            .as_str()
+            .unwrap()
+            .contains("MOA"));
     }
 }

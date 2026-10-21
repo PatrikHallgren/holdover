@@ -204,6 +204,15 @@ pub fn tokens_from_colors(colors: &BTreeMap<String, String>) -> Palette {
         reticle: foreground.clone(),
         target: foreground,
     };
+    let mut tokens = tokens;
+    let backgrounds = [tokens.background.as_str(), tokens.surface.as_str()];
+    let toward = tokens.text.clone();
+    // Hints, warnings, and the focus ring have to stay readable on both
+    // surfaces. A theme colour that fails is mixed toward the foreground.
+    tokens.text_secondary = lift_contrast(&tokens.text_secondary, &backgrounds, 4.5, &toward);
+    tokens.warning = lift_contrast(&tokens.warning, &backgrounds, 4.5, &toward);
+    tokens.error = lift_contrast(&tokens.error, &backgrounds, 4.5, &toward);
+    tokens.focus = lift_contrast(&tokens.focus, &backgrounds, 3.0, &toward);
     let mut contrast_warnings = Vec::new();
     let text_on_bg = contrast_ratio(&tokens.text, &tokens.background);
     if text_on_bg < 4.5 {
@@ -257,6 +266,25 @@ pub fn mix_hex(start: &str, end: &str, amount: f64) -> String {
         (a as f64 * (1.0 - amount) + b as f64 * amount + 0.5).clamp(0.0, 255.0) as u8
     };
     format!("#{:02x}{:02x}{:02x}", ch(sr, er), ch(sg, eg), ch(sb, eb))
+}
+
+/// Move `color` toward `toward` until it clears `minimum` against every background.
+fn lift_contrast(color: &str, backgrounds: &[&str], minimum: f64, toward: &str) -> String {
+    let passes = |candidate: &str| {
+        backgrounds
+            .iter()
+            .all(|background| contrast_ratio(candidate, background) + 1e-6 >= minimum)
+    };
+    if passes(color) {
+        return color.to_string();
+    }
+    for step in 1..=20 {
+        let candidate = mix_hex(color, toward, step as f64 / 20.0);
+        if passes(&candidate) {
+            return candidate;
+        }
+    }
+    toward.to_string()
 }
 
 pub fn contrast_ratio(a: &str, b: &str) -> f64 {
@@ -725,6 +753,41 @@ bright_foreground = "#c0caf5"
         assert_eq!(kept.source, PaletteSource::LastValid);
         assert_eq!(kept.tokens.accent, "#abcdef");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_light_and_dark_keep_hints_warnings_and_focus_readable() {
+        for mode in ["light", "dark"] {
+            let palette = bundled_palette(mode);
+            for background in [&palette.tokens.background, &palette.tokens.surface] {
+                assert!(
+                    contrast_ratio(&palette.tokens.text_secondary, background) >= 4.5,
+                    "{mode} secondary on {background}"
+                );
+                assert!(
+                    contrast_ratio(&palette.tokens.warning, background) >= 4.5,
+                    "{mode} warning on {background}"
+                );
+                assert!(
+                    contrast_ratio(&palette.tokens.error, background) >= 4.5,
+                    "{mode} error on {background}"
+                );
+                assert!(
+                    contrast_ratio(&palette.tokens.focus, background) >= 3.0,
+                    "{mode} focus on {background}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_faint_muted_colour_is_lifted_toward_the_foreground() {
+        let mut colors = bundled_dark();
+        colors.insert("dark_foreground".into(), "#24221e".into());
+        let palette = tokens_from_colors(&colors);
+        assert!(contrast_ratio(&palette.tokens.text_secondary, &palette.tokens.background) >= 4.5);
+        assert_ne!(palette.tokens.text_secondary, "#24221e");
+        assert!(palette.contrast_warnings.is_empty());
     }
 
     #[test]

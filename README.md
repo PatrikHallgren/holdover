@@ -4,7 +4,7 @@ Holdover is a personal, non-commercial, local-first ballistic calculator for the
 
 > All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.
 
-The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 5 adds Open-Meteo weather and Holdover’s own JSON/CSV library file. Check it with [`docs/M5-DESKTOP.md`](docs/M5-DESKTOP.md). Earlier checklists are [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md), [`docs/M3-DESKTOP.md`](docs/M3-DESKTOP.md), and [`docs/M4-DESKTOP.md`](docs/M4-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 6 prepares 1.0.0: compare, documents, the load log, archive, the Arch package, and About. The guide is [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md). Check the window with [`docs/M6-DESKTOP.md`](docs/M6-DESKTOP.md). Earlier checklists are [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md), [`docs/M3-DESKTOP.md`](docs/M3-DESKTOP.md), [`docs/M4-DESKTOP.md`](docs/M4-DESKTOP.md), and [`docs/M5-DESKTOP.md`](docs/M5-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Layout
 
@@ -14,7 +14,8 @@ The product plan is [`docs/PLAN.md`](docs/PLAN.md). Milestone 5 adds Open-Meteo 
 | `crates/holdover-cli` | `holdover-cli`. Same JSON the later export will use. |
 | `crates/holdover-theme` | Omarchy 4 template and `colors.toml` adapter. |
 | `share/holdover` | `holdover.json.tpl` and the optional theme-set hook. |
-| `app/` | Tauri 2 window. Solve, range card, charts, equipment, settings. |
+| `packaging/` | `PKGBUILD`, desktop entry, and icon. |
+| `app/` | Tauri 2 window. Solve, range card, charts, equipment, compare, documents, settings, About. |
 | `locales/en.ftl` | English strings. The only shipped locale. |
 | `docs/references/vectors.md` | Documented reference vectors. |
 | `docs/schema/holdover.schema.json` | Draft library schema, including sync fields. |
@@ -52,7 +53,16 @@ mise exec rust@1.98.1 -- cargo build --release -p holdover
 ./target/release/holdover
 ```
 
-`wget` is not required. The human checklist for this Solve screen is [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md). A throwaway library is `HOLDOVER_DB=/tmp/holdover-m2.db ./target/release/holdover`.
+`wget` is not required. The human checklist for this window is [`docs/M6-DESKTOP.md`](docs/M6-DESKTOP.md). A throwaway library is `HOLDOVER_DB=/tmp/holdover-m6.db ./target/release/holdover`.
+
+The Arch package, from a checkout:
+
+```sh
+cd packaging
+mise exec rust@1.98.1 -- makepkg -si
+```
+
+The menu starts `/usr/bin/holdover`. A shell still runs `~/.local/bin/holdover` when that directory is earlier on `PATH`. Both use `~/.local/share/holdover/holdover.db`. Details are in the user guide.
 
 `tools/desktop-spike.sh` is the earlier theme-rename check. It prints the same pacman line and does not run `sudo` unless you pass `--install`. The 2026-10-16 result (keep Tauri 2) is in [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md).
 
