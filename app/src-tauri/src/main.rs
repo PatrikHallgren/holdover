@@ -4,12 +4,14 @@
 //! current conditions, and the hold. SQLite lives in this crate because the
 //! core library does no I/O.
 
+mod bundle;
 mod library;
 mod session;
 mod store;
 mod strings;
 mod weather;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -50,6 +52,9 @@ fn main() {
             export_library,
             export_library_csv,
             import_library,
+            export_bundle,
+            preview_bundle,
+            import_bundle,
             fetch_weather,
             apply_weather,
             point_blank,
@@ -439,6 +444,47 @@ fn target_pdf(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, S
             "scale_denominator": printed.scale_denominator,
             "scale_bar_mm": printed.scale_bar_mm,
         }))
+    })
+}
+
+#[tauri::command]
+fn export_bundle(
+    state: tauri::State<'_, AppState>,
+    include_location: Option<bool>,
+) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = store.export_bundle_bytes(include_location.unwrap_or(false))?;
+        let path = backup_dir()?.join(format!(
+            "holdover-{}.holdover",
+            store::now_iso().replace(':', "")
+        ));
+        fs::write(&path, &bytes).map_err(|err| err.to_string())?;
+        store.anchor_bundle_bases()?;
+        Ok(json!({ "path": path }))
+    })
+}
+
+#[tauri::command]
+fn preview_bundle(
+    state: tauri::State<'_, AppState>,
+    bytes_base64: String,
+) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = bundle::decode_bundle_bytes(&bytes_base64)?;
+        store.import_bundle_bytes(&bytes, &BTreeMap::new(), false, None)
+    })
+}
+
+#[tauri::command]
+fn import_bundle(
+    state: tauri::State<'_, AppState>,
+    bytes_base64: String,
+    resolutions: Option<Value>,
+) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = bundle::decode_bundle_bytes(&bytes_base64)?;
+        let chosen = bundle::resolutions_from_value(&resolutions.unwrap_or_else(|| json!({})))?;
+        store.import_bundle_bytes(&bytes, &chosen, true, None)
     })
 }
 

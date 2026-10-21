@@ -24,6 +24,14 @@ let equipKind = "rifle";
 let selectedId = "";
 let restoreDoc = null;
 let restorePreview = null;
+let syncTab = "export";
+let syncFilter = "all";
+let bundlePreview = null;
+let bundleBytes = "";
+let bundleChoices = {};
+let bundleMessage = "";
+let bundleError = false;
+let bundleInclude = false;
 let card = null;
 let chartData = null;
 let chartCursor = null;
@@ -156,6 +164,7 @@ function applyTheme() {
 async function refresh() {
   boot = await call("bootstrap");
   if (!cardPageTouched && boot.paper) cardPageId = boot.paper;
+  document.title = `${t("app-name")} ${boot.version || ""}`.trim();
   applyTheme();
   render();
 }
@@ -181,7 +190,7 @@ function shellHtml() {
   return `<div class="shell"><a class="skip" href="#page">${esc(t("skip"))}</a><header class="top">
     <span class="brand">${esc(t("app-name"))}</span>
     <nav aria-label="${esc(t("nav-label"))}">
-      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("compare")}${nav("documents")}${nav("settings")}
+      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("compare")}${nav("documents")}${nav("sync")}${nav("settings")}
     </nav>
     <div class="presets">
       ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
@@ -189,7 +198,7 @@ function shellHtml() {
     </div>
   </header>`;
   function nav(id) {
-    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", settings: "nav-settings" };
+    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings" };
     const key = keys[id] || "nav-solve";
     const current = page === id ? ` aria-current="page"` : "";
     return `<button type="button" data-page="${id}" class="${page === id ? "active" : ""}"${current}>${esc(t(key))}</button>`;
@@ -233,6 +242,7 @@ function pageHtml() {
   if (page === "equipment") return equipmentHtml();
   if (page === "compare") return compareHtml();
   if (page === "documents") return documentsHtml();
+  if (page === "sync") return syncHtml();
   if (page === "about") return aboutHtml();
   if (page === "settings") return settingsHtml();
   return solveHtml();
@@ -1110,6 +1120,7 @@ function bindPage() {
   if (page === "equipment") bindEquipment();
   if (page === "compare") bindCompare();
   if (page === "documents") bindDocuments();
+  if (page === "sync") bindSync();
   if (page === "settings") bindSettings();
 }
 
@@ -1784,6 +1795,271 @@ async function commitLibrary(policy) {
   }
 }
 
+function syncHtml() {
+  const exportOn = syncTab === "export";
+  const importOn = syncTab === "import";
+  return `<section class="panel sync-page">
+    <h2>${esc(t("nav-sync"))}</h2>
+    <p class="hint">${esc(t("sync-intro"))}</p>
+    <div class="tabs" id="sync-tabs" role="tablist" aria-label="${esc(t("sync-tabs"))}">
+      ${syncModeButton("export", "sync-export", exportOn)}
+      ${syncModeButton("import", "sync-import", importOn)}
+    </div>
+    <div role="tabpanel" data-sync-panel="export" ${exportOn ? "" : "hidden"}>
+      <p class="hint">${esc(t("sync-export-intro"))}</p>
+      <label><input type="checkbox" id="bundle-include" title="${esc(t("sync-include-tip"))}" ${bundleInclude ? "checked" : ""} /> ${esc(t("include-location"))}</label>
+      <div class="row">
+        <button type="button" id="bundle-export" title="${esc(t("sync-export-tip"))}">${esc(t("sync-export-button"))}</button>
+      </div>
+    </div>
+    <div role="tabpanel" data-sync-panel="import" ${importOn ? "" : "hidden"}>
+      ${syncImportHtml()}
+    </div>
+    <p id="bundle-message" class="${bundleError ? "error" : "meta"}">${esc(bundleMessage)}</p>
+  </section>`;
+}
+
+function syncModeButton(id, key, on) {
+  return `<button type="button" role="tab" data-sync-tab="${id}" aria-selected="${on}" tabindex="${on ? 0 : -1}">${esc(t(key))}</button>`;
+}
+
+function syncImportHtml() {
+  const file = `<div class="compact"><label class="field wide">${esc(t("sync-file"))}<input id="bundle-file" type="file" accept=".holdover,application/zip" title="${esc(t("sync-file-tip"))}" /></label></div>`;
+  if (!bundlePreview) {
+    return `<p class="hint">${esc(t("sync-import-intro"))}</p>${file}`;
+  }
+  const rows = bundlePreview.rows || [];
+  const shown = syncVisibleRows(rows);
+  const hidden = syncFilteredRows(rows).length - shown.length;
+  const more = hidden > 0 ? `<p class="sync-more">${esc(t("sync-more").replace("{count}", String(hidden)))}</p>` : "";
+  const note = bundleConflictsOpen()
+    ? `<p class="hint">${esc(t("sync-unresolved-note"))}</p>`
+    : (bundleHasWork() ? "" : `<p class="hint">${esc(t("sync-nothing"))}</p>`);
+  const localOnly = `<p class="meta">${esc(t("sync-local-only"))}: ${esc(bundlePreview.local_only || 0)} · ${esc(t("sync-schema"))} ${esc(bundlePreview.schema_version)}</p>`;
+  return `<p class="hint">${esc(t("sync-import-intro"))}</p>
+    <p class="hint">${esc(t("sync-import-privacy"))}</p>
+    ${file}
+    ${localOnly}
+    <div class="tabs" id="sync-filters" role="tablist" aria-label="${esc(t("sync-filter"))}">
+      ${["conflict", "new", "updated", "deleted", "unchanged", "all"].map(syncFilterButton).join("")}
+    </div>
+    <div class="sync-list">${shown.map(syncRowHtml).join("") || `<p class="meta">${esc(t("sync-filter-empty"))}</p>`}</div>
+    ${more}
+    ${note}
+    <div class="row">
+      <button type="button" id="bundle-apply" title="${esc(t("sync-apply-tip"))}" ${bundleCanApply() ? "" : "disabled"}>${esc(t("sync-apply"))}</button>
+    </div>`;
+}
+
+function syncFilterButton(id) {
+  const counts = (bundlePreview && bundlePreview.counts) || {};
+  const rows = (bundlePreview && bundlePreview.rows) || [];
+  const count = id === "all" ? rows.length : (counts[id] || 0);
+  const on = syncFilter === id;
+  const label = id === "all" ? t("sync-filter-all") : t("sync-status-" + id);
+  return `<button type="button" role="tab" data-sync-filter="${id}" aria-selected="${on}" tabindex="${on ? 0 : -1}">${esc(label)} ${count}</button>`;
+}
+
+function syncFilteredRows(rows) {
+  if (syncFilter === "all") return rows;
+  return rows.filter((row) => row.status === syncFilter);
+}
+
+function syncVisibleRows(rows) {
+  return syncFilteredRows(rows).slice(0, 80);
+}
+
+function syncRowHtml(row) {
+  const choices = (row.choices || []).map((choice) => {
+    const pressed = bundleChoices[row.id] === choice;
+    return `<button type="button" data-bundle-choice="${esc(choice)}" data-id="${esc(row.id)}" aria-pressed="${pressed}" title="${esc(t("sync-choice-tip"))}">${esc(choiceLabel(choice))}</button>`;
+  }).join("");
+  const actions = choices ? `<span class="sync-choices">${choices}</span>` : "";
+  return `<div class="sync-row">
+    <span class="kind">${esc(kindLabel(row.kind))}</span>
+    <span class="status">${esc(statusLabel(row.status))}</span>
+    ${syncNames(row)}
+    ${actions}
+  </div>`;
+}
+
+function syncNames(row) {
+  const local = row.local_label || "";
+  const remote = row.remote_label || row.label || "";
+  if (row.status === "new") return `<span>${esc(remote || row.label || "")}</span>`;
+  if (local && remote && local !== remote) {
+    return `<span>${esc(t("sync-local"))}: ${esc(local)}</span><span>${esc(t("sync-remote"))}: ${esc(remote)}</span>`;
+  }
+  return `<span>${esc(row.label || local || remote)}</span>`;
+}
+
+function statusLabel(status) {
+  const key = "sync-status-" + status;
+  const text = t(key);
+  return text === key ? status : text;
+}
+
+function choiceLabel(choice) {
+  const keys = { "keep-mine": "sync-keep-mine", "take-theirs": "sync-take-theirs", "keep-both": "sync-keep-both" };
+  return t(keys[choice] || choice);
+}
+
+function bundleConflictsOpen() {
+  const rows = (bundlePreview && bundlePreview.rows) || [];
+  return rows.some((row) => row.status === "conflict" && !bundleChoices[row.id]);
+}
+
+function bundleHasWork() {
+  const counts = (bundlePreview && bundlePreview.counts) || {};
+  return ["new", "updated", "deleted", "conflict"].some((key) => Number(counts[key] || 0) > 0);
+}
+
+function bundleCanApply() {
+  return !!(bundlePreview && bundleBytes && bundleHasWork() && !bundleConflictsOpen());
+}
+
+function explainBundle(error) {
+  const text = String(error || "");
+  if (text.includes("bundle-schema-newer")) return t("sync-schema-newer");
+  if (text.includes("bundle-schema-older")) return t("sync-schema-older");
+  if (text.includes("bundle-foreign")) return t("sync-foreign");
+  if (text.includes("bundle-truncated")) return t("sync-truncated");
+  if (text.includes("bundle-corrupt")) return t("sync-corrupt");
+  if (text.includes("bundle-unresolved")) return t("sync-unresolved");
+  if (text.includes("bundle-keep-both")) return t("sync-keep-both-refused");
+  if (text.includes("bundle-missing-pdf")) return t("sync-missing-pdf");
+  if (text.includes("bundle-duplicate")) return t("sync-duplicate");
+  if (text.includes("bundle-bad")) return t("sync-bad");
+  return t("sync-failed");
+}
+
+function bindSync() {
+  bindTablist("#sync-tabs", "syncTab", (id) => {
+    syncTab = id;
+    render();
+    const next = document.querySelector(`#sync-tabs [data-sync-tab="${id}"]`);
+    if (next) next.focus();
+  });
+  bindTablist("#sync-filters", "syncFilter", (id) => {
+    syncFilter = id;
+    render();
+    const next = document.querySelector(`#sync-filters [data-sync-filter="${id}"]`);
+    if (next) next.focus();
+  });
+  const include = document.getElementById("bundle-include");
+  if (include) include.addEventListener("change", () => { bundleInclude = include.checked; });
+  const exportButton = document.getElementById("bundle-export");
+  if (exportButton) exportButton.addEventListener("click", exportBundle);
+  const file = document.getElementById("bundle-file");
+  if (file) file.addEventListener("change", previewBundleFile);
+  document.querySelectorAll("[data-bundle-choice]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      bundleChoices[id] = button.dataset.bundleChoice;
+      render();
+      const next = document.querySelector(`[data-bundle-choice="${bundleChoices[id]}"][data-id="${CSS.escape(id)}"]`);
+      if (next) next.focus();
+    });
+  });
+  const apply = document.getElementById("bundle-apply");
+  if (apply) apply.addEventListener("click", applyBundle);
+}
+
+function bindTablist(selector, datasetKey, onSelect) {
+  const list = document.querySelector(selector);
+  if (!list) return;
+  const tabs = [...list.querySelectorAll("[role=tab]")];
+  tabs.forEach((button) => {
+    button.addEventListener("click", () => onSelect(button.dataset[datasetKey]));
+    button.addEventListener("keydown", (event) => {
+      const index = tabs.indexOf(button);
+      let next = -1;
+      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      if (next < 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onSelect(tabs[next].dataset[datasetKey]);
+    });
+  });
+}
+
+async function exportBundle() {
+  bundleError = false;
+  try {
+    const result = await call("export_bundle", { include_location: bundleInclude });
+    bundleMessage = `${t("sync-wrote")} ${result.path}`;
+  } catch (error) {
+    bundleError = true;
+    bundleMessage = explainBundle(error);
+  }
+  const node = document.getElementById("bundle-message");
+  if (node) {
+    node.className = bundleError ? "error" : "meta";
+    node.textContent = bundleMessage;
+  }
+}
+
+async function previewBundleFile(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  bundleError = false;
+  bundleMessage = t("sync-reading");
+  const node = document.getElementById("bundle-message");
+  if (node) {
+    node.className = "meta";
+    node.textContent = bundleMessage;
+  }
+  try {
+    bundleBytes = await readFileBase64(file);
+    bundleChoices = {};
+    bundlePreview = await call("preview_bundle", { bytes_base64: bundleBytes });
+    bundleMessage = "";
+    const conflicts = bundlePreview.counts && Number(bundlePreview.counts.conflict || 0);
+    syncFilter = conflicts ? "conflict" : "all";
+  } catch (error) {
+    bundlePreview = null;
+    bundleBytes = "";
+    bundleChoices = {};
+    bundleError = true;
+    bundleMessage = explainBundle(error);
+  }
+  render();
+}
+
+async function applyBundle() {
+  if (!bundleCanApply()) return;
+  bundleError = false;
+  try {
+    await call("import_bundle", { bytes_base64: bundleBytes, resolutions: bundleChoices });
+    bundlePreview = null;
+    bundleBytes = "";
+    bundleChoices = {};
+    bundleMessage = t("sync-applied");
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    bundleError = true;
+    bundleMessage = explainBundle(error);
+    render();
+  }
+}
+
+function readFileBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const comma = text.indexOf(",");
+      resolve(comma >= 0 ? text.slice(comma + 1) : text);
+    };
+    reader.onerror = () => reject(reader.error || new Error("bundle-corrupt"));
+    reader.readAsDataURL(file);
+  });
+}
+
 function preferencesBody(patch) {
   const s = boot.settings;
   return Object.assign({
@@ -2158,6 +2434,7 @@ function fillPalette() {
     ["equipment", t("nav-equipment")],
     ["compare", t("nav-compare")],
     ["documents", t("nav-documents")],
+    ["sync", t("nav-sync")],
     ["about", t("nav-about")],
     ["settings", t("nav-settings")],
     ["metric", t("command-metric")],
@@ -4433,7 +4710,7 @@ function archiveHtml() {
 }
 
 function kindLabel(kind) {
-  const keys = { rifle: "equip-rifle", scope: "equip-scope", bullet: "equip-bullet", load: "equip-load", profile: "equip-profile", chrono: "equip-chrono", reticle: "nav-reticle", target: "nav-targets", document: "nav-documents", load_log: "equip-log", atmosphere: "zero-air" };
+  const keys = { rifle: "equip-rifle", scope: "equip-scope", bullet: "equip-bullet", load: "equip-load", profile: "equip-profile", chrono: "equip-chrono", reticle: "nav-reticle", target: "nav-targets", document: "nav-documents", load_log: "equip-log", atmosphere: "zero-air", history: "history-title" };
   return t(keys[kind] || "archive");
 }
 
