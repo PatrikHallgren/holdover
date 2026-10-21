@@ -5,6 +5,8 @@
 //! core library does no I/O.
 
 mod bundle;
+#[cfg(test)]
+mod invoke_args;
 mod library;
 mod session;
 mod store;

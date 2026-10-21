@@ -30,6 +30,7 @@ let bundlePreview = null;
 let bundleBytes = "";
 let bundleChoices = {};
 let bundleMessage = "";
+let bundleDetail = "";
 let bundleError = false;
 let bundleInclude = false;
 let card = null;
@@ -121,6 +122,8 @@ async function call(command, args) {
   if (!window.__TAURI__ || !window.__TAURI__.core) {
     throw new Error("This window is not running inside Holdover.");
   }
+  // Argument names are camelCase. Tauri 2 renames bytes_base64 to bytesBase64.
+  // Fields inside body stay snake_case; that object is the library JSON.
   return window.__TAURI__.core.invoke(command, args || {});
 }
 
@@ -1756,7 +1759,7 @@ function includeLocation() {
 
 async function saveLibrary(format) {
   const command = format === "csv" ? "export_library_csv" : "export_library";
-  const result = await call(command, { include_location: includeLocation() });
+  const result = await call(command, { includeLocation: includeLocation() });
   document.getElementById("backup-path").textContent = `${t("backup-wrote")} ${result.path}`;
   document.getElementById("backup-json").textContent = format === "csv" ? result.csv : JSON.stringify(result.document, null, 2);
 }
@@ -1816,6 +1819,7 @@ function syncHtml() {
       ${syncImportHtml()}
     </div>
     <p id="bundle-message" class="${bundleError ? "error" : "meta"}">${esc(bundleMessage)}</p>
+    ${bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}
   </section>`;
 }
 
@@ -1918,19 +1922,32 @@ function bundleCanApply() {
   return !!(bundlePreview && bundleBytes && bundleHasWork() && !bundleConflictsOpen());
 }
 
+function errorText(error) {
+  if (typeof error === "string") return error;
+  if (error && typeof error.message === "string" && error.message) return error.message;
+  try {
+    const text = JSON.stringify(error);
+    return text == null ? String(error) : text;
+  } catch (ignored) {
+    return String(error);
+  }
+}
+
 function explainBundle(error) {
-  const text = String(error || "");
-  if (text.includes("bundle-schema-newer")) return t("sync-schema-newer");
-  if (text.includes("bundle-schema-older")) return t("sync-schema-older");
-  if (text.includes("bundle-foreign")) return t("sync-foreign");
-  if (text.includes("bundle-truncated")) return t("sync-truncated");
-  if (text.includes("bundle-corrupt")) return t("sync-corrupt");
-  if (text.includes("bundle-unresolved")) return t("sync-unresolved");
-  if (text.includes("bundle-keep-both")) return t("sync-keep-both-refused");
-  if (text.includes("bundle-missing-pdf")) return t("sync-missing-pdf");
-  if (text.includes("bundle-duplicate")) return t("sync-duplicate");
-  if (text.includes("bundle-bad")) return t("sync-bad");
-  return t("sync-failed");
+  const text = errorText(error);
+  let message = "";
+  if (text.includes("bundle-schema-newer")) message = t("sync-schema-newer");
+  else if (text.includes("bundle-schema-older")) message = t("sync-schema-older");
+  else if (text.includes("bundle-foreign")) message = t("sync-foreign");
+  else if (text.includes("bundle-truncated")) message = t("sync-truncated");
+  else if (text.includes("bundle-corrupt")) message = t("sync-corrupt");
+  else if (text.includes("bundle-unresolved")) message = t("sync-unresolved");
+  else if (text.includes("bundle-keep-both")) message = t("sync-keep-both-refused");
+  else if (text.includes("bundle-missing-pdf")) message = t("sync-missing-pdf");
+  else if (text.includes("bundle-duplicate")) message = t("sync-duplicate");
+  else if (text.includes("bundle-bad")) message = t("sync-bad");
+  if (message) return { message, detail: "" };
+  return { message: t("sync-failed"), detail: text && text !== t("sync-failed") ? text : "" };
 }
 
 function bindSync() {
@@ -1986,36 +2003,56 @@ function bindTablist(selector, datasetKey, onSelect) {
   });
 }
 
-async function exportBundle() {
-  bundleError = false;
-  try {
-    const result = await call("export_bundle", { include_location: bundleInclude });
-    bundleMessage = `${t("sync-wrote")} ${result.path}`;
-  } catch (error) {
-    bundleError = true;
-    bundleMessage = explainBundle(error);
-  }
+function showBundleStatus() {
   const node = document.getElementById("bundle-message");
   if (node) {
     node.className = bundleError ? "error" : "meta";
     node.textContent = bundleMessage;
   }
+  let detail = document.getElementById("bundle-detail");
+  if (!bundleDetail) {
+    if (detail) detail.remove();
+    return;
+  }
+  if (!detail && node) {
+    detail = document.createElement("p");
+    detail.id = "bundle-detail";
+    detail.className = "meta";
+    node.insertAdjacentElement("afterend", detail);
+  }
+  if (detail) detail.textContent = bundleDetail;
+}
+
+function setBundleError(error) {
+  const explained = explainBundle(error);
+  bundleError = true;
+  bundleMessage = explained.message;
+  bundleDetail = explained.detail;
+}
+
+async function exportBundle() {
+  bundleError = false;
+  bundleDetail = "";
+  try {
+    const result = await call("export_bundle", { includeLocation: bundleInclude });
+    bundleMessage = `${t("sync-wrote")} ${result.path}`;
+  } catch (error) {
+    setBundleError(error);
+  }
+  showBundleStatus();
 }
 
 async function previewBundleFile(event) {
   const file = event.target.files && event.target.files[0];
   if (!file) return;
   bundleError = false;
+  bundleDetail = "";
   bundleMessage = t("sync-reading");
-  const node = document.getElementById("bundle-message");
-  if (node) {
-    node.className = "meta";
-    node.textContent = bundleMessage;
-  }
+  showBundleStatus();
   try {
     bundleBytes = await readFileBase64(file);
     bundleChoices = {};
-    bundlePreview = await call("preview_bundle", { bytes_base64: bundleBytes });
+    bundlePreview = await call("preview_bundle", { bytesBase64: bundleBytes });
     bundleMessage = "";
     const conflicts = bundlePreview.counts && Number(bundlePreview.counts.conflict || 0);
     syncFilter = conflicts ? "conflict" : "all";
@@ -2023,8 +2060,7 @@ async function previewBundleFile(event) {
     bundlePreview = null;
     bundleBytes = "";
     bundleChoices = {};
-    bundleError = true;
-    bundleMessage = explainBundle(error);
+    setBundleError(error);
   }
   render();
 }
@@ -2032,8 +2068,9 @@ async function previewBundleFile(event) {
 async function applyBundle() {
   if (!bundleCanApply()) return;
   bundleError = false;
+  bundleDetail = "";
   try {
-    await call("import_bundle", { bytes_base64: bundleBytes, resolutions: bundleChoices });
+    await call("import_bundle", { bytesBase64: bundleBytes, resolutions: bundleChoices });
     bundlePreview = null;
     bundleBytes = "";
     bundleChoices = {};
@@ -2041,8 +2078,7 @@ async function applyBundle() {
     boot = await call("bootstrap");
     render();
   } catch (error) {
-    bundleError = true;
-    bundleMessage = explainBundle(error);
+    setBundleError(error);
     render();
   }
 }
