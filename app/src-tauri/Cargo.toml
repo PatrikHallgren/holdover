@@ -19,4 +19,5 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
+ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
 uuid = { version = "1.11.0", features = ["v4"] }

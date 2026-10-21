@@ -80,6 +80,11 @@ let reticleState = {
 };
 let chronoResult = null;
 let chronoForm = { shots: "", temperature: "15 C", label: "Chronograph", loadId: "", confirmSave: false, confirmMv: false };
+let weatherOffer = null;
+let weatherMessage = "";
+let weatherKind = "";
+let weatherBusy = false;
+let weatherTimer = 0;
 let recoilForm = null;
 let recoilResult = null;
 const DASH = ["none", "7 4", "2 3", "9 3 2 3", "12 4", "1 3"];
@@ -146,6 +151,7 @@ async function refresh() {
 }
 
 function render() {
+  window.clearInterval(weatherTimer);
   const app = document.getElementById("app");
   if (!boot.settings.onboarded) {
     app.innerHTML = onboardHtml();
@@ -216,6 +222,232 @@ function pageHtml() {
   return solveHtml();
 }
 
+function weatherBlock() {
+  return `<p class="hint">${esc(t("weather-intro"))}</p>
+    <p id="air-badge" class="badge-fresh"></p>
+    <p id="air-detail" class="meta"></p>
+    <div class="row">
+      <button type="button" id="weather-fetch" title="${esc(t("weather-fetch-tip"))}" ${weatherBusy ? "disabled" : ""}>${esc(t("weather-fetch"))}</button>
+    </div>
+    <p class="meta">${boot.settings.weather_place ? `${esc(t("weather-place-using"))} ${esc(boot.settings.weather_place)}` : esc(t("weather-no-place"))}</p>
+    <p id="weather-status" class="${weatherKind && weatherKind !== "place" ? "weather-error" : "meta"}">${esc(weatherMessage)}</p>
+    ${weatherOffer ? weatherResultHtml(weatherOffer) : ""}
+    <p class="hint">${esc(t("weather-attribution"))}</p>
+    <p class="hint">${esc(t("weather-noncommercial"))}</p>`;
+}
+
+function weatherResultHtml(offer) {
+  const u = units();
+  const temp = formatLocal(offer.temperature_c, "temperature", u.temperature);
+  const station = formatLocal(offer.surface_pressure_pa, "pressure", u.pressure);
+  const sea = formatLocal(offer.sea_level_pressure_pa, "pressure", u.pressure);
+  const elev = formatLocal(offer.elevation_m, "length", u.length);
+  const wind = offer.wind_speed_mps == null ? "—" : `${formatLocal(offer.wind_speed_mps, "velocity", u.velocity)} ${u.velocity}`;
+  const gust = offer.wind_gust_mps == null ? "—" : `${formatLocal(offer.wind_gust_mps, "velocity", u.velocity)} ${u.velocity}`;
+  const dir = offer.wind_from_deg == null ? "—" : String(offer.wind_from_deg);
+  return `<div class="fields">
+    <p class="meta">${esc(t("weather-fetched"))} ${esc(offer.fetched_at)} · ${esc(t("weather-valid"))} ${esc(offer.valid_time)}</p>
+    <p>${esc(t("temperature"))}: ${esc(temp)} ${esc(u.temperature)}</p>
+    <p>${esc(t("humidity"))}: ${esc(String(Math.round(offer.humidity * 1000) / 10))}%</p>
+    <p>${esc(t("weather-station-used"))}: ${esc(station)} ${esc(u.pressure)}</p>
+    <p>${esc(t("weather-sea-context"))}: ${esc(sea)} ${esc(u.pressure)}</p>
+    <p>${esc(t("weather-elevation"))}: ${esc(elev)} ${esc(u.length)}</p>
+    <p class="meta">${esc(t("weather-grid"))} ${esc(offer.grid_latitude)}, ${esc(offer.grid_longitude)}</p>
+    <p>${esc(t("weather-wind-context"))}: ${esc(wind)} · ${esc(t("weather-from"))} ${esc(dir)}° · ${esc(t("weather-gust"))} ${esc(gust)}</p>
+    <p class="hint">${esc(t("weather-wind-note"))}</p>
+    <div class="row">
+      <button type="button" id="weather-use" title="${esc(t("weather-use-tip"))}">${esc(t("weather-use"))}</button>
+      <button type="button" id="weather-use-sea" title="${esc(t("weather-use-sea-tip"))}">${esc(t("weather-use-sea"))}</button>
+      <button type="button" id="weather-use-wind" title="${esc(t("weather-use-wind-tip"))}">${esc(t("weather-use-wind"))}</button>
+      <button type="button" id="weather-dismiss" title="${esc(t("weather-dismiss-tip"))}">${esc(t("weather-dismiss"))}</button>
+    </div>
+  </div>`;
+}
+
+function paintAirBadge() {
+  const badge = document.getElementById("air-badge");
+  const detail = document.getElementById("air-detail");
+  if (!badge) return;
+  const air = (boot.settings && boot.settings.current_air) || {};
+  const prov = air.provenance || {};
+  if (prov.source !== "fetched" || !prov.fetched_at) {
+    badge.textContent = t("atmosphere-manual");
+    badge.className = "badge-fresh";
+    if (detail) detail.textContent = t("weather-manual-note");
+    return;
+  }
+  const age = isoAgeSeconds(prov.fetched_at);
+  const limit = Number(boot.settings.weather_stale_minutes || 60) * 60;
+  const stale = Number.isFinite(age) && age > limit;
+  const kind = prov.pressure_used === "sea-level" ? t("pressure-sea") : t("weather-station-label");
+  const elev = formatLocal(Number(prov.elevation_m), "length", units().length);
+  badge.textContent = `${stale ? t("weather-stale") : t("weather-fetched")} · ${agePhrase(age)}`;
+  badge.className = stale ? "badge-stale" : "badge-fresh";
+  if (detail) {
+    const sea = prov.sea_level_pressure_pa == null ? "" : `${t("weather-sea-context")}: ${formatLocal(Number(prov.sea_level_pressure_pa), "pressure", units().pressure)} ${units().pressure}. `;
+    detail.textContent = `${t("weather-valid")} ${prov.valid_time || "—"}. ${kind}. ${t("weather-elevation")} ${elev} ${units().length}. ${sea}${t("weather-source")}: Open-Meteo.`;
+  }
+}
+
+function agePhrase(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 60) return t("weather-age-now");
+  if (seconds < 3600) return t("weather-age-min").replace("{n}", String(Math.floor(seconds / 60)));
+  if (seconds < 86400) return t("weather-age-h").replace("{n}", String(Math.floor(seconds / 3600)));
+  return t("weather-age-d").replace("{n}", String(Math.floor(seconds / 86400)));
+}
+
+function isoAgeSeconds(text) {
+  const match = String(text).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/);
+  if (!match) return NaN;
+  const utc = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6]));
+  return Math.max(0, Math.floor((Date.now() - utc) / 1000));
+}
+
+function airFieldsDiffer() {
+  const air = boot.settings.current_air || {};
+  const compare = (id, dim, node) => {
+    const input = document.getElementById(id);
+    if (!input || !node || node.si == null) return false;
+    const parsed = parseLocal(input.value, dim, input.dataset.unit);
+    if (!parsed) return true;
+    const limit = dim === "pressure" ? 50 : dim === "length" ? 0.5 : 0.05;
+    return Math.abs(parsed.si - Number(node.si)) > limit;
+  };
+  if (compare("temperature", "temperature", air.temperature)) return true;
+  if (compare("pressure", "pressure", air.pressure)) return true;
+  if (compare("altitude", "length", air.altitude)) return true;
+  const humidity = document.getElementById("humidity");
+  if (humidity) {
+    const stored = typeof air.humidity === "string" ? air.humidity : (air.humidity_text || "");
+    if (stored && humidity.value.trim() !== String(stored).trim()) return true;
+  }
+  const kind = document.getElementById("pressure_kind");
+  return !!(kind && kind.value !== (air.pressure_kind || "station"));
+}
+
+function noteAirEdit() {
+  const air = boot.settings.current_air || {};
+  if (!air.provenance || air.provenance.source !== "fetched") return;
+  if (!airFieldsDiffer()) return;
+  air.provenance = { source: "manual" };
+  paintAirBadge();
+}
+
+function weatherFailure(kind) {
+  const keys = { offline: "weather-offline", timeout: "weather-timeout", http: "weather-http", parse: "weather-parse", place: "weather-no-place" };
+  return t(keys[kind] || "weather-offline");
+}
+
+function explainImport(error) {
+  const text = String(error || "");
+  if (text === "not-holdover") return t("import-not-holdover");
+  if (text === "schema-newer") return t("import-schema-newer");
+  if (text === "schema-older") return t("import-schema-older");
+  if (text === "bad-row") return t("import-bad-row");
+  if (text.startsWith("missing:")) return t("import-missing").replace("{key}", text.slice("missing:".length));
+  if (text.startsWith("duplicate:")) return t("import-duplicate").replace("{id}", text.slice("duplicate:".length));
+  if (text === "place-latitude") return t("place-latitude");
+  if (text === "place-longitude") return t("place-longitude");
+  if (text === "place-stale") return t("place-stale");
+  return t("import-failed");
+}
+
+function libraryPreviewText(preview) {
+  const counts = preview.counts || {};
+  const countLine = Object.keys(counts).map((key) => `${key} ${counts[key]}`).join(", ");
+  const lines = [
+    `${t("import-schema")} ${preview.schema_version}`,
+    t("import-nothing-yet"),
+    `${t("import-counts")}: ${countLine}`,
+    `${t("import-duplicates")}: ${(preview.duplicates || []).length}`,
+    `${t("import-local-only")}: ${preview.local_only || 0}`,
+    t("import-replace-note"),
+    t("import-merge-note"),
+  ];
+  (preview.duplicates || []).slice(0, 8).forEach((row) => {
+    lines.push(`${row.kind} ${row.label || row.id}`);
+  });
+  return lines.join("\n");
+}
+
+async function fetchWeather() {
+  weatherBusy = true;
+  weatherKind = "";
+  weatherMessage = t("weather-fetching");
+  const status = document.getElementById("weather-status");
+  const button = document.getElementById("weather-fetch");
+  if (status) {
+    status.className = "meta";
+    status.textContent = weatherMessage;
+  }
+  if (button) button.disabled = true;
+  try {
+    const result = await call("fetch_weather");
+    if (!result || result.ok === false) {
+      weatherOffer = null;
+      weatherKind = (result && result.kind) || "offline";
+      weatherMessage = weatherFailure(weatherKind);
+    } else {
+      weatherOffer = result;
+      weatherKind = "";
+      weatherMessage = "";
+    }
+  } catch (error) {
+    weatherOffer = null;
+    weatherKind = "offline";
+    weatherMessage = weatherFailure("offline");
+  }
+  weatherBusy = false;
+  const host = document.getElementById("weather-block");
+  if (host) {
+    host.innerHTML = weatherBlock();
+    bindWeather();
+    paintAirBadge();
+  }
+}
+
+async function useWeather(pressureUsed) {
+  if (!weatherOffer) return;
+  const body = Object.assign({}, weatherOffer, {
+    pressure_used: pressureUsed,
+    place_name: boot.settings.weather_place || "",
+  });
+  boot = await call("apply_weather", { body });
+  render();
+}
+
+async function useWind() {
+  if (!weatherOffer || weatherOffer.wind_speed_mps == null) return;
+  boot = await call("apply_weather", { body: { accept_wind: true, wind_speed_mps: weatherOffer.wind_speed_mps } });
+  render();
+}
+
+function bindWeather() {
+  const fetchButton = document.getElementById("weather-fetch");
+  if (fetchButton) fetchButton.addEventListener("click", fetchWeather);
+  const use = document.getElementById("weather-use");
+  if (use) use.addEventListener("click", () => useWeather("station"));
+  const sea = document.getElementById("weather-use-sea");
+  if (sea) sea.addEventListener("click", () => useWeather("sea-level"));
+  const wind = document.getElementById("weather-use-wind");
+  if (wind) wind.addEventListener("click", useWind);
+  const dismiss = document.getElementById("weather-dismiss");
+  if (dismiss) dismiss.addEventListener("click", () => {
+    weatherOffer = null;
+    weatherMessage = "";
+    weatherKind = "";
+    const host = document.getElementById("weather-block");
+    if (host) {
+      host.innerHTML = weatherBlock();
+      bindWeather();
+      paintAirBadge();
+    }
+  });
+  paintAirBadge();
+  window.clearInterval(weatherTimer);
+  weatherTimer = window.setInterval(paintAirBadge, 15000);
+}
+
 function solveHtml() {
   const s = boot.settings;
   const profiles = boot.equipment.profiles;
@@ -227,7 +459,7 @@ function solveHtml() {
         <select id="profile">${options || `<option value="">${esc(t("no-profile"))}</option>`}</select>
       </label>
       <p class="meta" id="zero-summary">${active ? esc(active.summary || "") : esc(t("no-profile"))}</p>
-      <p class="meta">${esc(t("atmosphere-manual"))} · ${esc((lastSolve && lastSolve.truing) || t("truing-none"))}</p>
+      <p class="meta" id="truing-line">${esc((lastSolve && lastSolve.truing) || t("truing-none"))}</p>
       <p class="banner hidden" id="differs">${esc(t("air-differs"))}</p>
       ${qtyField("range", t("range"), s.last_range, s.last_range_unit || units().length, "length", s.last_range_si, s.last_range_display)}
       ${qtyField("wind_speed", t("wind-speed"), s.last_wind_speed, s.last_wind_speed_unit || units().velocity, "velocity", s.last_wind_speed_si, s.last_wind_speed_display)}
@@ -238,6 +470,7 @@ function solveHtml() {
       ${qtyField("inclination", t("inclination"), s.last_inclination, "deg", "angle", s.last_inclination_si, s.last_inclination_display)}
       <p class="meta">${esc(t("current-air"))}</p>
       ${airFields(s.current_air || {}, "")}
+      <div id="weather-block">${weatherBlock()}</div>
       <div class="checks" id="effects">
         ${check("incline", true)}${check("spin_drift", true)}${check("coriolis", false)}${check("cant", false)}${check("aerodynamic_jump", false)}
       </div>
@@ -656,7 +889,10 @@ function numberInput(id, label, value) {
 function settingsHtml() {
   const s = boot.settings;
   const rings = boot.targets || { moose_cm: [], roe_cm: [] };
+  const lat = s.weather_latitude == null ? "" : String(s.weather_latitude);
+  const lon = s.weather_longitude == null ? "" : String(s.weather_longitude);
   return `<section class="panel fields">
+    <p class="hint">${esc(t("settings-page-intro"))}</p>
     <h2>${esc(t("settings-appearance"))}</h2>
     <div class="checks">
       ${["follow", "light", "dark"].map((mode) => `<label><input type="radio" name="appearance" value="${mode}" ${s.appearance === mode ? "checked" : ""} /> ${esc(t("settings-" + mode))}</label>`).join("")}
@@ -665,17 +901,41 @@ function settingsHtml() {
     <label><input type="checkbox" id="large-text" ${s.large_text ? "checked" : ""} /> ${esc(t("settings-large"))}</label>
     <label><input type="checkbox" id="reduced-motion" ${s.reduced_motion ? "checked" : ""} /> ${esc(t("settings-motion"))}</label>
     <p class="meta">${esc(t("palette"))}: ${esc(theme.source || "")} · ${esc(t("text-scale"))} ${esc(theme.text_scale || 1)}</p>
-    <h2>${esc(t("settings-backup"))}</h2>
+    <h2>${esc(t("settings-weather"))}</h2>
+    <p class="hint">${esc(t("settings-weather-intro"))}</p>
+    <label class="field">${esc(t("weather-place"))}
+      <input id="weather-place" value="${esc(s.weather_place || "")}" title="${esc(t("weather-place-tip"))}" />
+    </label>
+    <label class="field">${esc(t("weather-latitude"))}
+      <input id="weather-lat" value="${esc(lat)}" inputmode="decimal" title="${esc(t("weather-latitude-tip"))}" />
+    </label>
+    <label class="field">${esc(t("weather-longitude"))}
+      <input id="weather-lon" value="${esc(lon)}" inputmode="decimal" title="${esc(t("weather-longitude-tip"))}" />
+    </label>
+    <label class="field">${esc(t("weather-stale-minutes"))}
+      <input id="weather-stale" value="${esc(s.weather_stale_minutes || 60)}" inputmode="numeric" title="${esc(t("weather-stale-tip"))}" />
+    </label>
+    <button type="button" id="weather-save" title="${esc(t("weather-save-tip"))}">${esc(t("weather-save"))}</button>
+    <p id="weather-save-msg" class="meta"></p>
+    <p class="hint">${esc(t("weather-attribution"))}</p>
+    <p class="hint">${esc(t("weather-noncommercial"))}</p>
+    <h2>${esc(t("settings-library"))}</h2>
+    <p class="hint">${esc(t("settings-library-intro"))}</p>
+    <label><input type="checkbox" id="include-location" title="${esc(t("include-location-tip"))}" /> ${esc(t("include-location"))}</label>
     <div class="row">
       <button type="button" id="export">${esc(t("settings-export"))}</button>
+      <button type="button" id="export-csv" title="${esc(t("settings-library-intro"))}">${esc(t("settings-export-csv"))}</button>
       <button type="button" id="show-json">${esc(t("open-backup"))}</button>
     </div>
     <p id="backup-path" class="meta"></p>
     <pre id="backup-json" class="hidden"></pre>
     <p class="hint">${esc(t("include-note"))}</p>
-    <label class="field">${esc(t("settings-restore"))}<input id="restore-file" type="file" accept="application/json,.json" /></label>
+    <label class="field">${esc(t("settings-restore"))}<input id="restore-file" type="file" accept="application/json,.json,text/csv,.csv" title="${esc(t("settings-library-intro"))}" /></label>
     <pre id="restore-preview"></pre>
-    <button type="button" id="restore-commit" class="hidden">${esc(t("settings-replace"))}</button>
+    <div class="row">
+      <button type="button" id="restore-commit" class="hidden">${esc(t("settings-replace"))}</button>
+      <button type="button" id="restore-merge" class="hidden">${esc(t("import-merge"))}</button>
+    </div>
     <p class="hint">${esc(t("restore-warning"))}</p>
     <h2>${esc(t("targets-title"))}</h2>
     <p>${esc(t("rings-moose"))}: ${esc((rings.moose_cm || []).join(" / "))} cm</p>
@@ -754,7 +1014,14 @@ function bindShell() {
 function bindPage() {
   document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => cycleChip(chip)));
   document.querySelectorAll("input[data-dim]").forEach((input) => {
-    input.addEventListener("input", () => { input.dataset.dirty = "1"; showPreview(input); if (page === "solve") scheduleSolve(120); });
+    input.addEventListener("input", () => {
+      input.dataset.dirty = "1";
+      showPreview(input);
+      if (page === "solve") {
+        if (input.id === "temperature" || input.id === "pressure" || input.id === "altitude") noteAirEdit();
+        scheduleSolve(120);
+      }
+    });
     input.addEventListener("change", () => { if (page === "solve") scheduleSolve(0); });
   });
   if (page === "solve") bindSolve();
@@ -771,8 +1038,13 @@ function bindPage() {
 function bindSolve() {
   ["profile", "wind_direction", "pressure_kind", "humidity"].forEach((id) => {
     const node = document.getElementById(id);
-    if (node) node.addEventListener("input", () => scheduleSolve(80));
+    if (!node) return;
+    node.addEventListener("input", () => {
+      if (id === "pressure_kind" || id === "humidity") noteAirEdit();
+      scheduleSolve(80);
+    });
   });
+  bindWeather();
   document.querySelectorAll("[data-effect]").forEach((box) => box.addEventListener("change", () => {
     document.getElementById("extra").classList.toggle("hidden", !needsExtra());
     scheduleSolve(0);
@@ -1317,28 +1589,76 @@ function bindSettings() {
     boot = await call("set_preferences", { body: preferencesBody({ reduced_motion: event.target.checked }) });
     applyTheme();
   });
-  document.getElementById("export").addEventListener("click", async () => {
-    const result = await call("export_library");
-    document.getElementById("backup-path").textContent = `${t("backup-wrote")} ${result.path}`;
-    document.getElementById("backup-json").textContent = JSON.stringify(result.document, null, 2);
-  });
+  document.getElementById("weather-save").addEventListener("click", saveWeatherPlace);
+  document.getElementById("export").addEventListener("click", () => saveLibrary("json"));
+  document.getElementById("export-csv").addEventListener("click", () => saveLibrary("csv"));
   document.getElementById("show-json").addEventListener("click", () => {
     document.getElementById("backup-json").classList.toggle("hidden");
   });
-  document.getElementById("restore-file").addEventListener("change", async (event) => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    restoreDoc = JSON.parse(text);
-    restorePreview = await call("import_library", { document: restoreDoc, commit: false });
-    document.getElementById("restore-preview").textContent = JSON.stringify(restorePreview, null, 2);
+  document.getElementById("restore-file").addEventListener("change", previewLibraryFile);
+  document.getElementById("restore-commit").addEventListener("click", () => commitLibrary("replace"));
+  document.getElementById("restore-merge").addEventListener("click", () => commitLibrary("merge"));
+}
+
+async function saveWeatherPlace() {
+  const message = document.getElementById("weather-save-msg");
+  try {
+    boot = await call("set_preferences", { body: preferencesBody({
+      weather_place: document.getElementById("weather-place").value,
+      weather_latitude: document.getElementById("weather-lat").value,
+      weather_longitude: document.getElementById("weather-lon").value,
+      weather_stale_minutes: document.getElementById("weather-stale").value,
+    }) });
+    if (message) message.textContent = t("weather-saved");
+  } catch (error) {
+    if (message) message.textContent = explainImport(error);
+  }
+}
+
+function includeLocation() {
+  const box = document.getElementById("include-location");
+  return !!(box && box.checked);
+}
+
+async function saveLibrary(format) {
+  const command = format === "csv" ? "export_library_csv" : "export_library";
+  const result = await call(command, { include_location: includeLocation() });
+  document.getElementById("backup-path").textContent = `${t("backup-wrote")} ${result.path}`;
+  document.getElementById("backup-json").textContent = format === "csv" ? result.csv : JSON.stringify(result.document, null, 2);
+}
+
+async function previewLibraryFile(event) {
+  const file = event.target.files && event.target.files[0];
+  const preview = document.getElementById("restore-preview");
+  document.getElementById("restore-commit").classList.add("hidden");
+  document.getElementById("restore-merge").classList.add("hidden");
+  restoreDoc = null;
+  if (!file) return;
+  const text = await file.text();
+  const csv = file.name.toLowerCase().endsWith(".csv") || text.trimStart().startsWith("format,schema_version");
+  try {
+    restoreDoc = csv ? { csv: text } : JSON.parse(text);
+    restorePreview = await call("import_library", { document: restoreDoc, commit: false, policy: "replace" });
+    preview.textContent = libraryPreviewText(restorePreview);
     document.getElementById("restore-commit").classList.remove("hidden");
-  });
-  document.getElementById("restore-commit").addEventListener("click", async () => {
-    await call("import_library", { document: restoreDoc, commit: true });
+    document.getElementById("restore-merge").classList.remove("hidden");
+  } catch (error) {
+    restoreDoc = null;
+    preview.textContent = explainImport(error);
+  }
+}
+
+async function commitLibrary(policy) {
+  if (!restoreDoc) return;
+  try {
+    await call("import_library", { document: restoreDoc, commit: true, policy });
+    restoreDoc = null;
     boot = await call("bootstrap");
     render();
-  });
+  } catch (error) {
+    const preview = document.getElementById("restore-preview");
+    if (preview) preview.textContent = explainImport(error);
+  }
 }
 
 function preferencesBody(patch) {
