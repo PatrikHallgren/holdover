@@ -1,0 +1,26 @@
+post_install() {
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+  fi
+  cat <<'EOF'
+Holdover is installed as /usr/bin/holdover (the window) and /usr/bin/holdover-cli.
+The application menu starts /usr/bin/holdover.
+The library stays at ${XDG_DATA_HOME:-$HOME/.local/share}/holdover/holdover.db.
+
+If ~/.local/bin is earlier in PATH, a shell still runs ~/.local/bin/holdover
+or ~/.local/bin/holdover-cli. Rename those if you want the shell to use the
+package:
+
+  mv ~/.local/bin/holdover ~/.local/bin/holdover.from-source
+  mv ~/.local/bin/holdover-cli ~/.local/bin/holdover-cli.from-source
+
+The optional Omarchy theme template is /usr/share/holdover/holdover.json.tpl.
+Copy it into ~/.config/omarchy/themed/ only if you want it. A sample theme-set
+hook is /usr/share/holdover/hooks/theme-set.d/holdover. Holdover does not
+write ~/.config itself.
+EOF
+}
+
+post_upgrade() {
+  post_install
+}

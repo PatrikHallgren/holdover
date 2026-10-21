@@ -1,0 +1,52 @@
+# Maintainer: Patrik Hallgren
+# Personal package. Build it from a git checkout:
+#   cd packaging && makepkg -si
+# On Omarchy, Rust is mise's rust@1.98.1:
+#   mise exec rust@1.98.1 -- bash -lc 'cd packaging && makepkg -si'
+
+pkgname=holdover
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Personal ballistic calculator and equipment notebook"
+arch=('x86_64')
+url="https://github.com/PatrikHallgren/holdover"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'openssl' 'hicolor-icon-theme' 'gcc-libs')
+makedepends=('rust' 'cargo' 'pkgconf')
+options=('!lto' '!debug')
+install=holdover.install
+source=()
+sha256sums=()
+
+build() {
+  local root
+  root="$(cd "${startdir}/.." && pwd)"
+  rm -rf "${srcdir}/holdover"
+  mkdir -p "${srcdir}/holdover"
+  tar -C "${root}" \
+    --exclude target \
+    --exclude .git \
+    --exclude packaging/*.pkg.tar* \
+    --exclude 'packaging/src' \
+    --exclude 'packaging/pkg' \
+    -cf - . | tar -C "${srcdir}/holdover" -xf -
+  cd "${srcdir}/holdover"
+  # rustup reads rust-toolchain.toml. A distro cargo does not, and some
+  # versions refuse to start while the file is present.
+  if ! cargo -vV 2>/dev/null | grep -q '^rustup:'; then
+    rm -f rust-toolchain.toml
+  fi
+  cargo build --release --locked --manifest-path Cargo.toml -p holdover -p holdover-cli
+}
+
+package() {
+  cd "${srcdir}/holdover"
+  install -Dm755 target/release/holdover "${pkgdir}/usr/bin/holdover"
+  install -Dm755 target/release/holdover-cli "${pkgdir}/usr/bin/holdover-cli"
+  install -Dm644 packaging/holdover.desktop "${pkgdir}/usr/share/applications/se.hallgren.holdover.desktop"
+  install -Dm644 packaging/se.hallgren.holdover.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/se.hallgren.holdover.svg"
+  install -Dm644 share/holdover/holdover.json.tpl "${pkgdir}/usr/share/holdover/holdover.json.tpl"
+  install -Dm755 share/holdover/hooks/theme-set.d/holdover "${pkgdir}/usr/share/holdover/hooks/theme-set.d/holdover"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 locales/en.ftl "${pkgdir}/usr/share/holdover/locales/en.ftl"
+}

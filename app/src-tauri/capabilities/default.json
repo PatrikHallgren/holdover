@@ -33,6 +33,12 @@
     "allow-reticle-scene",
     "allow-reticle-save",
     "allow-target-save",
-    "allow-target-pdf"
+    "allow-target-pdf",
+    "allow-compare",
+    "allow-save-document",
+    "allow-open-document",
+    "allow-save-load-log",
+    "allow-restore-record",
+    "allow-restore-history"
   ]
 }

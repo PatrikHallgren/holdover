@@ -33,3 +33,10 @@ jobs:
         run: python3 tools/oracle_check.py target/release/holdover-cli
       - name: Release timing gate
         run: cargo test --release -p holdover-core --test timing
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the Arch package
+        run: docker run --rm -v "$PWD":/src -w /src archlinux:base-devel bash /src/packaging/ci-makepkg.sh

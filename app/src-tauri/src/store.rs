@@ -4,8 +4,10 @@
 //! bodies, so a save/reload after a switch keeps the same normalized values.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
 
 use holdover_core::{
     card_page, card_pages, default_card_page, format_number, format_quantity, parse_quantity,
@@ -153,6 +155,7 @@ pub struct WeatherPlace {
 
 pub struct Store {
     conn: Connection,
+    db_path: PathBuf,
 }
 
 impl Store {
@@ -186,7 +189,10 @@ impl Store {
                 params![units.to_json().to_string(), default_air().to_string(), default_effects().to_string()],
             ).map_err(|err| err.to_string())?;
         }
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            db_path: path.to_path_buf(),
+        })
     }
 
     pub fn device_id(&self) -> Result<String, String> {
@@ -235,6 +241,8 @@ impl Store {
             "settings": settings,
             "equipment": self.equipment_json(&units)?,
             "strings": crate::strings::english_strings(),
+            "version": env!("CARGO_PKG_VERSION"),
+            "licence": include_str!("../../../LICENSE"),
             "disclaimer": holdover_core::DISCLAIMER,
             "spin_provenance": holdover_core::SPIN_DRIFT_PROVENANCE,
             "targets": {
@@ -672,6 +680,178 @@ impl Store {
         Ok(())
     }
 
+    /// Bring back a soft-deleted record. The body is unchanged.
+    pub fn restore_record(&self, kind: &str, id: &str) -> Result<Value, String> {
+        if kind == "history" {
+            return Err("use restore history for an older version".into());
+        }
+        let now = now_iso();
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE records SET deleted_at = NULL, updated_at = ?1, revision = revision + 1
+             WHERE id = ?2 AND kind = ?3 AND deleted_at IS NOT NULL",
+                params![now, id, kind],
+            )
+            .map_err(|err| err.to_string())?;
+        if changed == 0 {
+            return Err("archived record not found".into());
+        }
+        self.record_value(kind, id)
+    }
+
+    /// Write the snapshot back onto the live record. The current body is kept as history first.
+    pub fn restore_history(&self, id: &str) -> Result<Value, String> {
+        let row = self.body("history", id)?;
+        let kind = row
+            .get("subject_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let subject = row.get("subject_id").and_then(|v| v.as_str()).unwrap_or("");
+        let snapshot = row.get("snapshot").cloned().unwrap_or(Value::Null);
+        if kind.is_empty() || subject.is_empty() || !snapshot.is_object() {
+            return Err("this history row has no snapshot".into());
+        }
+        if self.require_live(kind, subject).is_err() {
+            if self.is_archived(kind, subject)? {
+                return Err("restore the archived record before an older version".into());
+            }
+            return Err(format!("{kind} was not found"));
+        }
+        self.write_record(kind, &json!({ "id": subject }), snapshot)?;
+        self.record_value(kind, subject)
+    }
+
+    pub fn save_load_log(&self, body: &Value) -> Result<Value, String> {
+        let load_id = required_text(body, "load_id")?;
+        self.require_live("load", &load_id)?;
+        let mut record = json!({
+            "label": required_text(body, "label")?,
+            "load_id": load_id,
+            "powder": text_or(body, "powder"),
+            "powder_lot": text_or(body, "powder_lot"),
+            "primer": text_or(body, "primer"),
+            "primer_lot": text_or(body, "primer_lot"),
+            "case_brand": text_or(body, "case_brand"),
+            "case_lot": text_or(body, "case_lot"),
+            "bullet_lot": text_or(body, "bullet_lot"),
+            "notes": text_or(body, "notes"),
+            "chrono_ids": self.live_id_list(body, "chrono_ids", "chrono")?,
+            "document_ids": self.live_id_list(body, "document_ids", "document")?,
+        });
+        put_qty(
+            &mut record,
+            "charge",
+            optional_qty(body, "charge", Dimension::Mass, "gr")?,
+        )?;
+        put_qty(
+            &mut record,
+            "coal",
+            optional_qty(body, "coal", Dimension::Length, "mm")?,
+        )?;
+        let id = self.write_record("load_log", body, record)?;
+        self.record_value("load_log", &id)
+    }
+
+    pub fn save_document(&self, body: &Value) -> Result<Value, String> {
+        let title = required_text(body, "title")?;
+        if title.chars().count() > 300 {
+            return Err("the title is too long".into());
+        }
+        let link = text_or(body, "link_url");
+        if !link.is_empty() && !is_http_url(&link) {
+            return Err("a link has to start with http:// or https://".into());
+        }
+        let notes = text_or(body, "notes");
+        if notes.chars().count() > 8000 {
+            return Err("the notes are too long".into());
+        }
+        let existing_id = body
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let previous = if let Some(id) = &existing_id {
+            Some(self.body("document", id)?)
+        } else {
+            None
+        };
+        let (sha, filename, bytes) = if let Some(file) = body.get("file").filter(|v| !v.is_null()) {
+            let stored = self.store_pdf(file)?;
+            (stored.0, stored.1, stored.2)
+        } else if let Some(previous) = &previous {
+            (
+                previous
+                    .get("sha256")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                previous
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                previous.get("bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+            )
+        } else {
+            (String::new(), String::new(), 0)
+        };
+        if link.is_empty() && sha.is_empty() {
+            return Err("add a link or a PDF".into());
+        }
+        let load_id = optional_live(self, body, "load_id", "load")?;
+        let rifle_id = optional_live(self, body, "rifle_id", "rifle")?;
+        let bullet_id = optional_live(self, body, "bullet_id", "bullet")?;
+        let record = json!({
+            "label": title,
+            "title": title,
+            "edition": text_or(body, "edition"),
+            "edition_date": text_or(body, "edition_date"),
+            "notes": notes,
+            "link_url": link,
+            "sha256": sha,
+            "filename": filename,
+            "bytes": bytes,
+            "load_id": load_id,
+            "rifle_id": rifle_id,
+            "bullet_id": bullet_id,
+        });
+        let id = self.write_record("document", body, record)?;
+        self.record_value("document", &id)
+    }
+
+    /// Path or URL the shell can hand to the system opener. The bytes are never executed.
+    pub fn document_target(&self, id: &str) -> Result<Value, String> {
+        let doc = self.body("document", id)?;
+        if let Some(hash) = doc
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let path = self.blob_path(hash)?;
+            if !path.is_file() {
+                return Err("the PDF is not on this computer".into());
+            }
+            let dest = std::env::temp_dir().join(format!("holdover-{}.pdf", &hash[..12]));
+            fs::copy(&path, &dest).map_err(|err| err.to_string())?;
+            return Ok(json!({
+                "kind": "file",
+                "path": dest.display().to_string(),
+            }));
+        }
+        if let Some(url) = doc
+            .get("link_url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            if !is_http_url(url) {
+                return Err("a link has to start with http:// or https://".into());
+            }
+            return Ok(json!({ "kind": "link", "path": url }));
+        }
+        Err("this document has no file and no link".into())
+    }
+
     pub fn set_active(&self, id: &str) -> Result<(), String> {
         if !id.is_empty() {
             self.require_live("profile", id)?;
@@ -963,6 +1143,10 @@ impl Store {
             "chronos": self.list_kind("chrono", units)?,
             "reticles": self.list_kind("reticle", units)?,
             "targets": self.list_kind("target", units)?,
+            "documents": self.list_kind("document", units)?,
+            "load_logs": self.list_kind("load_log", units)?,
+            "archived": self.list_archived()?,
+            "history": self.history_json()?,
         }))
     }
 
@@ -1052,12 +1236,14 @@ impl Store {
 
     fn write_record(&self, kind: &str, request: &Value, body: Value) -> Result<String, String> {
         let now = now_iso();
-        let device = self.device_id()?;
         if let Some(id) = request
             .get("id")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
         {
+            if kind != "history" {
+                self.snapshot_previous(kind, id, &body)?;
+            }
             let changed = self
                 .conn
                 .execute(
@@ -1071,13 +1257,220 @@ impl Store {
             }
             return Ok(id.to_string());
         }
+        self.insert_record(kind, &body)
+    }
+
+    fn insert_record(&self, kind: &str, body: &Value) -> Result<String, String> {
+        let now = now_iso();
+        let device = self.device_id()?;
         let id = Uuid::new_v4().to_string();
-        self.conn.execute(
-            "INSERT INTO records (id, kind, created_at, updated_at, revision, deleted_at, device_id, body)
-             VALUES (?1, ?2, ?3, ?3, 1, NULL, ?4, ?5)",
-            params![id, kind, now, device, body.to_string()],
-        ).map_err(|err| err.to_string())?;
+        self.conn
+            .execute(
+                "INSERT INTO records (id, kind, created_at, updated_at, revision, deleted_at, device_id, body)
+                 VALUES (?1, ?2, ?3, ?3, 1, NULL, ?4, ?5)",
+                params![id, kind, now, device, body.to_string()],
+            )
+            .map_err(|err| err.to_string())?;
         Ok(id)
+    }
+
+    fn snapshot_previous(&self, kind: &str, id: &str, incoming: &Value) -> Result<(), String> {
+        let found: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT body, revision FROM records WHERE id = ?1 AND kind = ?2 AND deleted_at IS NULL",
+                params![id, kind],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        let Some((raw, revision)) = found else {
+            return Ok(());
+        };
+        let old: Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+        if &old == incoming {
+            return Ok(());
+        }
+        let label = old
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let snap = json!({
+            "label": format!("{kind} {label}"),
+            "subject_kind": kind,
+            "subject_id": id,
+            "subject_revision": revision,
+            "subject_label": label,
+            "snapshot": old,
+        });
+        self.insert_record("history", &snap)?;
+        Ok(())
+    }
+
+    fn is_archived(&self, kind: &str, id: &str) -> Result<bool, String> {
+        let found: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT id FROM records WHERE id = ?1 AND kind = ?2 AND deleted_at IS NOT NULL",
+                params![id, kind],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|err| err.to_string())?;
+        Ok(found.is_some())
+    }
+
+    fn list_archived(&self) -> Result<Vec<Value>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, kind, body, revision, deleted_at FROM records
+             WHERE deleted_at IS NOT NULL AND kind != 'history'
+             ORDER BY deleted_at DESC",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, kind, body, revision, deleted_at) = row.map_err(|err| err.to_string())?;
+            let value: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+            out.push(json!({
+                "id": id,
+                "kind": kind,
+                "label": value.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+                "revision": revision,
+                "deleted_at": deleted_at,
+            }));
+        }
+        Ok(out)
+    }
+
+    fn history_json(&self) -> Result<Value, String> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE kind = 'history' AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|err| err.to_string())?;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, created_at, body FROM records
+             WHERE kind = 'history' AND deleted_at IS NULL
+             ORDER BY created_at DESC LIMIT 100",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, created_at, body) = row.map_err(|err| err.to_string())?;
+            let value: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+            out.push(json!({
+                "id": id,
+                "created_at": created_at,
+                "subject_kind": value.get("subject_kind").cloned().unwrap_or(Value::Null),
+                "subject_id": value.get("subject_id").cloned().unwrap_or(Value::Null),
+                "subject_label": value.get("subject_label").cloned().unwrap_or(Value::Null),
+                "subject_revision": value.get("subject_revision").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        Ok(json!({ "count": count, "rows": out }))
+    }
+
+    fn live_id_list(&self, body: &Value, key: &str, kind: &str) -> Result<Vec<String>, String> {
+        let Some(items) = body.get(key).and_then(|v| v.as_array()) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let id = item.as_str().unwrap_or("").trim();
+            if id.is_empty() {
+                continue;
+            }
+            self.require_live(kind, id)?;
+            if !out.iter().any(|existing: &String| existing == id) {
+                out.push(id.to_string());
+            }
+        }
+        Ok(out)
+    }
+
+    fn store_pdf(&self, file: &Value) -> Result<(String, String, u64), String> {
+        let filename = pdf_filename(
+            file.get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("document.pdf"),
+        )?;
+        let encoded = file
+            .get("base64")
+            .and_then(|v| v.as_str())
+            .ok_or("the PDF data is missing")?;
+        let bytes = decode_base64(encoded)?;
+        if bytes.is_empty() {
+            return Err("the PDF is empty".into());
+        }
+        if bytes.len() > 32 * 1024 * 1024 {
+            return Err("a PDF has to be 32 MB or smaller".into());
+        }
+        if !bytes.starts_with(b"%PDF") {
+            return Err("Holdover stores a PDF, and this file is not one".into());
+        }
+        let hash = self.write_blob(&bytes)?;
+        Ok((hash, filename, bytes.len() as u64))
+    }
+
+    fn write_blob(&self, bytes: &[u8]) -> Result<String, String> {
+        let hash = hex_encode(&Sha256::digest(bytes));
+        let dir = self.blob_dir();
+        fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        let path = self.blob_path(&hash)?;
+        if !path.is_file() {
+            let tmp = dir.join(format!(".{hash}.tmp"));
+            fs::write(&tmp, bytes).map_err(|err| err.to_string())?;
+            fs::rename(&tmp, &path).map_err(|err| err.to_string())?;
+        }
+        Ok(hash)
+    }
+
+    fn blob_dir(&self) -> PathBuf {
+        let mut name = self
+            .db_path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "holdover".into());
+        name.push_str(".blobs");
+        self.db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(name)
+    }
+
+    fn blob_path(&self, hash: &str) -> Result<PathBuf, String> {
+        if hash.len() != 64 || !hash.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return Err("the stored file name is not a hash".into());
+        }
+        Ok(self.blob_dir().join(hash))
     }
 
     fn require_live(&self, kind: &str, id: &str) -> Result<(), String> {
@@ -1791,6 +2184,8 @@ fn decorate(value: &mut Value, units: &UnitSet) {
         ("temperature", &units.temperature),
         ("pressure", &units.pressure),
         ("altitude", &units.length),
+        ("charge", &units.mass),
+        ("coal", &units.small),
     ];
     for (name, unit) in pairs {
         let si = value.get(format!("{name}_si")).and_then(|v| v.as_f64());
@@ -2145,6 +2540,98 @@ fn text_or(body: &Value, key: &str) -> String {
         .unwrap_or("")
         .trim()
         .to_string()
+}
+
+fn optional_live(store: &Store, body: &Value, key: &str, kind: &str) -> Result<String, String> {
+    let id = text_or(body, key);
+    if id.is_empty() {
+        return Ok(String::new());
+    }
+    store.require_live(kind, &id)?;
+    Ok(id)
+}
+
+fn is_http_url(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://"))
+        && !value
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch.is_control())
+}
+
+fn pdf_filename(raw: &str) -> Result<String, String> {
+    let name = raw
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_string();
+    if name.is_empty() || name == "." || name == ".." || name.contains('\0') {
+        return Err("the PDF needs a file name".into());
+    }
+    if !name.to_ascii_lowercase().ends_with(".pdf") {
+        return Err("Holdover stores a PDF, and this file is not one".into());
+    }
+    if name.chars().count() > 180 {
+        return Err("the file name is too long".into());
+    }
+    Ok(name)
+}
+
+fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
+    let cleaned: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if cleaned.len() % 4 != 0 {
+        return Err("the PDF data is not valid".into());
+    }
+    let bytes = cleaned.as_bytes();
+    let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);
+    let mut index = 0;
+    while index < bytes.len() {
+        let chunk = &bytes[index..index + 4];
+        let pad = chunk.iter().filter(|byte| **byte == b'=').count();
+        if pad > 2 || (pad > 0 && index + 4 != bytes.len()) {
+            return Err("the PDF data is not valid".into());
+        }
+        let mut packed = 0u32;
+        for (place, byte) in chunk.iter().enumerate() {
+            let value = if *byte == b'=' {
+                0
+            } else {
+                base64_value(*byte).ok_or("the PDF data is not valid")?
+            };
+            packed |= value << (18 - 6 * place);
+        }
+        out.push((packed >> 16) as u8);
+        if pad < 2 {
+            out.push((packed >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(packed as u8);
+        }
+        index += 4;
+    }
+    Ok(out)
+}
+
+fn base64_value(byte: u8) -> Option<u32> {
+    match byte {
+        b'A'..=b'Z' => Some((byte - b'A') as u32),
+        b'a'..=b'z' => Some((byte - b'a') as u32 + 26),
+        b'0'..=b'9' => Some((byte - b'0') as u32 + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn text_any(body: &Value, key: &str) -> String {
@@ -2679,5 +3166,161 @@ mod tests {
             .unwrap()
             .ends_with(" mph"));
         assert_eq!(settings["last_wind_direction"], "9oc");
+    }
+
+    #[test]
+    fn load_log_stores_a_charge_and_leaves_muzzle_velocity_alone() {
+        let store = temp_store();
+        let id = store.seed_example().unwrap();
+        let bundle = store.profile_bundle(&id).unwrap();
+        let load_id = bundle["load"]["id"].as_str().unwrap().to_string();
+        let before = bundle["load"]["mv_mps"].as_f64().unwrap();
+        let log = store
+            .save_load_log(&json!({
+                "label": "Range day",
+                "load_id": load_id,
+                "powder": "a powder I wrote down",
+                "powder_lot": "lot 1",
+                "charge": {"text": "45 gr", "unit": "gr"},
+                "coal": {"text": "71 mm", "unit": "mm"},
+                "notes": "from my notebook"
+            }))
+            .unwrap();
+        assert!(log["charge_si"].as_f64().unwrap() > 0.0);
+        assert!(log["coal_si"].as_f64().unwrap() > 0.0);
+        let after = store.profile_bundle(&id).unwrap()["load"]["mv_mps"]
+            .as_f64()
+            .unwrap();
+        assert_eq!(before, after);
+        store.set_preferences(&json!({"preset": "us"})).unwrap();
+        let shown = store
+            .record_value("load_log", log["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(log["charge_unit"], "g");
+        assert_eq!(
+            shown["charge_si"].as_f64().unwrap(),
+            log["charge_si"].as_f64().unwrap()
+        );
+        assert_eq!(shown["charge_unit"], "gr");
+        assert_eq!(shown["coal_unit"], "in");
+    }
+
+    #[test]
+    fn archive_and_history_round_trip() {
+        let store = temp_store();
+        let rifle = store
+            .save_rifle(&json!({
+                "label": "First",
+                "sight_height": {"text": "45 mm", "unit": "mm"}
+            }))
+            .unwrap();
+        let id = rifle["id"].as_str().unwrap().to_string();
+        store
+            .save_rifle(&json!({
+                "id": id,
+                "label": "Second",
+                "sight_height": {"text": "45 mm", "unit": "mm"}
+            }))
+            .unwrap();
+        let history = store.bootstrap().unwrap()["equipment"]["history"].clone();
+        assert_eq!(history["count"], 1);
+        assert_eq!(history["rows"][0]["subject_label"], "First");
+        store.delete_record("rifle", &id).unwrap();
+        assert!(store.record_value("rifle", &id).is_err());
+        let archived = store.bootstrap().unwrap()["equipment"]["archived"].clone();
+        assert_eq!(archived[0]["label"], "Second");
+        store.restore_record("rifle", &id).unwrap();
+        assert_eq!(store.record_value("rifle", &id).unwrap()["label"], "Second");
+        let history_id = history["rows"][0]["id"].as_str().unwrap();
+        let restored = store.restore_history(history_id).unwrap();
+        assert_eq!(restored["label"], "First");
+        let again = store.bootstrap().unwrap()["equipment"]["history"]["count"]
+            .as_i64()
+            .unwrap();
+        assert!(again >= 2);
+    }
+
+    #[test]
+    fn a_document_link_and_pdf_are_stored_without_executing_them() {
+        let store = temp_store();
+        let link = store
+            .save_document(&json!({
+                "title": "Load data",
+                "edition": "2026",
+                "edition_date": "2026 printing",
+                "link_url": "https://example.com/load-data",
+                "notes": "my own pointer"
+            }))
+            .unwrap();
+        assert_eq!(link["link_url"], "https://example.com/load-data");
+        assert!(store
+            .save_document(&json!({"title": "Bad", "link_url": "file:///tmp/x"}))
+            .is_err());
+        let pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n";
+        let encoded = base64_std(pdf);
+        let saved = store
+            .save_document(&json!({
+                "title": "Printed manual",
+                "file": {"filename": "manual.pdf", "base64": encoded}
+            }))
+            .unwrap();
+        let hash = saved["sha256"].as_str().unwrap();
+        assert_eq!(hash.len(), 64);
+        let path = store.blob_path(hash).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), pdf);
+        let again = store
+            .save_document(&json!({
+                "title": "Same bytes",
+                "file": {"filename": "other.pdf", "base64": encoded}
+            }))
+            .unwrap();
+        assert_eq!(again["sha256"], saved["sha256"]);
+        let target = store
+            .document_target(saved["id"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(target["kind"], "file");
+        assert!(target["path"].as_str().unwrap().ends_with(".pdf"));
+        let exported = store.export_library().unwrap();
+        let documents = exported["documents"].as_array().unwrap();
+        assert_eq!(documents.len(), 3);
+        assert!(documents.iter().all(|row| row.get("base64").is_none()));
+        let mut older = exported.clone();
+        older.as_object_mut().unwrap().remove("documents");
+        older.as_object_mut().unwrap().remove("load_logs");
+        older.as_object_mut().unwrap().remove("history");
+        let other = temp_store();
+        other.import_library(&older, true).unwrap();
+    }
+
+    fn base64_std(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        let mut index = 0;
+        while index + 3 <= bytes.len() {
+            let packed = ((bytes[index] as u32) << 16)
+                | ((bytes[index + 1] as u32) << 8)
+                | bytes[index + 2] as u32;
+            out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+            out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+            out.push(TABLE[((packed >> 6) & 63) as usize] as char);
+            out.push(TABLE[(packed & 63) as usize] as char);
+            index += 3;
+        }
+        let rest = bytes.len() - index;
+        if rest == 1 {
+            let packed = (bytes[index] as u32) << 16;
+            out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+            out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+            out.push('=');
+            out.push('=');
+        } else if rest == 2 {
+            let packed = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
+            out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+            out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+            out.push(TABLE[((packed >> 6) & 63) as usize] as char);
+            out.push('=');
+        }
+        out
     }
 }

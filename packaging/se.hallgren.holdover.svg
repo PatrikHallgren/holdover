@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Holdover">
+  <rect width="64" height="64" rx="10" fill="#f4efe6"/>
+  <path d="M14 44 L32 16 L50 44" fill="none" stroke="#1c1915" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="32" cy="44" r="3.5" fill="#9a4318"/>
+</svg>

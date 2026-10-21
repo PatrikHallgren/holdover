@@ -1353,13 +1353,14 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "holdover"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "holdover-core",
  "holdover-theme",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "ureq",
@@ -1368,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "holdover-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "holdover-core",
@@ -1378,7 +1379,7 @@ dependencies = [
 
 [[package]]
 name = "holdover-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1386,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "holdover-theme"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "html5ever"

@@ -61,7 +61,13 @@ fn main() {
             reticle_scene,
             reticle_save,
             target_save,
-            target_pdf
+            target_pdf,
+            compare,
+            save_document,
+            open_document,
+            save_load_log,
+            restore_record,
+            restore_history
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -185,8 +191,12 @@ fn card_pdf(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, Str
 }
 
 fn open_pdf(path: &Path) -> bool {
+    open_external(&path.display().to_string())
+}
+
+fn open_external(target: &str) -> bool {
     Command::new("xdg-open")
-        .arg(path)
+        .arg(target)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -228,6 +238,49 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[tauri::command]
 fn chart(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
     with_store(state, |store| session::chart(store, &body))
+}
+
+#[tauri::command]
+fn compare(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::compare(store, &body))
+}
+
+#[tauri::command]
+fn save_document(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_document(&body))
+}
+
+#[tauri::command]
+fn open_document(state: tauri::State<'_, AppState>, id: String) -> Result<Value, String> {
+    with_store(state, |store| {
+        let target = store.document_target(&id)?;
+        let path = target["path"].as_str().unwrap_or("").to_string();
+        let opened = open_external(&path);
+        Ok(json!({
+            "kind": target["kind"],
+            "path": path,
+            "opened": opened,
+        }))
+    })
+}
+
+#[tauri::command]
+fn save_load_log(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_load_log(&body))
+}
+
+#[tauri::command]
+fn restore_record(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    id: String,
+) -> Result<Value, String> {
+    with_store(state, |store| store.restore_record(&kind, &id))
+}
+
+#[tauri::command]
+fn restore_history(state: tauri::State<'_, AppState>, id: String) -> Result<Value, String> {
+    with_store(state, |store| store.restore_history(&id))
 }
 
 #[tauri::command]

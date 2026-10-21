@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-load-log"
+description = "Enables the save_load_log command without any pre-configured scope."
+commands.allow = ["save_load_log"]
+
+[[permission]]
+identifier = "deny-save-load-log"
+description = "Denies the save_load_log command without any pre-configured scope."
+commands.deny = ["save_load_log"]

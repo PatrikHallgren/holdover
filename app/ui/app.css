@@ -56,8 +56,33 @@ button:focus, input:focus, select:focus {
 }
 
 button.active, button[aria-pressed="true"] {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: var(--focus);
+  color: var(--text);
+  font-weight: 600;
+}
+
+a {
+  color: var(--text);
+}
+
+.skip {
+  position: absolute;
+  left: 0.6rem;
+  top: -4rem;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--focus);
+  padding: 0.4rem 0.6rem;
+  z-index: 5;
+}
+
+.skip:focus {
+  top: 0.6rem;
+}
+
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .shell {
@@ -220,6 +245,39 @@ th, td {
 
 th:first-child, td:first-child {
   text-align: left;
+}
+
+caption {
+  text-align: left;
+  color: var(--text);
+  font-weight: 560;
+  padding: 0.4rem 0;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table.words th, table.words td {
+  text-align: left;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem 1rem;
+}
+
+.licence {
+  white-space: pre-wrap;
+  font: 0.85rem/1.4 ui-monospace, "IBM Plex Mono", monospace;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  padding: 0.7rem 0.8rem;
 }
 
 .chart-block {
@@ -495,8 +553,14 @@ summary {
   margin: 0 0 0.3rem;
 }
 
-body.field .top, body.field .inputs, body.field .secondary, body.field .sensitivity, body.field .hint, body.field .footer {
+body.field .top, body.field .inputs, body.field .secondary, body.field .sensitivity, body.field .hint, body.field .footer, body.field .solve-tabs {
   display: none;
+}
+
+body.field .solve {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  grid-template-areas: "result";
 }
 
 body.field .page {
@@ -507,9 +571,250 @@ body.field .figure {
   font-size: calc(84px * var(--text-scale));
 }
 
+.compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 0.85rem;
+  align-items: end;
+}
+
+.compact > p,
+.compact > .hint,
+.compact > h2,
+.compact > h3 {
+  flex: 1 1 100%;
+}
+
+.cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.85rem;
+  align-items: end;
+  flex: 1 1 100%;
+}
+
+.compact .field,
+.compact .cluster > span {
+  width: max-content;
+  max-width: 100%;
+}
+
+.compact .entry input {
+  flex: 0 0 auto;
+  width: 12ch;
+}
+
+.compact .chip {
+  min-width: 4.5em;
+}
+
+.compact .field > input {
+  width: 12ch;
+}
+
+.compact .field.phrase > input {
+  width: 18ch;
+}
+
+.compact .field > select,
+.compact select {
+  width: max-content;
+  min-width: 9rem;
+  max-width: min(18rem, 100%);
+}
+
+.compact .wide input,
+.compact .wide select {
+  width: min(18rem, 100%);
+}
+
+.compact input[type="file"] {
+  width: auto;
+  max-width: 18rem;
+}
+
+.compact textarea,
+.compact .field:has(textarea) {
+  width: min(32rem, 100%);
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+
+.solve {
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "inputs result"
+    "inputs more";
+  gap: 0.55rem 0.75rem;
+  min-height: 0;
+  height: 100%;
+}
+
+.solve .inputs {
+  grid-area: inputs;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.55rem 0.7rem;
+}
+
+.solve-result {
+  grid-area: result;
+  min-width: 0;
+}
+
+.solve-tabs {
+  grid-area: more;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.5rem 0.7rem;
+}
+
+.solve .hold {
+  padding: 0.45rem 0.75rem 0.55rem;
+}
+
+.solve .clicks,
+.solve .secondary,
+.solve .sensitivity,
+.solve .hint,
+.solve .meta {
+  margin: 0.12rem 0 0;
+}
+
+.solve .field {
+  gap: 0.12rem;
+}
+
+.solve .entry input,
+.solve .field > input {
+  flex: 0 0 auto;
+  width: 12ch;
+}
+
+.solve .inputs select {
+  width: min(18rem, 100%);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0 0 0.45rem;
+}
+
+.tabs button[aria-selected="true"] {
+  border-color: var(--focus);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.solve-tabs [hidden] {
+  display: none !important;
+}
+
+.pbr-results {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.1rem;
+  margin: 0.45rem 0 0.55rem;
+}
+
+.pbr-results div {
+  min-width: 8.5rem;
+}
+
+.pbr-results dt {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.pbr-results dd {
+  margin: 0.05rem 0 0;
+  color: var(--text);
+  font-weight: 560;
+  font-variant-numeric: tabular-nums;
+}
+
+.pbr-notes {
+  margin-top: 0.8rem;
+}
+
+body.fit-solve,
+body.fit-solve #app,
+body.fit-solve .shell {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+body.fit-solve .page {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 0.4rem 0.7rem;
+}
+
+body.field.fit-solve .page {
+  padding-top: 8vh;
+}
+
+body.fit-solve .solve {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 @media (max-width: 800px) {
   .layout, .hold-grid {
     grid-template-columns: 1fr;
+  }
+  body.fit-solve .solve {
+    flex: none;
+  }
+  .solve {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      "inputs"
+      "result"
+      "more";
+    height: auto;
+    align-content: start;
+  }
+  body.fit-solve .page {
+    overflow: auto;
+  }
+  .solve .inputs,
+  .solve-tabs {
+    overflow: visible;
+    min-height: min-content;
+  }
+}
+
+@media (max-height: 560px) {
+  body.fit-solve,
+  body.fit-solve #app,
+  body.fit-solve .shell {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  body.fit-solve .solve {
+    flex: none;
+    height: auto;
+  }
+  body.fit-solve .page,
+  .solve .inputs,
+  .solve-tabs {
+    overflow: visible;
+    min-height: min-content;
+  }
+  .solve {
+    height: auto;
+    align-content: start;
   }
 }
 
