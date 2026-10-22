@@ -42,6 +42,11 @@
     "allow-open-document",
     "allow-save-load-log",
     "allow-restore-record",
-    "allow-restore-history"
+    "allow-restore-history",
+    "allow-import-group-photo",
+    "allow-analyze-group",
+    "allow-save-group",
+    "allow-detect-holes",
+    "allow-group-photo"
   ]
 }

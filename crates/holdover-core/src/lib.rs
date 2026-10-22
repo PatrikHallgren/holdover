@@ -9,6 +9,7 @@ mod constants;
 mod drag;
 mod error;
 mod field;
+mod groups;
 mod pchip;
 mod pdf;
 mod reticle;
@@ -31,6 +32,12 @@ pub use field::{
     PbrSample, PowderFit, Recoil, RecoilInput, RunningPreset, DEFAULT_EJECTA_MPS, DRAG_GUIDANCE,
     EJECTA_CONVENTION, MV_GUIDANCE, TRACKING_GUIDANCE,
 };
+pub use groups::{
+    analyze_document, check_synthetic, detect_blobs, detect_image_holes, group_stats, homography,
+    locate_holes, map_two_point, rectified_rectangle, score_holes, synthetic_scene,
+    two_point_scale, GroupStats, Homography, ImagePoint, MeasureMode, PlaneMm, Raster, Rectified,
+    ScoreReport, SyntheticCheck, SyntheticScene, TwoPointScale, CEP_SIGMA,
+};
 pub use pdf::{
     render_card_pdf, render_target_pdf, round_pt, CardSheet, PrintedTarget, TargetPath, TargetPrint,
 };
@@ -41,8 +48,8 @@ pub use reticle::{
     DEFAULT_APPARENT_FOV_DEG,
 };
 pub use solve::{
-    group_stats, solve, solve_zero, table, AngularHold, Bullet, Click, Direction, Effects,
-    Integrator, Shot, Solution, TableSpec, TrajectoryPoint, Warning, ZeroSolution,
+    solve, solve_zero, table, AngularHold, Bullet, Click, Direction, Effects, Integrator, Shot,
+    Solution, TableSpec, TrajectoryPoint, Warning, ZeroSolution,
 };
 pub use stability::SPIN_DRIFT_PROVENANCE;
 pub use sync::{

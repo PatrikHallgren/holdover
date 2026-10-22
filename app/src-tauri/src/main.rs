@@ -5,9 +5,11 @@
 //! core library does no I/O.
 
 mod bundle;
+mod group;
 #[cfg(test)]
 mod invoke_args;
 mod library;
+mod photo;
 mod session;
 mod store;
 mod strings;
@@ -74,7 +76,12 @@ fn main() {
             open_document,
             save_load_log,
             restore_record,
-            restore_history
+            restore_history,
+            import_group_photo,
+            analyze_group,
+            save_group,
+            detect_holes,
+            group_photo
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -274,6 +281,45 @@ fn open_document(state: tauri::State<'_, AppState>, id: String) -> Result<Value,
 #[tauri::command]
 fn save_load_log(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
     with_store(state, |store| store.save_load_log(&body))
+}
+
+#[tauri::command]
+fn import_group_photo(
+    state: tauri::State<'_, AppState>,
+    bytes_base64: String,
+    keep_location: bool,
+    filename: String,
+) -> Result<Value, String> {
+    let bytes = store::decode_base64(&bytes_base64)?;
+    with_store(state, |store| {
+        store.import_group_photo(&bytes, &filename, keep_location)
+    })
+}
+
+#[tauri::command]
+fn analyze_group(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.analyze_group(&body))
+}
+
+#[tauri::command]
+fn save_group(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_group(&body))
+}
+
+#[tauri::command]
+fn detect_holes(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.detect_group_holes(&body))
+}
+
+#[tauri::command]
+fn group_photo(state: tauri::State<'_, AppState>, hash: String) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = store.group_photo_bytes(&hash)?;
+        Ok(json!({
+            "base64": base64_encode(&bytes),
+            "media": "image/png",
+        }))
+    })
 }
 
 #[tauri::command]

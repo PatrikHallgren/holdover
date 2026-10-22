@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-analyze-group"
+description = "Enables the analyze_group command without any pre-configured scope."
+commands.allow = ["analyze_group"]
+
+[[permission]]
+identifier = "deny-analyze-group"
+description = "Denies the analyze_group command without any pre-configured scope."
+commands.deny = ["analyze_group"]

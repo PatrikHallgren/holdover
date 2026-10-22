@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-import-group-photo"
+description = "Enables the import_group_photo command without any pre-configured scope."
+commands.allow = ["import_group_photo"]
+
+[[permission]]
+identifier = "deny-import-group-photo"
+description = "Denies the import_group_photo command without any pre-configured scope."
+commands.deny = ["import_group_photo"]

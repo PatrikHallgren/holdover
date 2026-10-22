@@ -60,6 +60,11 @@ let truingPreview = null;
 let truingForm = { range: "400 m", elevation: "", shots: "", group: "", lines: "", advertised: "10 mrad", observed: "", piecewise: false };
 let impactData = null;
 let impactTarget = "sjf-algfigur";
+let impactGroupId = "";
+let groupImpactPending = false;
+let groupView = null;
+let groupObserver = null;
+let groupTimer = 0;
 let impactFacing = "left";
 let impactRinging = "primary";
 let impactSilhouette = true;
@@ -193,7 +198,7 @@ function shellHtml() {
   return `<div class="shell"><a class="skip" href="#page">${esc(t("skip"))}</a><header class="top">
     <span class="brand">${esc(t("app-name"))}</span>
     <nav aria-label="${esc(t("nav-label"))}">
-      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("compare")}${nav("documents")}${nav("sync")}${nav("settings")}
+      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("groups")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("compare")}${nav("documents")}${nav("sync")}${nav("settings")}
     </nav>
     <div class="presets">
       ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
@@ -201,7 +206,7 @@ function shellHtml() {
     </div>
   </header>`;
   function nav(id) {
-    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings" };
+    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings" };
     const key = keys[id] || "nav-solve";
     const current = page === id ? ` aria-current="page"` : "";
     return `<button type="button" data-page="${id}" class="${page === id ? "active" : ""}"${current}>${esc(t(key))}</button>`;
@@ -240,6 +245,7 @@ function pageHtml() {
   if (page === "charts") return chartHtml();
   if (page === "reticle") return reticleHtml();
   if (page === "targets") return targetsHtml();
+  if (page === "groups") return groupsHtml();
   if (page === "pbr") return pbrHtml();
   if (page === "truing") return truingHtml();
   if (page === "equipment") return equipmentHtml();
@@ -844,6 +850,12 @@ function chartHtml() {
           <input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" />
         </label>
         <span title="${esc(t("impact-zone-tip"))}">${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}</span>
+        <label class="field">${esc(t("group-saved"))}
+          <select id="impact-group" title="${esc(t("group-impact"))}">
+            <option value="">${esc(t("group-blank"))}</option>
+            ${(boot.equipment.groups || []).map((item) => `<option value="${esc(item.id)}" ${item.id === impactGroupId ? "selected" : ""}>${esc(item.label)}</option>`).join("")}
+          </select>
+        </label>
         <button type="button" id="impact-draw" title="${esc(t("impact-draw-tip"))}">${esc(t("impact-draw"))}</button>
       </div>
     </div>
@@ -852,7 +864,7 @@ function chartHtml() {
 }
 
 function equipmentHtml() {
-  const tabs = ["rifle", "scope", "bullet", "load", "profile", "chrono", "recoil", "log", "archive"].map((kind) =>
+  const tabs = ["rifle", "scope", "bullet", "load", "profile", "chrono", "recoil", "log", "groups", "archive"].map((kind) =>
     `<button type="button" data-kind="${kind}" class="${equipKind === kind ? "active" : ""}">${esc(t("equip-" + kind))}</button>`).join("");
   if (equipKind === "archive") {
     return `<section class="panel"><div class="row">${tabs}</div>${archiveHtml()}</section>`;
@@ -860,7 +872,7 @@ function equipmentHtml() {
   const items = equipList().map((item) =>
     `<button type="button" data-pick="${esc(item.id)}">${esc(item.label)}</button>`).join("");
   const library = equipKind === "recoil" ? "" : (items || `<p>${esc(t("equip-empty"))}</p>`);
-  const newer = equipKind === "recoil" || equipKind === "chrono" ? "" : `<button type="button" id="equip-new">${esc(t("new"))}</button>`;
+  const newer = equipKind === "recoil" || equipKind === "chrono" || equipKind === "groups" ? "" : `<button type="button" id="equip-new">${esc(t("new"))}</button>`;
   return `<div class="layout">
     <section class="panel list"><div class="row">${tabs}</div>${newer}${library}</section>
     <section class="panel" id="equip-form">${equipForm()}</section>
@@ -869,15 +881,17 @@ function equipmentHtml() {
 
 function equipList() {
   if (equipKind === "log") return boot.equipment.load_logs || [];
+  if (equipKind === "groups") return boot.equipment.groups || [];
   return boot.equipment[equipKind + "s"] || boot.equipment[equipKind] || [];
 }
 
 function currentRecord() {
-  const list = equipKind === "log" ? (boot.equipment.load_logs || []) : (boot.equipment[equipKind + "s"] || []);
+  const list = equipKind === "log" ? (boot.equipment.load_logs || []) : equipKind === "groups" ? (boot.equipment.groups || []) : (boot.equipment[equipKind + "s"] || []);
   return list.find((item) => item.id === selectedId) || null;
 }
 
 function equipForm() {
+  if (equipKind === "groups") return groupsEquipHtml();
   if (equipKind === "chrono") return chronoHtml();
   if (equipKind === "recoil") return recoilHtml();
   if (equipKind === "log") return logForm();
@@ -1107,10 +1121,12 @@ function bindPage() {
         rememberCompareNumbers();
         scheduleCompare(150);
       }
+      if (page === "groups") scheduleGroup(160);
     });
     input.addEventListener("change", () => {
       if (page === "solve") scheduleSolve(0);
       if (page === "compare") scheduleCompare(0);
+      if (page === "groups") scheduleGroup(0);
     });
   });
   if (page === "solve") bindSolve();
@@ -1118,6 +1134,7 @@ function bindPage() {
   if (page === "charts") bindChart();
   if (page === "reticle") bindReticle();
   if (page === "targets") bindTargets();
+  if (page === "groups") bindGroups();
   if (page === "pbr") bindPbr();
   if (page === "truing") bindTruing();
   if (page === "equipment") bindEquipment();
@@ -1351,13 +1368,18 @@ function bindChart() {
   };
   const drawImpact = document.getElementById("impact-draw");
   if (drawImpact) drawImpact.addEventListener("click", redrawImpact);
+  if (groupImpactPending) {
+    groupImpactPending = false;
+    redrawImpact();
+  }
   const onImpactControl = (id, node) => {
     if (id === "impact-target") impactTarget = node.value;
     if (id === "impact-facing") impactFacing = node.value;
     if (id === "impact-ringing") impactRinging = node.value;
+    if (id === "impact-group") impactGroupId = node.value;
     redrawImpact();
   };
-  ["impact-target", "impact-facing", "impact-ringing"].forEach((id) => {
+  ["impact-target", "impact-facing", "impact-ringing", "impact-group"].forEach((id) => {
     const node = document.getElementById(id);
     if (!node) return;
     node.addEventListener("change", () => onImpactControl(id, node));
@@ -1654,6 +1676,15 @@ function bindEquipment() {
   if (equipKind === "recoil") bindRecoil();
   if (equipKind === "log") bindLog();
   if (equipKind === "archive") bindArchive();
+  const openGroupButton = document.getElementById("equip-open-group");
+  if (openGroupButton) openGroupButton.addEventListener("click", () => openGroup(selectedId));
+  const newGroupButton = document.getElementById("equip-new-group");
+  if (newGroupButton) newGroupButton.addEventListener("click", () => {
+    groupView = freshGroup();
+    page = "groups";
+    render();
+  });
+  document.querySelectorAll("[data-open-group]").forEach((button) => button.addEventListener("click", () => openGroup(button.dataset.openGroup)));
 }
 
 async function saveEquipment() {
@@ -1674,7 +1705,7 @@ async function saveEquipment() {
 async function deleteEquipment() {
   if (!selectedId || !window.confirm(t("archive-confirm"))) return;
   try {
-    await call("delete_record", { kind: equipKind, id: selectedId });
+    await call("delete_record", { kind: equipKind === "groups" ? "group" : equipKind, id: selectedId });
     selectedId = "";
     boot = await call("bootstrap");
     render();
@@ -2153,6 +2184,7 @@ function cycleChip(chip) {
     rememberCompareNumbers();
     scheduleCompare(0);
   }
+  if (page === "groups") rememberGroupFields();
 }
 
 function showPreview(input) {
@@ -2465,6 +2497,7 @@ function fillPalette() {
     ["charts", t("nav-charts")],
     ["reticle", t("nav-reticle")],
     ["targets", t("nav-targets")],
+    ["groups", t("nav-groups")],
     ["pbr", t("nav-pbr")],
     ["truing", t("nav-truing")],
     ["equipment", t("nav-equipment")],
@@ -2588,6 +2621,9 @@ async function buildImpact(ids) {
     body.range_error = qtyPayload("range_error");
     body.brackets = document.getElementById("impact-brackets").value;
     if (body.target === "custom") body.zone = qtyPayload("impact-zone");
+    const groupPick = document.getElementById("impact-group");
+    if (groupPick) impactGroupId = groupPick.value;
+    if (impactGroupId) body.group_id = impactGroupId;
     impactData = await call("impact", { body });
     host.innerHTML = impactView(impactData);
   } catch (error) {
@@ -2606,6 +2642,7 @@ function impactView(data) {
     pois,
     ringing: impactRinging,
     showSilhouette: impactSilhouette,
+    measured: data.measured || [],
     label: t("impact-title"),
   });
   const badges = flagHtml(spec.flags);
@@ -3446,6 +3483,9 @@ function faceSvg(spec, opts) {
     half = Math.max(half, Math.abs(Number(poi.wind_left_cm) || 0) + 4, Math.abs(Number(poi.wind_right_cm) || 0) + 4);
   });
   if (options.markCm) half = Math.max(half, Math.abs(options.markCm.x) + 2, Math.abs(options.markCm.y) + 2);
+  (options.measured || []).forEach((mark) => {
+    half = Math.max(half, Math.abs(Number(mark.x_cm) || 0) + 2, Math.abs(Number(mark.y_cm) || 0) + 2);
+  });
   if (!Number.isFinite(half) || half > 800) half = 800;
   const size = 1100;
   const pad = 80;
@@ -3526,6 +3566,12 @@ function faceSvg(spec, opts) {
     body += `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="8" fill="var(--accent)" />
       <text fill="${ink}" x="${(at[0] + 12).toFixed(1)}" y="${(at[1] - 10).toFixed(1)}">${esc(t("lead"))}</text>`;
   }
+  (options.measured || []).forEach((mark) => {
+    const at = px(Number(mark.x_cm) || 0, Number(mark.y_cm) || 0);
+    const count = Number(mark.count) > 1 ? String(mark.count) : "";
+    body += `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="6" fill="none" stroke="var(--warning)" stroke-width="2" />
+      <text fill="${ink}" x="${(at[0] + 8).toFixed(1)}" y="${(at[1] - 8).toFixed(1)}">${esc(count)}</text>`;
+  });
   const barCm = half > 30 ? 10 : 5;
   const bar0 = px(-barCm / 2, 0);
   const bar1 = px(barCm / 2, 0);
@@ -4676,6 +4722,8 @@ function logForm() {
       <div class="checks" id="log-chronos">${chronoBoxes}</div>
       <p class="meta">${esc(t("log-docs"))}</p>
       <div class="checks">${docBoxes}</div>
+      <p class="meta">${esc(t("group-log"))}</p>
+      <div class="row">${groupLinksForLoad(record.load_id)}</div>
     </div>
     <div class="row"><button type="button" id="equip-save">${esc(t("save"))}</button>
     ${record.id ? `<button type="button" id="equip-delete">${esc(t("archive"))}</button>` : ""}</div>
@@ -4746,7 +4794,7 @@ function archiveHtml() {
 }
 
 function kindLabel(kind) {
-  const keys = { rifle: "equip-rifle", scope: "equip-scope", bullet: "equip-bullet", load: "equip-load", profile: "equip-profile", chrono: "equip-chrono", reticle: "nav-reticle", target: "nav-targets", document: "nav-documents", load_log: "equip-log", atmosphere: "zero-air", history: "history-title" };
+  const keys = { rifle: "equip-rifle", scope: "equip-scope", bullet: "equip-bullet", load: "equip-load", profile: "equip-profile", chrono: "equip-chrono", reticle: "nav-reticle", target: "nav-targets", document: "nav-documents", load_log: "equip-log", atmosphere: "zero-air", history: "history-title", group: "nav-groups" };
   return t(keys[kind] || "archive");
 }
 
@@ -4799,6 +4847,874 @@ function aboutHtml() {
     <p class="hint">${esc(t("about-keys"))}</p>
     <p class="hint">${esc(t("about-package"))}</p>
   </section>`;
+}
+
+function freshGroup() {
+  return {
+    id: "",
+    label: "Group",
+    shotAt: "",
+    distanceText: "100",
+    distanceUnit: "",
+    profileId: "",
+    loadId: "",
+    chronoId: "",
+    targetId: "",
+    ringing: "primary",
+    notes: "",
+    expectedShots: "5",
+    measure: "centres",
+    diameterText: "7.82",
+    diameterUnit: "mm",
+    knownText: "200",
+    knownUnit: "mm",
+    keepLocation: false,
+    latitude: null,
+    longitude: null,
+    photo: null,
+    image: null,
+    mode: "four",
+    corners: [],
+    widthText: "200",
+    heightText: "280",
+    useCentre: true,
+    poa: null,
+    holes: [],
+    activeHole: 0,
+    tool: "corners",
+    tab: "calibrate",
+    zoom: 1,
+    panX: 0,
+    panY: 0,
+    threshold: 90,
+    analysis: null,
+    notice: "",
+    error: "",
+    drag: null,
+    view: null,
+  };
+}
+
+function groupState() {
+  if (!groupView) groupView = freshGroup();
+  return groupView;
+}
+
+function groupFromRecord(record) {
+  const state = freshGroup();
+  const calibration = record.calibration || {};
+  state.id = record.id || "";
+  state.label = record.label || "Group";
+  state.shotAt = record.shot_at || "";
+  state.distanceText = Number.isFinite(Number(record.distance_m)) ? formatLocal(Number(record.distance_m), "length", units().length) : "100";
+  state.distanceUnit = units().length;
+  state.profileId = record.profile_id || "";
+  state.loadId = record.load_id || "";
+  state.chronoId = record.chrono_id || "";
+  state.targetId = record.target_id || "";
+  state.ringing = record.ringing === "alt" ? "alt" : "primary";
+  state.notes = record.notes || "";
+  state.expectedShots = String(record.expected_shots || 1);
+  state.measure = record.measure === "edges" ? "edges" : "centres";
+  if (Number.isFinite(Number(record.bullet_diameter_mm))) {
+    state.diameterText = formatLocal(Number(record.bullet_diameter_mm) / 1000, "length", units().small);
+    state.diameterUnit = units().small;
+  }
+  state.keepLocation = !!record.keep_location;
+  state.latitude = record.latitude == null ? null : record.latitude;
+  state.longitude = record.longitude == null ? null : record.longitude;
+  state.photo = record.photo || null;
+  state.mode = calibration.mode === "two" || calibration.mode === "two-point" ? "two" : "four";
+  state.corners = (calibration.image_points || []).map((point) => ({ x: Number(point.x), y: Number(point.y) }));
+  state.widthText = calibration.width_mm ? String(calibration.width_mm) : "200";
+  state.heightText = calibration.height_mm ? String(calibration.height_mm) : "280";
+  if (Number.isFinite(Number(calibration.known_mm))) {
+    state.knownText = formatLocal(Number(calibration.known_mm) / 1000, "length", units().small);
+    state.knownUnit = units().small;
+  }
+  state.useCentre = !!record.use_rectangle_centre;
+  state.poa = pointObject(record.poa_image);
+  state.holes = (record.holes || []).map((hole) => ({
+    image: pointObject(hole.image) || { x: 0, y: 0 },
+    count: Math.min(12, Math.max(1, Number(hole.count) || 1)),
+  }));
+  state.analysis = record.analysis || null;
+  return state;
+}
+
+function pointObject(value) {
+  if (!value) return null;
+  if (Array.isArray(value) && value.length >= 2) return { x: Number(value[0]), y: Number(value[1]) };
+  if (Number.isFinite(Number(value.x)) && Number.isFinite(Number(value.y))) return { x: Number(value.x), y: Number(value.y) };
+  return null;
+}
+
+function openGroup(id) {
+  const row = (boot.equipment.groups || []).find((item) => item.id === id);
+  if (!row) return;
+  groupView = groupFromRecord(row);
+  page = "groups";
+  render();
+}
+
+function groupsEquipHtml() {
+  const record = currentRecord();
+  if (!record) {
+    return `<p class="hint">${esc(t("group-equip-empty"))}</p><button type="button" id="equip-new-group">${esc(t("group-new"))}</button>`;
+  }
+  return `<p>${esc(record.label)}</p>
+    <p class="meta">${esc(record.distance_text || "")}</p>
+    <div class="row">
+      <button type="button" id="equip-open-group">${esc(t("group-open"))}</button>
+      <button type="button" id="equip-new-group">${esc(t("group-new"))}</button>
+      <button type="button" id="equip-delete">${esc(t("archive"))}</button>
+    </div>`;
+}
+
+function groupLinksForLoad(loadId) {
+  const linked = (boot.equipment.groups || []).filter((item) => loadId && item.load_id === loadId);
+  if (!linked.length) return `<p class="hint">${esc(t("group-log-empty"))}</p>`;
+  return linked.map((item) => `<button type="button" data-open-group="${esc(item.id)}">${esc(item.label)}</button>`).join("");
+}
+
+function groupsHtml() {
+  const state = groupState();
+  return `<section class="groups">
+    <div id="group-results" class="group-results">${groupResultsInner()}</div>
+    <div class="row group-tools" role="toolbar" aria-label="${esc(t("group-mode"))}">${groupToolButtons()}</div>
+    <div class="group-stage">
+      <div class="group-canvas-wrap"><canvas id="group-canvas" aria-label="${esc(t("group-photo"))}"></canvas></div>
+      <div class="group-side">
+        <div class="tabs" role="tablist">${groupTabButton("calibrate")}${groupTabButton("holes")}${groupTabButton("context")}</div>
+        <div class="compact">${groupAlwaysHtml()}</div>
+        ${state.tab === "holes" ? groupHolesHtml() : state.tab === "context" ? groupContextHtml() : groupCalibrateHtml()}
+        <p id="group-error" class="error">${esc(state.error || "")}</p>
+        <p id="group-notice" class="meta">${esc(state.notice || "")}</p>
+      </div>
+    </div>
+  </section>`;
+}
+
+function groupTabButton(id) {
+  const selected = groupState().tab === id;
+  return `<button type="button" role="tab" data-group-tab="${id}" aria-selected="${selected}">${esc(t("group-tab-" + id))}</button>`;
+}
+
+function groupToolButtons() {
+  const state = groupState();
+  const tool = (id) => `<button type="button" data-group-tool="${id}" aria-pressed="${state.tool === id}">${esc(t("group-tool-" + id))}</button>`;
+  return `${tool("corners")}${tool("aim")}${tool("hole")}${tool("move")}${tool("delete")}${tool("pan")}
+    <button type="button" id="group-zoom-in">${esc(t("group-zoom-in"))}</button>
+    <button type="button" id="group-zoom-out">${esc(t("group-zoom-out"))}</button>
+    <button type="button" id="group-zoom-fit">${esc(t("group-zoom-fit"))}</button>`;
+}
+
+function groupAlwaysHtml() {
+  const state = groupState();
+  const distanceUnit = state.distanceUnit || units().length;
+  const ready = state.analysis && state.analysis.can_save;
+  return `<div class="cluster">
+      ${qtyField("group-distance", t("group-distance"), state.distanceText, distanceUnit, "length")}
+      <label class="field">${esc(t("group-expected"))}<input id="group-expected" inputmode="numeric" value="${esc(state.expectedShots)}" /></label>
+      <button type="button" id="group-save" ${ready ? "" : "disabled"}>${esc(t("group-save"))}</button>
+    </div>`;
+}
+
+function groupCalibrateHtml() {
+  const state = groupState();
+  const knownUnit = state.knownUnit || "mm";
+  const target = libraryTarget(state.targetId);
+  const sheet = target && target.official_bounds && target.width_cm && target.height_cm
+    ? `<button type="button" id="group-sheet">${esc(t("group-sheet"))}</button>` : "";
+  return `<div class="compact">
+    <div class="cluster">
+      <label class="field">${esc(t("group-saved"))}<select id="group-saved">${groupSavedOptions()}</select></label>
+      <label class="field">${esc(t("group-photo"))}<input id="group-file" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png,.heic,.heif" /></label>
+      <label title="${esc(t("group-photo-keep-tip"))}"><input id="group-keep" type="checkbox" ${state.keepLocation ? "checked" : ""} /> ${esc(t("group-photo-keep"))}</label>
+    </div>
+    <div class="cluster">
+      <label class="field">${esc(t("group-mode"))}
+        <select id="group-mode">
+          <option value="four" ${state.mode === "four" ? "selected" : ""}>${esc(t("group-mode-four"))}</option>
+          <option value="two" ${state.mode === "two" ? "selected" : ""}>${esc(t("group-mode-two"))}</option>
+        </select>
+      </label>
+      ${state.mode === "two" ? qtyField("group-known", t("group-known"), state.knownText, knownUnit, "length") : ""}
+      ${state.mode === "four" ? `<label class="field">${esc(t("group-width"))}<input id="group-width" value="${esc(state.widthText)}" /></label>
+        <label class="field">${esc(t("group-height"))}<input id="group-height" value="${esc(state.heightText)}" /></label>` : ""}
+    </div>
+    ${state.mode === "four" ? `<label title="${esc(t("group-centre"))}"><input id="group-centre" type="checkbox" ${state.useCentre ? "checked" : ""} /> ${esc(t("group-centre"))}</label>` : ""}
+    <p class="hint">${esc(t(state.mode === "two" ? "group-two-hint" : "group-corners-hint"))}</p>
+    <div class="cluster">
+      ${sheet}
+      <button type="button" id="group-clear-corners">${esc(t("group-clear-corners"))}</button>
+      <label class="field">${esc(t("group-threshold"))}<input id="group-threshold" type="range" min="0" max="255" value="${esc(String(state.threshold))}" /></label>
+      <button type="button" id="group-detect">${esc(t("group-detect"))}</button>
+    </div>
+    <p class="hint">${esc(t("group-canvas-empty"))}</p>
+  </div>`;
+}
+
+function groupHolesHtml() {
+  const state = groupState();
+  const diameterUnit = state.diameterUnit || units().small;
+  const hole = state.holes[state.activeHole] || null;
+  return `<div class="compact">
+    <div class="cluster">
+      <label class="field">${esc(t("group-measure"))}
+        <select id="group-measure">
+          <option value="centres" ${state.measure !== "edges" ? "selected" : ""}>${esc(t("group-centres"))}</option>
+          <option value="edges" ${state.measure === "edges" ? "selected" : ""}>${esc(t("group-edges"))}</option>
+        </select>
+      </label>
+      ${qtyField("group-diameter", t("group-diameter"), state.diameterText, diameterUnit, "length")}
+      <label class="field">${esc(t("group-count"))}<input id="group-count" inputmode="numeric" value="${esc(hole ? String(hole.count) : "1")}" /></label>
+    </div>
+    <p class="meta">${esc(t("group-shots"))}: ${esc(String(groupShotCount()))}</p>
+    <button type="button" id="group-clear-holes">${esc(t("group-clear-holes"))}</button>
+  </div>`;
+}
+
+function groupContextHtml() {
+  const state = groupState();
+  return `<div class="compact">
+    <div class="cluster">
+      <label class="field">${esc(t("label"))}<input id="group-label" value="${esc(state.label)}" /></label>
+      <label class="field">${esc(t("group-when"))}<input id="group-when" type="datetime-local" value="${esc(state.shotAt)}" /></label>
+    </div>
+    <div class="cluster">
+      <label class="field">${esc(t("equip-profile"))}<select id="group-profile">${idOptions(boot.equipment.profiles, state.profileId)}</select></label>
+      <label class="field">${esc(t("equip-load"))}<select id="group-load">${idOptions(boot.equipment.loads, state.loadId)}</select></label>
+      <label class="field">${esc(t("equip-chrono"))}<select id="group-chrono">${idOptions(boot.equipment.chronos, state.chronoId)}</select></label>
+    </div>
+    <div class="cluster">
+      <label class="field">${esc(t("group-target"))}<select id="group-target">${groupTargetOptions(state.targetId)}</select></label>
+      <label class="field">${esc(t("ringing"))}
+        <select id="group-ringing">
+          <option value="primary" ${state.ringing !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
+          <option value="alt" ${state.ringing === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
+        </select>
+      </label>
+    </div>
+    <label class="field">${esc(t("log-notes"))}<textarea id="group-notes">${esc(state.notes)}</textarea></label>
+    <div class="row">
+      <button type="button" id="group-truing">${esc(t("group-truing"))}</button>
+      <button type="button" id="group-impact">${esc(t("group-impact"))}</button>
+      <button type="button" id="group-new">${esc(t("group-new"))}</button>
+    </div>
+  </div>`;
+}
+
+function idOptions(items, selected) {
+  const head = `<option value="">${esc(t("group-blank"))}</option>`;
+  const rest = (items || []).map((item) => `<option value="${esc(item.id)}" ${item.id === selected ? "selected" : ""}>${esc(item.label || item.name || "")}</option>`).join("");
+  return head + rest;
+}
+
+function groupSavedOptions() {
+  const state = groupState();
+  const head = `<option value="">${esc(t("group-new"))}</option>`;
+  const rest = (boot.equipment.groups || []).map((item) => `<option value="${esc(item.id)}" ${item.id === state.id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+  return head + rest;
+}
+
+function groupTargetOptions(selected) {
+  const library = (boot.targets && boot.targets.library) || [];
+  const saved = (boot.equipment && boot.equipment.targets) || [];
+  const rank = { sjf: 0, svsf: 1, us: 2, generic: 3 };
+  const seen = new Set();
+  const items = library.concat(saved).filter((item) => {
+    if (!item || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+  items.sort((left, right) => (rank[left.family] ?? 4) - (rank[right.family] ?? 4) || String(left.name || "").localeCompare(String(right.name || "")));
+  const head = `<option value="">${esc(t("group-none"))}</option>`;
+  return head + items.map((item) => `<option value="${esc(item.id)}" ${item.id === selected ? "selected" : ""}>${esc(item.name)}</option>`).join("");
+}
+
+function groupResultsInner() {
+  const analysis = groupState().analysis;
+  const stats = analysis && analysis.stats;
+  if (!stats) return `<p>${esc(groupBlocked())}</p>`;
+  const small = units().small;
+  const linear = (mm) => `${formatLocal(Number(mm) / 1000, "length", small)} ${small}`;
+  const angle = (mrad, moa) => (Number.isFinite(Number(mrad)) ? `${Number(mrad).toFixed(2)} mrad · ${Number(moa).toFixed(2)} MOA` : "—");
+  const score = scoreText(analysis.score);
+  const warnings = (analysis.warnings || []).map((code) => t("group-warn-" + code)).join(" · ");
+  const notes = analysis.score && analysis.score.notes ? analysis.score.notes.map((code) => t("group-" + code)).join(" · ") : "";
+  return `<span><strong>${esc(t("group-shots"))}</strong> ${esc(String(analysis.shot_count || stats.n))}</span>
+    <span><strong>${esc(t("group-es"))}</strong> ${esc(linear(stats.reported_extreme_spread_mm))} · ${esc(angle(stats.es_mrad, stats.es_moa))}</span>
+    <span><strong>${esc(t("group-mr"))}</strong> ${esc(linear(stats.reported_mean_radius_mm))}</span>
+    <span><strong>${esc(t("group-offset"))}</strong> ${esc(stats.vertical)} ${esc(linear(stats.reported_offset_y_mm))} ${esc(angle(stats.offset_y_mrad, stats.offset_y_moa))} · ${esc(stats.horizontal)} ${esc(linear(stats.reported_offset_x_mm))} ${esc(angle(stats.offset_x_mrad, stats.offset_x_moa))}</span>
+    <span><strong>${esc(t("group-score"))}</strong> ${esc(score)}</span>
+    ${stats.cep_mm == null ? "" : `<span><strong>${esc(t("group-cep"))}</strong> ${esc(linear(stats.cep_mm))}</span>`}
+    <span><strong>${esc(t("group-sd"))}</strong> ${esc(linear(stats.radial_sd_mm))}</span>
+    ${warnings ? `<p class="group-warn">${esc(warnings)}</p>` : ""}
+    ${notes ? `<p class="group-warn">${esc(notes)}</p>` : ""}`;
+}
+
+function scoreText(score) {
+  if (!score || score.available === false) {
+    if (score && score.reason) return t("group-" + score.reason);
+    return t("group-score-none");
+  }
+  if (score.total == null) return t("group-rings-without-points");
+  const shots = (score.shots || []).map((shot) => shot.miss ? t("group-score-none") : (shot.label || "")).join(" ");
+  const possible = score.possible == null ? "" : ` / ${score.possible}`;
+  return `${score.total}${possible}${shots ? " · " + shots : ""}`;
+}
+
+function groupBlocked() {
+  const analysis = groupState().analysis;
+  if (!analysis) return t("group-corners-hint");
+  if (analysis.reason) return t("group-reason-" + analysis.reason);
+  if (!analysis.can_save) {
+    const distance = groupState().distanceText;
+    if (!distance) return t("group-reason-distance");
+    return t("group-reason-count");
+  }
+  return t("group-ready");
+}
+
+function groupShotCount() {
+  return groupState().holes.reduce((sum, hole) => sum + (Number(hole.count) || 1), 0);
+}
+
+function rememberGroupFields() {
+  const state = groupState();
+  const read = (id) => document.getElementById(id);
+  const distance = read("group-distance");
+  if (distance) {
+    state.distanceText = distance.value;
+    state.distanceUnit = distance.dataset.unit;
+  }
+  const diameter = read("group-diameter");
+  if (diameter) {
+    state.diameterText = diameter.value;
+    state.diameterUnit = diameter.dataset.unit;
+  }
+  const known = read("group-known");
+  if (known) {
+    state.knownText = known.value;
+    state.knownUnit = known.dataset.unit;
+  }
+  const text = (id, key) => {
+    const node = read(id);
+    if (node) state[key] = node.value;
+  };
+  text("group-expected", "expectedShots");
+  text("group-width", "widthText");
+  text("group-height", "heightText");
+  text("group-label", "label");
+  text("group-when", "shotAt");
+  text("group-notes", "notes");
+  const mode = read("group-mode");
+  if (mode && mode.value !== state.mode) {
+    state.mode = mode.value;
+    state.corners = [];
+  }
+  const measure = read("group-measure");
+  if (measure) state.measure = measure.value;
+  const keep = read("group-keep");
+  if (keep) state.keepLocation = keep.checked;
+  const centre = read("group-centre");
+  if (centre) state.useCentre = centre.checked;
+  const threshold = read("group-threshold");
+  if (threshold) state.threshold = Number(threshold.value);
+  const count = read("group-count");
+  if (count && state.holes[state.activeHole]) {
+    state.holes[state.activeHole].count = Math.min(12, Math.max(1, Number(count.value) || 1));
+  }
+  ["group-profile", "group-load", "group-chrono", "group-target", "group-ringing"].forEach((id) => {
+    const node = read(id);
+    if (!node) return;
+    const key = { "group-profile": "profileId", "group-load": "loadId", "group-chrono": "chronoId", "group-target": "targetId", "group-ringing": "ringing" }[id];
+    state[key] = node.value;
+  });
+}
+
+function mmNumber(text) {
+  const value = Number(String(text == null ? "" : text).replace(",", "."));
+  return Number.isFinite(value) ? value : 0;
+}
+
+function groupCalibration() {
+  const state = groupState();
+  const points = state.corners.map((point) => ({ x: point.x, y: point.y }));
+  if (state.mode === "two") {
+    const known = parseLocal(state.knownText, "length", state.knownUnit || "mm");
+    return { mode: "two", image_points: points, known_mm: known ? known.si * 1000 : 0 };
+  }
+  return {
+    mode: "four",
+    image_points: points,
+    width_mm: mmNumber(state.widthText),
+    height_mm: mmNumber(state.heightText),
+  };
+}
+
+function groupBody() {
+  const state = groupState();
+  const distanceUnit = state.distanceUnit || units().length;
+  const diameterUnit = state.diameterUnit || units().small;
+  const body = {
+    label: state.label,
+    shot_at: state.shotAt,
+    distance: { text: state.distanceText, unit: distanceUnit },
+    distance_text: `${state.distanceText} ${distanceUnit}`.trim(),
+    bullet_diameter: { text: state.diameterText, unit: diameterUnit },
+    bullet_diameter_text: `${state.diameterText} ${diameterUnit}`.trim(),
+    expected_shots: Number(state.expectedShots) || 0,
+    measure: state.measure,
+    ringing: state.ringing,
+    use_rectangle_centre: state.mode === "four" && state.useCentre,
+    poa_image: state.poa,
+    calibration: groupCalibration(),
+    holes: state.holes.map((hole) => ({ image: hole.image, count: hole.count || 1 })),
+    photo: state.photo,
+    profile_id: state.profileId,
+    load_id: state.loadId,
+    chrono_id: state.chronoId,
+    target_id: state.targetId,
+    notes: state.notes,
+    keep_location: state.keepLocation,
+    threshold: Number(state.threshold) || 90,
+  };
+  if (state.id) body.id = state.id;
+  if (state.keepLocation && state.latitude != null) body.latitude = state.latitude;
+  if (state.keepLocation && state.longitude != null) body.longitude = state.longitude;
+  return body;
+}
+
+function groupError(error) {
+  const text = String(error || "");
+  const keys = {
+    "photo-heic": "group-photo-heic",
+    "photo-type": "group-photo-type",
+    "photo-empty": "group-photo-empty",
+    "photo-large": "group-photo-large",
+    "photo-decode": "group-photo-decode",
+    "photo-missing": "group-photo-missing",
+  };
+  return t(keys[text] || text);
+}
+
+function scheduleGroup(delay) {
+  window.clearTimeout(groupTimer);
+  groupTimer = window.setTimeout(runGroupAnalysis, delay);
+}
+
+async function runGroupAnalysis() {
+  if (page !== "groups") return;
+  rememberGroupFields();
+  try {
+    const analysis = await call("analyze_group", { body: groupBody() });
+    groupState().analysis = analysis;
+    groupState().error = "";
+    const host = document.getElementById("group-results");
+    if (host) host.innerHTML = groupResultsInner();
+    const save = document.getElementById("group-save");
+    if (save) save.disabled = !(analysis && analysis.can_save);
+    paintGroup();
+  } catch (error) {
+    groupState().error = groupError(error);
+    const node = document.getElementById("group-error");
+    if (node) node.textContent = groupState().error;
+  }
+}
+
+function bindGroups() {
+  rememberGroupFields();
+  document.querySelectorAll("[data-group-tab]").forEach((button) => button.addEventListener("click", () => {
+    rememberGroupFields();
+    groupState().tab = button.dataset.groupTab;
+    groupState().notice = "";
+    render();
+  }));
+  document.querySelectorAll("[data-group-tool]").forEach((button) => button.addEventListener("click", () => {
+    groupState().tool = button.dataset.groupTool;
+    document.querySelectorAll("[data-group-tool]").forEach((item) => item.setAttribute("aria-pressed", item === button ? "true" : "false"));
+  }));
+  const file = document.getElementById("group-file");
+  if (file) file.addEventListener("change", () => {
+    const chosen = file.files && file.files[0];
+    if (chosen) importGroupFile(chosen);
+  });
+  const saved = document.getElementById("group-saved");
+  if (saved) saved.addEventListener("change", () => {
+    if (!saved.value) {
+      groupView = freshGroup();
+      render();
+      return;
+    }
+    openGroup(saved.value);
+  });
+  const mode = document.getElementById("group-mode");
+  if (mode) mode.addEventListener("change", () => {
+    rememberGroupFields();
+    render();
+  });
+  ["group-width", "group-height", "group-expected", "group-count", "group-label", "group-notes", "group-when"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("input", () => scheduleGroup(160));
+  });
+  ["group-profile", "group-load", "group-chrono", "group-target", "group-ringing", "group-measure"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("change", () => {
+      rememberGroupFields();
+      if (id === "group-target") render();
+      else scheduleGroup(0);
+    });
+  });
+  const centre = document.getElementById("group-centre");
+  if (centre) centre.addEventListener("change", () => scheduleGroup(0));
+  const keep = document.getElementById("group-keep");
+  if (keep) keep.addEventListener("change", () => { groupState().keepLocation = keep.checked; });
+  const sheet = document.getElementById("group-sheet");
+  if (sheet) sheet.addEventListener("click", () => {
+    const target = libraryTarget(groupState().targetId);
+    if (!target || !target.official_bounds || !target.width_cm || !target.height_cm) return;
+    groupState().widthText = String(Math.round(target.width_cm * 10));
+    groupState().heightText = String(Math.round(target.height_cm * 10));
+    render();
+  });
+  const clearCorners = document.getElementById("group-clear-corners");
+  if (clearCorners) clearCorners.addEventListener("click", () => {
+    groupState().corners = [];
+    scheduleGroup(0);
+    paintGroup();
+  });
+  const clearHoles = document.getElementById("group-clear-holes");
+  if (clearHoles) clearHoles.addEventListener("click", () => {
+    groupState().holes = [];
+    scheduleGroup(0);
+    paintGroup();
+  });
+  const detect = document.getElementById("group-detect");
+  if (detect) detect.addEventListener("click", detectGroupHoles);
+  const save = document.getElementById("group-save");
+  if (save) save.addEventListener("click", saveGroup);
+  const truing = document.getElementById("group-truing");
+  if (truing) truing.addEventListener("click", sendGroupToTruing);
+  const impact = document.getElementById("group-impact");
+  if (impact) impact.addEventListener("click", showGroupOnImpact);
+  const newer = document.getElementById("group-new");
+  if (newer) newer.addEventListener("click", () => { groupView = freshGroup(); render(); });
+  const zoomIn = document.getElementById("group-zoom-in");
+  const zoomOut = document.getElementById("group-zoom-out");
+  const zoomFit = document.getElementById("group-zoom-fit");
+  if (zoomIn) zoomIn.addEventListener("click", () => { groupState().zoom = Math.min(12, groupState().zoom * 1.25); paintGroup(); });
+  if (zoomOut) zoomOut.addEventListener("click", () => { groupState().zoom = Math.max(0.25, groupState().zoom / 1.25); paintGroup(); });
+  if (zoomFit) zoomFit.addEventListener("click", () => { groupState().zoom = 1; groupState().panX = 0; groupState().panY = 0; paintGroup(); });
+  const canvas = document.getElementById("group-canvas");
+  if (canvas) bindGroupCanvas(canvas);
+  const hash = groupState().photo && groupState().photo.sha256;
+  if (hash) {
+    ensureGroupImage(hash).then(() => paintGroup()).catch((error) => {
+      groupState().error = groupError(error);
+      const node = document.getElementById("group-error");
+      if (node) node.textContent = groupState().error;
+    });
+  } else {
+    requestAnimationFrame(() => paintGroup());
+  }
+  scheduleGroup(0);
+}
+
+function bindGroupCanvas(canvas) {
+  if (groupObserver) groupObserver.disconnect();
+  groupObserver = new ResizeObserver(() => paintGroup());
+  groupObserver.observe(canvas.parentElement || canvas);
+  canvas.addEventListener("pointerdown", (event) => {
+    const state = groupState();
+    const image = eventToImage(event);
+    state.drag = { x: event.clientX, y: event.clientY, marker: nearestMarker(image) };
+    if (canvas.setPointerCapture) canvas.setPointerCapture(event.pointerId);
+    if (state.tool === "corners") {
+      const limit = state.mode === "two" ? 2 : 4;
+      if (state.corners.length < limit) state.corners.push(image);
+    } else if (state.tool === "hole") {
+      state.holes.push({ image, count: 1 });
+      state.activeHole = state.holes.length - 1;
+    } else if (state.tool === "aim") {
+      state.poa = image;
+      state.useCentre = false;
+      const box = document.getElementById("group-centre");
+      if (box) box.checked = false;
+    } else if (state.tool === "delete" && state.drag.marker) {
+      removeMarker(state.drag.marker);
+    }
+    if (state.tool !== "pan" && state.tool !== "move") scheduleGroup(40);
+    paintGroup();
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    const state = groupState();
+    if (!state.drag) return;
+    if (state.tool === "pan") {
+      state.panX += event.clientX - state.drag.x;
+      state.panY += event.clientY - state.drag.y;
+      state.drag.x = event.clientX;
+      state.drag.y = event.clientY;
+      paintGroup();
+      return;
+    }
+    if (state.tool === "move" && state.drag.marker) {
+      moveMarker(state.drag.marker, eventToImage(event));
+      paintGroup();
+    }
+  });
+  canvas.addEventListener("pointerup", () => {
+    const state = groupState();
+    if (state.drag && state.tool === "move") scheduleGroup(30);
+    state.drag = null;
+  });
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const state = groupState();
+    const factor = event.deltaY > 0 ? 0.9 : 1.1;
+    state.zoom = Math.min(12, Math.max(0.25, (state.zoom || 1) * factor));
+    paintGroup();
+  }, { passive: false });
+}
+
+function removeMarker(marker) {
+  const state = groupState();
+  if (marker.kind === "corner") state.corners.splice(marker.index, 1);
+  if (marker.kind === "hole") state.holes.splice(marker.index, 1);
+  if (marker.kind === "aim") state.poa = null;
+}
+
+function moveMarker(marker, image) {
+  const state = groupState();
+  if (marker.kind === "corner" && state.corners[marker.index]) state.corners[marker.index] = image;
+  if (marker.kind === "hole" && state.holes[marker.index]) state.holes[marker.index].image = image;
+  if (marker.kind === "aim") state.poa = image;
+}
+
+async function importGroupFile(file) {
+  rememberGroupFields();
+  try {
+    const bytesBase64 = await fileToBase64(file);
+    const photo = await call("import_group_photo", {
+      bytesBase64,
+      keepLocation: groupState().keepLocation,
+      filename: file.name || "photo.png",
+    });
+    const state = groupState();
+    state.photo = { sha256: photo.sha256, media: photo.media, width: photo.width, height: photo.height, filename: photo.filename };
+    state.latitude = photo.latitude == null ? null : photo.latitude;
+    state.longitude = photo.longitude == null ? null : photo.longitude;
+    state.corners = [];
+    state.holes = [];
+    state.poa = null;
+    state.analysis = null;
+    state.error = "";
+    state.image = null;
+    await ensureGroupImage(photo.sha256);
+    render();
+  } catch (error) {
+    groupState().error = groupError(error);
+    const node = document.getElementById("group-error");
+    if (node) node.textContent = groupState().error;
+  }
+}
+
+function fileToBase64(file) {
+  return file.arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const step = 0x8000;
+    for (let index = 0; index < bytes.length; index += step) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + step));
+    }
+    return btoa(binary);
+  });
+}
+
+async function ensureGroupImage(hash) {
+  const state = groupState();
+  if (state.image && state.image.dataset && state.image.dataset.hash === hash && state.image.complete) return;
+  const payload = await call("group_photo", { hash });
+  const img = new Image();
+  img.dataset.hash = hash;
+  await new Promise((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("photo-decode"));
+    img.src = `data:image/png;base64,${payload.base64}`;
+  });
+  if (groupState().photo && groupState().photo.sha256 === hash) groupState().image = img;
+}
+
+async function detectGroupHoles() {
+  rememberGroupFields();
+  if (groupState().holes.length && !window.confirm(t("group-detect-replace"))) return;
+  try {
+    const found = await call("detect_holes", { body: groupBody() });
+    groupState().holes = (found.holes || []).map((point) => ({ image: { x: point.x, y: point.y }, count: 1 }));
+    groupState().activeHole = 0;
+    const warnings = (found.warnings || []).map((code) => t("group-warn-" + code)).join(" · ");
+    groupState().notice = warnings;
+    const note = document.getElementById("group-notice");
+    if (note) note.textContent = warnings;
+    scheduleGroup(0);
+    paintGroup();
+  } catch (error) {
+    groupState().error = groupError(error);
+    const node = document.getElementById("group-error");
+    if (node) node.textContent = groupState().error;
+  }
+}
+
+async function saveGroup() {
+  rememberGroupFields();
+  try {
+    const saved = await call("save_group", { body: groupBody() });
+    groupView = groupFromRecord(saved);
+    groupState().notice = t("saved");
+    boot = await call("bootstrap");
+    render();
+  } catch (error) {
+    groupState().error = groupError(error);
+    const node = document.getElementById("group-error");
+    if (node) node.textContent = groupState().error;
+  }
+}
+
+function sendGroupToTruing() {
+  rememberGroupFields();
+  const stats = groupState().analysis && groupState().analysis.stats;
+  if (!stats) return;
+  const unit = groupState().distanceUnit || units().length;
+  truingForm.range = `${groupState().distanceText} ${unit}`.trim();
+  truingForm.elevation = Number.isFinite(Number(stats.correction_elevation_mrad)) ? `${Number(stats.correction_elevation_mrad).toFixed(3)} mrad` : "";
+  truingForm.shots = String(groupState().analysis.shot_count || "");
+  truingForm.group = Number.isFinite(Number(stats.reported_extreme_spread_mm)) ? `${Number(stats.reported_extreme_spread_mm).toFixed(1)} mm` : "";
+  page = "truing";
+  render();
+}
+
+function showGroupOnImpact() {
+  if (!groupState().id) {
+    groupState().error = t("group-impact-first");
+    const node = document.getElementById("group-error");
+    if (node) node.textContent = groupState().error;
+    return;
+  }
+  impactGroupId = groupState().id;
+  groupImpactPending = true;
+  page = "charts";
+  render();
+}
+
+function cssColor(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "currentColor";
+}
+
+function paintGroup() {
+  const canvas = document.getElementById("group-canvas");
+  const state = groupState();
+  if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return;
+  const dpr = window.devicePixelRatio || 1;
+  const pixelWidth = Math.max(1, Math.floor(rect.width * dpr));
+  const pixelHeight = Math.max(1, Math.floor(rect.height * dpr));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = cssColor("--surface");
+  ctx.fillRect(0, 0, rect.width, rect.height);
+  const img = state.image;
+  if (!img || !img.complete || !img.naturalWidth) {
+    ctx.fillStyle = cssColor("--text-secondary");
+    ctx.font = "14px sans-serif";
+    ctx.fillText(t("group-canvas-wait"), 12, 24);
+    return;
+  }
+  const fit = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+  const scale = fit * (state.zoom || 1);
+  const ox = (rect.width - img.naturalWidth * scale) / 2 + (state.panX || 0);
+  const oy = (rect.height - img.naturalHeight * scale) / 2 + (state.panY || 0);
+  state.view = { scale, ox, oy };
+  ctx.drawImage(img, ox, oy, img.naturalWidth * scale, img.naturalHeight * scale);
+  const accent = cssColor("--accent");
+  const text = cssColor("--text");
+  const focus = cssColor("--focus");
+  const warning = cssColor("--warning");
+  state.corners.forEach((point, index) => markRing(ctx, imageToScreen(point, state.view), 8, accent, text, String(index + 1)));
+  const aim = groupAimImage();
+  if (aim) markCross(ctx, imageToScreen(aim, state.view), 9, focus);
+  state.holes.forEach((hole) => markRing(ctx, imageToScreen(hole.image, state.view), 6, warning, text, hole.count > 1 ? String(hole.count) : ""));
+}
+
+function groupAimImage() {
+  const state = groupState();
+  if (state.mode === "four" && state.useCentre) return pointObject(state.analysis && state.analysis.poa_image);
+  return state.poa;
+}
+
+function imageToScreen(point, view) {
+  return { x: view.ox + point.x * view.scale, y: view.oy + point.y * view.scale };
+}
+
+function eventToImage(event) {
+  const canvas = document.getElementById("group-canvas");
+  const view = groupState().view;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  if (!view || !view.scale) return { x, y };
+  return { x: (x - view.ox) / view.scale, y: (y - view.oy) / view.scale };
+}
+
+function nearestMarker(image) {
+  const state = groupState();
+  const view = state.view;
+  if (!view) return null;
+  let best = null;
+  let bestPx = 16;
+  const click = imageToScreen(image, view);
+  const consider = (kind, index, point) => {
+    if (!point) return;
+    const at = imageToScreen(point, view);
+    const dist = Math.hypot(at.x - click.x, at.y - click.y);
+    if (dist < bestPx) {
+      bestPx = dist;
+      best = { kind, index };
+    }
+  };
+  state.corners.forEach((point, index) => consider("corner", index, point));
+  state.holes.forEach((hole, index) => consider("hole", index, hole.image));
+  if (!(state.mode === "four" && state.useCentre)) consider("aim", 0, state.poa);
+  return best;
+}
+
+function markRing(ctx, at, radius, stroke, text, label) {
+  ctx.beginPath();
+  ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  if (label) {
+    ctx.fillStyle = text;
+    ctx.font = "12px sans-serif";
+    ctx.fillText(label, at.x + radius + 2, at.y - 2);
+  }
+}
+
+function markCross(ctx, at, size, stroke) {
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(at.x - size, at.y);
+  ctx.lineTo(at.x + size, at.y);
+  ctx.moveTo(at.x, at.y - size);
+  ctx.lineTo(at.x, at.y + size);
+  ctx.stroke();
 }
 
 listenTheme();

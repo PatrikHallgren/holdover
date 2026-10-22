@@ -134,6 +134,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Write the synthetic target photograph and its known hole positions.
+    GroupFixture {
+        /// PNG path. A JSON sidecar is written beside it.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check the synthetic photograph against the millimetre tolerance.
+    GroupCheck {
+        #[arg(long)]
+        json: bool,
+    },
     /// Density, speed of sound and density altitude for one atmosphere.
     Atmosphere {
         #[arg(long)]
@@ -469,6 +480,8 @@ fn run() -> Result<(), String> {
                 println!("{DISCLAIMER}");
             }
         }
+        Command::GroupFixture { out } => write_group_fixture(&out)?,
+        Command::GroupCheck { json } => check_group_fixture(json)?,
         Command::Atmosphere {
             temperature,
             pressure,
@@ -957,4 +970,39 @@ fn optional_angle(value: Option<String>) -> Result<Option<f64>, String> {
             parse_quantity(&value, Dimension::Angle, Some("mrad")).map_err(|e| e.to_string())
         })
         .transpose()
+}
+
+fn write_group_fixture(path: &std::path::Path) -> Result<(), String> {
+    let scene = holdover_core::synthetic_scene();
+    let image = image::RgbaImage::from_raw(scene.width, scene.height, scene.rgba.clone())
+        .ok_or("the synthetic image is the wrong size")?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+    }
+    image.save(path).map_err(|err| err.to_string())?;
+    let sidecar = path.with_extension("json");
+    let bytes = serde_json::to_vec_pretty(&scene.description()).map_err(|err| err.to_string())?;
+    fs::write(sidecar, bytes).map_err(|err| err.to_string())
+}
+
+fn check_group_fixture(json: bool) -> Result<(), String> {
+    let check = holdover_core::check_synthetic().map_err(|err| err.to_string())?;
+    let report = check.json();
+    if json {
+        println!("{report}");
+    } else if check.passed {
+        println!(
+            "synthetic group passed: position {:.3} mm, extreme spread {:.2} mm",
+            check.max_position_error_mm, check.measured_extreme_spread_mm
+        );
+    }
+    if check.passed {
+        Ok(())
+    } else {
+        Err(format!(
+            "the synthetic group missed the tolerance: {report}"
+        ))
+    }
 }

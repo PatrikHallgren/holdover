@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-group-photo"
+description = "Enables the group_photo command without any pre-configured scope."
+commands.allow = ["group_photo"]
+
+[[permission]]
+identifier = "deny-group-photo"
+description = "Denies the group_photo command without any pre-configured scope."
+commands.deny = ["group_photo"]

@@ -22,6 +22,7 @@ pub const RECORD_KINDS: &[&str] = &[
     "target",
     "document",
     "load_log",
+    "group",
     "history",
 ];
 
