@@ -1160,6 +1160,7 @@ impl Store {
             "targets": self.list_kind("target", units)?,
             "documents": self.list_kind("document", units)?,
             "load_logs": self.list_kind("load_log", units)?,
+            "groups": self.list_kind("group", units)?,
             "archived": self.list_archived()?,
             "history": self.history_json()?,
         }))
@@ -1230,7 +1231,7 @@ impl Store {
             .ok_or_else(|| "profile was not found".into())
     }
 
-    fn record_value(&self, kind: &str, id: &str) -> Result<Value, String> {
+    pub(crate) fn record_value(&self, kind: &str, id: &str) -> Result<Value, String> {
         let units = self.units()?;
         let rows = self.list_kind(kind, &units)?;
         rows.into_iter()
@@ -1238,7 +1239,7 @@ impl Store {
             .ok_or_else(|| format!("{kind} was not found"))
     }
 
-    fn body(&self, kind: &str, id: &str) -> Result<Value, String> {
+    pub(crate) fn body(&self, kind: &str, id: &str) -> Result<Value, String> {
         let (raw, revision): (String, i64) = self.conn.query_row(
             "SELECT body, revision FROM records WHERE id = ?1 AND kind = ?2 AND deleted_at IS NULL",
             params![id, kind],
@@ -1249,7 +1250,12 @@ impl Store {
         Ok(value)
     }
 
-    fn write_record(&self, kind: &str, request: &Value, body: Value) -> Result<String, String> {
+    pub(crate) fn write_record(
+        &self,
+        kind: &str,
+        request: &Value,
+        body: Value,
+    ) -> Result<String, String> {
         let now = now_iso();
         if let Some(id) = request
             .get("id")
@@ -1499,7 +1505,7 @@ impl Store {
         Ok(self.blob_dir().join(hash))
     }
 
-    fn require_live(&self, kind: &str, id: &str) -> Result<(), String> {
+    pub(crate) fn require_live(&self, kind: &str, id: &str) -> Result<(), String> {
         let found: Option<String> = self
             .conn
             .query_row(
@@ -1902,7 +1908,7 @@ impl Store {
         Ok(air)
     }
 
-    fn current_air_raw(&self) -> Result<Value, String> {
+    pub(crate) fn current_air_raw(&self) -> Result<Value, String> {
         let raw: String = self
             .conn
             .query_row(
@@ -2172,7 +2178,7 @@ fn put_qty(record: &mut Value, name: &str, qty: Option<(f64, String)>) -> Result
     Ok(())
 }
 
-fn stamp(value: &mut Value, id: &str, kind: &str, revision: i64) {
+pub(crate) fn stamp(value: &mut Value, id: &str, kind: &str, revision: i64) {
     if let Some(object) = value.as_object_mut() {
         object.insert("id".into(), json!(id));
         object.insert("kind".into(), json!(kind));
@@ -2560,7 +2566,7 @@ fn required_text(body: &Value, key: &str) -> Result<String, String> {
     Ok(text)
 }
 
-fn text_or(body: &Value, key: &str) -> String {
+pub(crate) fn text_or(body: &Value, key: &str) -> String {
     body.get(key)
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -2568,7 +2574,12 @@ fn text_or(body: &Value, key: &str) -> String {
         .to_string()
 }
 
-fn optional_live(store: &Store, body: &Value, key: &str, kind: &str) -> Result<String, String> {
+pub(crate) fn optional_live(
+    store: &Store,
+    body: &Value,
+    key: &str,
+    kind: &str,
+) -> Result<String, String> {
     let id = text_or(body, key);
     if id.is_empty() {
         return Ok(String::new());

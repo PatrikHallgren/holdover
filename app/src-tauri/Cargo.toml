@@ -23,3 +23,5 @@ ureq = { version = "2.12.1", default-features = false, features = ["tls"] }
 uuid = { version = "1.11.0", features = ["v4"] }
 sha2 = "0.10.9"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+kamadak-exif = "0.6.1"

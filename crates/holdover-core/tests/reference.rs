@@ -293,11 +293,25 @@ fn a_full_solve_to_2000_m_stays_interactive() {
 }
 
 #[test]
-fn group_statistics_stay_explicitly_unavailable() {
-    assert!(holdover_core::group_stats()
-        .unwrap_err()
-        .to_string()
-        .contains("M8"));
+fn group_statistics_match_an_independent_extreme_spread() {
+    use holdover_core::{group_stats, MeasureMode, PlaneMm};
+    let points = [
+        PlaneMm { x: 0.0, y: 0.0 },
+        PlaneMm { x: 30.0, y: 0.0 },
+        PlaneMm { x: 0.0, y: 40.0 },
+    ];
+    let stats = group_stats(
+        &points,
+        PlaneMm { x: 0.0, y: 0.0 },
+        100.0,
+        MeasureMode::Centres,
+        0.1,
+    )
+    .unwrap();
+    assert_eq!(stats.n, 3);
+    assert!((stats.extreme_spread_mm - 50.0).abs() < 1e-9);
+    assert!(stats.warnings.iter().any(|item| item == "small-n"));
+    assert!(stats.cep_mm.is_none());
 }
 
 #[test]

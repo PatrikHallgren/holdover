@@ -21,6 +21,7 @@ pub const RECORD_SECTIONS: &[(&str, &str)] = &[
     ("targets", "target"),
     ("documents", "document"),
     ("load_logs", "load_log"),
+    ("groups", "group"),
     ("history", "history"),
 ];
 
@@ -122,6 +123,7 @@ pub fn csv_to_document(text: &str) -> Result<Value, String> {
         "targets": [],
         "documents": [],
         "load_logs": [],
+        "groups": [],
         "history": [],
     });
     for row in rows.iter().skip(1) {

@@ -39,6 +39,11 @@ fn main() {
             "save_load_log",
             "restore_record",
             "restore_history",
+            "import_group_photo",
+            "analyze_group",
+            "save_group",
+            "detect_holes",
+            "group_photo",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

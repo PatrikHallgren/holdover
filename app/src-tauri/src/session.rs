@@ -1861,7 +1861,48 @@ pub fn impact(store: &Store, body: &Value) -> Result<Value, String> {
         "range_error_m": range_error,
         "mv_sd_mps": mv_sd,
         "pois": pois,
+        "measured": group_marks(store, body)?,
     }))
+}
+
+fn group_marks(store: &Store, body: &Value) -> Result<Vec<Value>, String> {
+    let Some(id) = body
+        .get("group_id")
+        .and_then(|value| value.as_str())
+        .filter(|id| !id.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    let record = store
+        .body("group", id)
+        .map_err(|_| "that group was not found".to_string())?;
+    let holes = record
+        .pointer("/analysis/holes")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut marks = Vec::new();
+    for hole in holes {
+        let Some(relative) = hole.get("relative_mm").and_then(|value| value.as_array()) else {
+            continue;
+        };
+        let x_cm = relative
+            .first()
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0)
+            / 10.0;
+        let y_cm = relative
+            .get(1)
+            .and_then(|value| value.as_f64())
+            .unwrap_or(0.0)
+            / 10.0;
+        let count = hole
+            .get("count")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1);
+        marks.push(json!({ "x_cm": x_cm, "y_cm": y_cm, "count": count }));
+    }
+    Ok(marks)
 }
 
 pub fn reticle_scene(store: &Store, body: &Value) -> Result<Value, String> {

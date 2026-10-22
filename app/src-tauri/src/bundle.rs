@@ -42,7 +42,7 @@ impl Store {
         let mut blobs = Vec::new();
         for hash in &hashes {
             let bytes = self.read_blob(hash)?;
-            if !bytes.starts_with(b"%PDF") || bytes.len() as u64 > MAX_ENTRY {
+            if !attachment_ok(&bytes) || bytes.len() as u64 > MAX_ENTRY {
                 return Err("bundle-missing-pdf".into());
             }
             blobs.push((hash.clone(), bytes));
@@ -347,7 +347,7 @@ fn blobs_from_entries(
     for hash in &needed {
         let path = format!("blobs/{hash}");
         let bytes = files.get(&path).ok_or("bundle-corrupt")?;
-        if sha256(bytes) != *hash || !bytes.starts_with(b"%PDF") {
+        if sha256(bytes) != *hash || !attachment_ok(bytes) {
             return Err("bundle-corrupt".into());
         }
         blobs.push((hash.clone(), bytes.clone()));
@@ -582,6 +582,12 @@ fn allowed_path(path: &str) -> bool {
             && path["blobs/".len()..]
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit()))
+}
+
+fn attachment_ok(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"%PDF")
+        || bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(&[0xFF, 0xD8, 0xFF])
 }
 
 fn looks_like_zip(bytes: &[u8]) -> bool {
@@ -1067,6 +1073,49 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn a_group_photo_round_trips_in_the_bundle() {
+        let source = temp_store();
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 8, 7, 255]))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let photo = source.import_group_photo(&png, "card.png", false).unwrap();
+        let hash = photo["sha256"].as_str().unwrap().to_string();
+        source
+            .save_group(&json!({
+                "label": "Bench",
+                "distance_m": 100.0,
+                "expected_shots": 1,
+                "photo": photo,
+                "calibration": {
+                    "mode": "four",
+                    "image_points": [
+                        {"x": 0.0, "y": 0.0},
+                        {"x": 10.0, "y": 0.0},
+                        {"x": 10.0, "y": 10.0},
+                        {"x": 0.0, "y": 10.0}
+                    ],
+                    "width_mm": 100.0,
+                    "height_mm": 100.0
+                },
+                "use_rectangle_centre": true,
+                "holes": [{"image": {"x": 5.0, "y": 5.0}, "count": 1}]
+            }))
+            .unwrap();
+        let bytes = source.export_bundle_bytes(false).unwrap();
+        let dest = temp_store();
+        dest.import_bundle_bytes(&bytes, &BTreeMap::new(), true, None)
+            .unwrap();
+        assert_eq!(
+            dest.group_photo_bytes(&hash).unwrap(),
+            source.group_photo_bytes(&hash).unwrap()
+        );
+        let groups = dest.live_bodies("group").unwrap();
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].get("latitude").is_none());
     }
 
     fn pack_named(entries: &[(&str, &[u8])]) -> Vec<u8> {

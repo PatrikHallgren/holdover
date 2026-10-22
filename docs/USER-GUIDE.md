@@ -2,7 +2,7 @@
 
 Holdover is a personal, non-commercial ballistic calculator and equipment notebook for the Omarchy 4 desktop. Predictions come from the model and the numbers you type. Confirm them with live fire. You are responsible for safe and lawful shooting.
 
-The window is English. Version 1.1.0 is prepared in this tree. No tag is created here. The 1.0.0 tag commands stay in [`M6-DESKTOP.md`](M6-DESKTOP.md). The sync checklist is [`M7-DESKTOP.md`](M7-DESKTOP.md).
+The window is English. Version 1.2.0 is prepared in this tree. No tag is created here. The 1.0.0 tag commands stay in [`M6-DESKTOP.md`](M6-DESKTOP.md). The sync checklist is [`M7-DESKTOP.md`](M7-DESKTOP.md). The group-photograph checklist is [`M8-DESKTOP.md`](M8-DESKTOP.md).
 
 ## Install
 
@@ -112,7 +112,7 @@ A newer bundle, a file that is not a Holdover bundle, and a damaged or cut-off f
 
 ### About
 
-About is in the footer, on Settings, and in the Ctrl+K list. It shows version 1.1.0, the MIT licence (Copyright (c) 2026 Patrik Hallgren), the Open-Meteo CC BY 4.0 attribution, the personal non-commercial note, the JBM drag-table source, the direct crate licences (including zip 2.6.1), and the known limitations below. py-ballisticcalc 3.1.1 is a CI oracle under LGPL-3.0 and is not installed with the app. The window has no npm packages. WebKitGTK and GTK come from the system.
+About is in the footer, on Settings, and in the Ctrl+K list. It shows version 1.2.0, the MIT licence (Copyright (c) 2026 Patrik Hallgren), the Open-Meteo CC BY 4.0 attribution, the personal non-commercial note, the JBM drag-table source, the direct crate licences (including zip 2.6.1, image 0.25.10, and kamadak-exif 0.6.1), and the known limitations below. py-ballisticcalc 3.1.1 is a CI oracle under LGPL-3.0 and is not installed with the app. The window has no npm packages. WebKitGTK and GTK come from the system.
 
 ## Keyboard, type, and themes
 

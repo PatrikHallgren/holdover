@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Holdover",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "identifier": "se.hallgren.holdover",
   "build": {
     "frontendDist": "../ui"
@@ -11,14 +11,14 @@
     "windows": [
       {
         "label": "main",
-        "title": "Holdover 1.1.0",
+        "title": "Holdover 1.2.0",
         "width": 1120,
         "height": 800,
         "resizable": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self'"
+      "csp": "default-src 'self'; style-src 'self'; img-src 'self' data: blob:"
     }
   },
   "bundle": {

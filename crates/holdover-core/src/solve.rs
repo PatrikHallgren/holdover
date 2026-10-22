@@ -240,13 +240,6 @@ pub fn table(shot: &Shot, spec: TableSpec) -> Result<Solution> {
     solve_ranges(shot, &ranges)
 }
 
-pub fn group_stats() -> Result<()> {
-    Err(Error::NotInMilestone {
-        feature: "group statistics",
-        milestone: "M8",
-    })
-}
-
 fn solve_ranges(shot: &Shot, ranges: &[f64]) -> Result<Solution> {
     let (bore, zero_error, mut warnings) = bore_angle(shot)?;
     let air = shot.atmosphere.state()?;
