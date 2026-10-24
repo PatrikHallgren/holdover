@@ -46,7 +46,7 @@ No review item was left unstarted. Screenshots for the PR were skipped when work
 
 ## Notes for resuming
 
-- Local checks that passed on this tree before the pause: `node --test app/ui/figure-parts.test.js`, `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`. CI on the draft had not been read yet when this note was written.
+- Local checks that passed before the pause: `node --test app/ui/figure-parts.test.js`, `cargo fmt --all -- --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`. GitHub CI on `616ac58` passed, both the `test` job (parser, format, tests, release build, clippy, py-ballisticcalc, timing) and the Arch `package` job.
 - The only unsafe character class was `figureParts`. Other classes keep the hyphen at the end (`[+-]`), which is literal. A regex written as `return /…/` is not seen as a regex by `invoke_args` (the previous token is a letter), and a `'` inside it then looks like an unclosed string. `clockOk` assigns the regex to a variable so that test still passes.
 - PDF range-card cells are still the old hold text. That was an accepted departure. The on-screen card, the CSV, and the edition date did change.
 - The edition date is produced in the window (`edition_date` inside the body JSON, which stays snake_case). If it is missing or unsafe, Rust uses the UTC calendar date `YYYY-MM-DD`, not a full timestamp.
