@@ -87,7 +87,7 @@ function attachSteppers(root, deps) {
         const m = String(input.value).match(/(\d+)/);
         let hour = m ? Number(m[1]) : 12;
         hour = (hour + sign + 12) % 12 || 12;
-        input.value = `${hour}oc`;
+        input.value = `${hour} o'clock`;
         syncClock(field, hour);
       } else if (rule.percent) {
         const parsed = parsePercent(input.value);
@@ -170,7 +170,7 @@ function attachSteppers(root, deps) {
     // invalid but never clears the result (app keeps lastSolve, dims it).
     input.addEventListener("input", () => {
       if (rule.clock) {
-        flagInvalid(field, !/^\s*(\d{1,2})\s*(oc)?\s*$|deg/i.test(input.value));
+        flagInvalid(field, !/^\s*\d{1,2}\s*(?:oc|o['’]?clock)?\s*$/i.test(input.value) && !/deg/i.test(input.value));
         deps.changed(input);
         return;
       }
@@ -198,7 +198,7 @@ function attachSteppers(root, deps) {
     // Clock picker buttons (role=radio inside role=radiogroup).
     field.querySelectorAll(".ho-clock button[data-hour]").forEach((button) => {
       button.addEventListener("click", () => {
-        input.value = `${button.dataset.hour}oc`;
+        input.value = `${button.dataset.hour} o'clock`;
         syncClock(field, Number(button.dataset.hour));
         deps.changed(input);
       });
