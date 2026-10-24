@@ -39,6 +39,11 @@ pub struct Tokens {
     pub chart: [String; 6],
     pub reticle: String,
     pub target: String,
+    pub raised: String,
+    pub rail: String,
+    pub ok: String,
+    pub accent_text: String,
+    pub control_border: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -203,6 +208,11 @@ pub fn tokens_from_colors(colors: &BTreeMap<String, String>) -> Palette {
         ],
         reticle: foreground.clone(),
         target: foreground,
+        raised: String::new(),
+        rail: String::new(),
+        ok: String::new(),
+        accent_text: String::new(),
+        control_border: String::new(),
     };
     let mut tokens = tokens;
     let backgrounds = [tokens.background.as_str(), tokens.surface.as_str()];
@@ -213,6 +223,7 @@ pub fn tokens_from_colors(colors: &BTreeMap<String, String>) -> Palette {
     tokens.warning = lift_contrast(&tokens.warning, &backgrounds, 4.5, &toward);
     tokens.error = lift_contrast(&tokens.error, &backgrounds, 4.5, &toward);
     tokens.focus = lift_contrast(&tokens.focus, &backgrounds, 3.0, &toward);
+    finish_b_tokens(&mut tokens, colors);
     let mut contrast_warnings = Vec::new();
     let text_on_bg = contrast_ratio(&tokens.text, &tokens.background);
     if text_on_bg < 4.5 {
@@ -309,6 +320,7 @@ fn load_rendered(paths: &ThemePaths) -> Option<Palette> {
     if let Some(border) = colors.get("border") {
         palette.tokens.border = border.clone();
     }
+    finish_b_tokens(&mut palette.tokens, &colors);
     palette.source = PaletteSource::RenderedTemplate;
     Some(palette)
 }
@@ -328,9 +340,50 @@ fn load_colors_toml(paths: &ThemePaths) -> Option<Palette> {
         if let Some(border) = flat.get("border") {
             palette.tokens.border = border.clone();
         }
+        finish_b_tokens(&mut palette.tokens, &flat);
     }
     palette.source = PaletteSource::ColorsToml;
     Some(palette)
+}
+
+/// Raised, rail, and the lifted text/edge colours. Called again after a
+/// rendered template replaces surface or border, so the lift uses that border.
+fn finish_b_tokens(tokens: &mut Tokens, colors: &BTreeMap<String, String>) {
+    let shade = if tokens.mode == "light" {
+        "#ffffff"
+    } else {
+        "#000000"
+    };
+    tokens.raised = hex_or(
+        colors,
+        "raised",
+        &mix_hex(&tokens.background, &tokens.text, 0.14),
+    );
+    let rail_fallback = colors
+        .get("dark_background")
+        .filter(|value| is_hex(value))
+        .cloned()
+        .unwrap_or_else(|| mix_hex(&tokens.background, shade, 0.18));
+    tokens.rail = hex_or(colors, "rail", &rail_fallback);
+    let green = hex_or(colors, "ok", &color(colors, "green", "#9ece6a"));
+    let backgrounds = [tokens.background.as_str(), tokens.surface.as_str()];
+    let toward = tokens.text.clone();
+    tokens.ok = lift_contrast(&green, &backgrounds, 4.5, &toward);
+    tokens.accent_text = lift_contrast(&tokens.accent, &backgrounds, 4.5, &toward);
+    tokens.control_border = lift_contrast(&tokens.border, &backgrounds, 3.0, &toward);
+}
+
+fn is_hex(value: &str) -> bool {
+    let rest = value.strip_prefix('#').unwrap_or("");
+    rest.len() == 6 && rest.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn hex_or(colors: &BTreeMap<String, String>, key: &str, fallback: &str) -> String {
+    colors
+        .get(key)
+        .filter(|value| is_hex(value))
+        .cloned()
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 type FlatJson = BTreeMap<String, String>;
@@ -818,6 +871,65 @@ bright_foreground = "#c0caf5"
             );
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tokyo_night_and_latte_lift_the_new_tokens() {
+        let tokyo = theme_map(&[
+            ("mode", "dark"),
+            ("background", "#1a1b26"),
+            ("foreground", "#a9b1d6"),
+            ("accent", "#7aa2f7"),
+            ("blue", "#7aa2f7"),
+            ("dark_foreground", "#565f89"),
+            ("orange", "#eb927b"),
+            ("red", "#f7768e"),
+            ("green", "#9ece6a"),
+            ("dark_background", "#13141c"),
+        ]);
+        let latte = theme_map(&[
+            ("mode", "light"),
+            ("background", "#eff1f5"),
+            ("foreground", "#4c4f69"),
+            ("accent", "#1e66f5"),
+            ("blue", "#1e66f5"),
+            ("dark_foreground", "#9ca0b0"),
+            ("orange", "#d84e2b"),
+            ("red", "#d20f39"),
+            ("green", "#40a02b"),
+            ("dark_background", "#e3e4e8"),
+        ]);
+        let night = tokens_from_colors(&tokyo).tokens;
+        assert_eq!(night.surface, "#252734");
+        assert_eq!(night.border, "#313342");
+        assert_eq!(night.raised, "#2e303f");
+        assert_eq!(night.rail, "#13141c");
+        assert_eq!(night.ok, "#9ece6a");
+        assert_eq!(night.accent_text, "#7aa2f7");
+        assert_eq!(night.control_border, "#6d728c");
+        let light = tokens_from_colors(&latte).tokens;
+        assert_eq!(light.surface, "#e2e4ea");
+        assert_eq!(light.border, "#d5d7df");
+        assert_eq!(light.raised, "#d8dae1");
+        assert_eq!(light.rail, "#e3e4e8");
+        assert_eq!(light.ok, "#476f50");
+        assert_eq!(light.accent_text, "#2c5fcb");
+        assert_eq!(light.control_border, "#7c7f92");
+        for tokens in [&night, &light] {
+            for background in [&tokens.background, &tokens.surface] {
+                assert!(contrast_ratio(&tokens.accent_text, background) >= 4.5);
+                assert!(contrast_ratio(&tokens.ok, background) >= 4.5);
+                assert!(contrast_ratio(&tokens.control_border, background) >= 3.0);
+            }
+        }
+    }
+
+    fn theme_map(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .copied()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect()
     }
 
     #[test]

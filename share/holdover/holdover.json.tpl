@@ -15,5 +15,8 @@
   "dark_foreground": "{{ dark_foreground }}",
   "bright_foreground": "{{ bright_foreground }}",
   "surface": "{{ mix background foreground 8% }}",
-  "border": "{{ mix background foreground 16% }}"
+  "border": "{{ mix background foreground 16% }}",
+  "raised": "{{ mix background foreground 14% }}",
+  "rail": "{{ dark_background }}",
+  "ok": "{{ green }}"
 }

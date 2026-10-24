@@ -620,6 +620,11 @@ fn palette_body(palette: &Palette) -> Value {
         "warning": tokens.warning,
         "error": tokens.error,
         "chart": tokens.chart,
+        "raised": tokens.raised,
+        "rail": tokens.rail,
+        "ok": tokens.ok,
+        "accent_text": tokens.accent_text,
+        "control_border": tokens.control_border,
         "source": format!("{:?}", palette.source),
         "text_scale": text_scale_factor(),
     })
