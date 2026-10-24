@@ -117,6 +117,25 @@ function t(key) {
   return (boot && boot.strings && boot.strings[key]) || key;
 }
 
+function tf(key, vars) {
+  let text = t(key);
+  const data = vars || {};
+  text = text.replace(/\{\s*\$(\w+)\s*->\s*\[one\]\s*([\s\S]*?)\s*\*\[other\]\s*([\s\S]*?)\s*\}/g, (_, name, one, other) => {
+    const count = Number(data[name]);
+    return Math.abs(count) === 1 ? one : other;
+  });
+  return text.replace(/\{\s*\$(\w+)\s*\}/g, (_, name) => (data[name] == null ? "" : String(data[name])));
+}
+
+function shownUnit(unit) {
+  const raw = String(unit || "");
+  const key = raw.toLowerCase();
+  if (key === "mps") return "m/s";
+  if (key === "c") return "°C";
+  if (key === "f") return "°F";
+  return raw;
+}
+
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -162,7 +181,18 @@ function applyTheme() {
   Object.entries(map).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") root.style.setProperty(key, value);
   });
+  const derived = {
+    "--theme-raised": theme.raised,
+    "--theme-rail": theme.rail,
+    "--theme-ok": theme.ok,
+    "--theme-accent-text": theme.accent_text,
+    "--theme-control-border": theme.control_border,
+  };
+  Object.entries(derived).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") root.style.setProperty(key, value);
+  });
   (theme.chart || []).forEach((color, index) => root.style.setProperty(`--chart-${index}`, color));
+  root.dataset.mode = theme.mode === "light" ? "light" : "dark";
   root.style.colorScheme = theme.mode === "light" ? "light" : "dark";
   document.body.classList.toggle("large-text", !!(boot && boot.settings.large_text));
   document.body.classList.toggle("reduced", !!(boot && boot.settings.reduced_motion));
@@ -180,13 +210,19 @@ async function refresh() {
 function render() {
   window.clearInterval(weatherTimer);
   const app = document.getElementById("app");
-  document.body.classList.toggle("fit-solve", page === "solve" && boot.settings.onboarded);
-  if (!boot.settings.onboarded) {
+  const onboarded = boot.settings.onboarded;
+  document.body.classList.toggle("fit-solve", page === "solve" && onboarded);
+  document.body.classList.toggle("ho", page === "solve" && onboarded);
+  if (!onboarded) {
     app.innerHTML = onboardHtml();
     bindOnboard();
     return;
   }
-  app.innerHTML = `${shellHtml()}<main class="page" id="page" tabindex="-1">${pageHtml()}</main><footer class="footer"><p class="disclaimer">${esc(boot.disclaimer)}</p><button type="button" id="open-about">${esc(t("nav-about"))}</button></footer>${overlays()}`;
+  if (page === "solve") {
+    app.innerHTML = `${solveShell()}${overlays()}`;
+  } else {
+    app.innerHTML = `${shellHtml()}<main class="page" id="page" tabindex="-1">${pageHtml()}</main><footer class="footer"><p class="disclaimer">${esc(boot.disclaimer)}</p><button type="button" id="open-about">${esc(t("nav-about"))}</button></footer>${overlays()}`;
+  }
   bindShell();
   bindPage();
   if (page === "solve") scheduleSolve(0);
@@ -224,7 +260,7 @@ function overlays() {
 function unitsPopover(includeApply = true) {
   const u = units();
   const row = (key, label, cycle) => `<label class="field">${esc(t(label))}
-    <select data-unit-key="${key}">${cycle.map((item) => `<option ${item === u[key] ? "selected" : ""}>${esc(item)}</option>`).join("")}</select>
+    <select data-unit-key="${key}">${cycle.map((item) => `<option value="${esc(item)}" ${item === u[key] ? "selected" : ""}>${esc(shownUnit(item))}</option>`).join("")}</select>
   </label>`;
   return `<div class="fields">
     ${row("length", "custom-length", CYCLES.length)}
@@ -254,7 +290,7 @@ function pageHtml() {
   if (page === "sync") return syncHtml();
   if (page === "about") return aboutHtml();
   if (page === "settings") return settingsHtml();
-  return solveHtml();
+  return "";
 }
 
 function weatherBlock() {
@@ -277,8 +313,8 @@ function weatherResultHtml(offer) {
   const station = formatLocal(offer.surface_pressure_pa, "pressure", u.pressure);
   const sea = formatLocal(offer.sea_level_pressure_pa, "pressure", u.pressure);
   const elev = formatLocal(offer.elevation_m, "length", u.length);
-  const wind = offer.wind_speed_mps == null ? "—" : `${formatLocal(offer.wind_speed_mps, "velocity", u.velocity)} ${u.velocity}`;
-  const gust = offer.wind_gust_mps == null ? "—" : `${formatLocal(offer.wind_gust_mps, "velocity", u.velocity)} ${u.velocity}`;
+  const wind = offer.wind_speed_mps == null ? "—" : `${formatLocal(offer.wind_speed_mps, "velocity", u.velocity)} ${shownUnit(u.velocity)}`;
+  const gust = offer.wind_gust_mps == null ? "—" : `${formatLocal(offer.wind_gust_mps, "velocity", u.velocity)} ${shownUnit(u.velocity)}`;
   const dir = offer.wind_from_deg == null ? "—" : String(offer.wind_from_deg);
   return `<div class="fields">
     <p class="meta">${esc(t("weather-fetched"))} ${esc(offer.fetched_at)} · ${esc(t("weather-valid"))} ${esc(offer.valid_time)}</p>
@@ -483,115 +519,236 @@ function bindWeather() {
   weatherTimer = window.setInterval(paintAirBadge, 15000);
 }
 
+function presetButton(id) {
+  const preset = boot.settings.preset;
+  return `<button type="button" data-preset="${id}" aria-pressed="${preset === id}">${esc(t("preset-" + id))}</button>`;
+}
+
 function solveTabButton(id, label) {
   const on = solveTab === id;
   return `<button type="button" role="tab" id="solve-tab-${id}" data-tab="${id}" aria-controls="solve-panel-${id}" aria-selected="${on}" tabindex="${on ? "0" : "-1"}">${esc(label)}</button>`;
 }
 
-function solvePanel(id, body) {
-  const on = solveTab === id;
-  return `<div role="tabpanel" id="solve-panel-${id}" data-tab="${id}" aria-labelledby="solve-tab-${id}" ${on ? "" : "hidden"}>${body}</div>`;
+function solvePanel(id, title, meta, body) {
+  const wide = window.matchMedia("(min-width: 1400px)").matches;
+  const on = solveTab === id || wide;
+  return `<div role="tabpanel" class="solve-panel${on ? "" : " is-hidden"}" id="solve-panel-${id}" data-tab="${id}" aria-labelledby="solve-tab-${id}" aria-hidden="${on ? "false" : "true"}">
+    <header class="solve-wide-head"><h2>${esc(title)}</h2><span class="meta">${esc(meta || "")}</span></header>
+    ${body}
+  </div>`;
 }
 
-function solveHtml() {
+function solveShell() {
   const s = boot.settings;
-  const profiles = boot.equipment.profiles;
+  const profiles = boot.equipment.profiles || [];
   const options = profiles.map((item) => `<option value="${esc(item.id)}" ${item.id === s.active_profile_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
   const active = profiles.find((item) => item.id === s.active_profile_id);
-  const air = `<p class="hint">${esc(t("solve-tab-air-intro"))}</p>
-    <div class="compact">
-      <div class="cluster">${airFields(s.current_air || {}, "")}</div>
-    </div>
+  const air = `${airFields(s.current_air || {}, "", true)}
     <div id="weather-block">${weatherBlock()}</div>`;
-  const lead = `<p class="hint">${esc(t("solve-tab-lead-intro"))}</p>
-    <div class="compact">
-      <div class="cluster">
-        <label class="field">${esc(t("lead-preset"))}
-          <select id="lead-preset">
-            <option value="">${esc(t("overlay-none"))}</option>
-            ${(boot.running || []).map((item) => `<option value="${esc(item.id)}" ${moving.preset === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}
-          </select>
-        </label>
-        ${qtyField("target_speed", t("target-speed"), moving.speedText, moving.speedUnit || units().velocity, "velocity")}
-        <label class="field">${esc(t("lead-direction"))}
-          <input id="target_direction" value="${esc(moving.direction || "3oc")}" />
-          <span class="hint">${esc(t("lead-clock"))}</span>
-        </label>
-        <label class="field">${esc(t("lead-reaction"))}
-          <input id="reaction_s" value="${esc(moving.reaction || "0")}" inputmode="decimal" />
-          <span class="hint">${esc(t("lead-reaction-note"))}</span>
-        </label>
+  const lead = `<div class="ho-row">
+      <div class="ho-field">
+        <div class="head"><label for="lead-preset">${esc(t("lead-preset"))}</label></div>
+        <div class="ho-entry"><select id="lead-preset">
+          <option value="">${esc(t("overlay-none"))}</option>
+          ${(boot.running || []).map((item) => `<option value="${esc(item.id)}" ${moving.preset === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("")}
+        </select></div>
       </div>
-      <div class="cluster">
-        <label class="field" title="${esc(t("lead-target-tip"))}">${esc(t("impact-target"))}
-          <select id="lead-target" title="${esc(t("lead-target-tip"))}">
-            <option value="">${esc(t("lead-target-none"))}</option>
-            ${targetOptions(leadTarget, ["sjf", "svsf"])}
-          </select>
-        </label>
-        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
-          <select id="lead-facing" title="${esc(t("facing-tip"))}">
-            <option value="left" ${leadFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
-            <option value="right" ${leadFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
-          </select>
-        </label>
+      ${qtyField("target_speed", t("target-speed"), moving.speedText, moving.speedUnit || units().velocity, "velocity", null, null, "target_speed")}
+    </div>
+    <div class="ho-row">
+      <div class="ho-field">
+        <div class="head"><label for="target_direction">${esc(t("lead-direction"))}</label></div>
+        <div class="ho-entry"><input id="target_direction" value="${esc(moving.direction || "3oc")}" autocomplete="off" spellcheck="false" /></div>
+        <p class="ho-hint">${esc(t("lead-clock"))}</p>
+      </div>
+      <div class="ho-field">
+        <div class="head"><label for="reaction_s">${esc(t("lead-reaction"))}</label></div>
+        <div class="ho-entry"><input id="reaction_s" class="num" value="${esc(moving.reaction || "0")}" inputmode="decimal" autocomplete="off" spellcheck="false" /></div>
+        <p class="ho-hint">${esc(t("lead-reaction-note"))}</p>
       </div>
     </div>
-    <p class="hint" id="lead-note">${esc(leadNote())}</p>
+    <div class="ho-row">
+      <div class="ho-field" title="${esc(t("lead-target-tip"))}">
+        <div class="head"><label for="lead-target">${esc(t("impact-target"))}</label></div>
+        <div class="ho-entry"><select id="lead-target" title="${esc(t("lead-target-tip"))}">
+          <option value="">${esc(t("lead-target-none"))}</option>
+          ${targetOptions(leadTarget, ["sjf", "svsf"])}
+        </select></div>
+      </div>
+      <div class="ho-field" title="${esc(t("facing-tip"))}">
+        <div class="head"><label for="lead-facing">${esc(t("facing"))}</label></div>
+        <div class="ho-entry"><select id="lead-facing" title="${esc(t("facing-tip"))}">
+          <option value="left" ${leadFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
+          <option value="right" ${leadFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
+        </select></div>
+      </div>
+    </div>
+    <p class="ho-hint" id="lead-note">${esc(leadNote())}</p>
     <div id="lead-result">${leadHold()}</div>`;
-  const effects = `<p class="hint">${esc(t("solve-tab-effects-intro"))}</p>
-    <div class="checks" id="effects">
+  const effects = `<div class="checks" id="effects">
       ${check("incline", true)}${check("spin_drift", true)}${check("coriolis", false)}${check("cant", false)}${check("aerodynamic_jump", false)}
     </div>
-    <div id="extra" class="compact hidden">
-      <div class="cluster">
+    <div id="extra" class="hidden">
+      <div class="ho-row">
         ${qtyField("latitude", t("latitude"), "0 deg", "deg", "angle")}
         ${qtyField("azimuth", t("azimuth"), "0 deg", "deg", "angle")}
         ${qtyField("cant", t("cant-angle"), "0 deg", "deg", "angle")}
       </div>
     </div>
-    <p class="hint">${esc(t("field-suffix-hint"))}</p>
-    <p class="hint">${esc(t("spin-note"))}</p>
-    <p class="hint">${esc(t("jump-note"))}</p>`;
-  return `<div class="solve">
-    <section class="panel inputs">
-      <label class="field">${esc(t("profile"))}
-        <select id="profile">${options || `<option value="">${esc(t("no-profile"))}</option>`}</select>
-      </label>
-      <p class="meta" id="zero-summary">${active ? esc(active.summary || "") : esc(t("no-profile"))}</p>
-      <p class="meta" id="truing-line">${esc((lastSolve && lastSolve.truing) || t("truing-none"))}</p>
-      <p class="banner hidden" id="differs">${esc(t("air-differs"))}</p>
-      ${qtyField("range", t("range"), s.last_range, s.last_range_unit || units().length, "length", s.last_range_si, s.last_range_display)}
-      ${qtyField("wind_speed", t("wind-speed"), s.last_wind_speed, s.last_wind_speed_unit || units().velocity, "velocity", s.last_wind_speed_si, s.last_wind_speed_display)}
-      <label class="field">${esc(t("wind-direction"))}
-        <input id="wind_direction" value="${esc(s.last_wind_direction || "12oc")}" title="${esc(t("wind-clock-hint"))}" />
-        <span class="hint">${esc(t("wind-clock-hint"))}</span>
-      </label>
-      ${qtyField("inclination", t("inclination"), s.last_inclination, "deg", "angle", s.last_inclination_si, s.last_inclination_display)}
-    </section>
-    <section class="solve-result">
-      <div id="hold" class="hold" aria-live="polite">${holdInner()}</div>
-      <p class="error" id="solve-error"></p>
-      <p class="hint">${esc(t("keys-hint"))}</p>
-    </section>
-    <section class="panel solve-tabs noprint">
-      <div class="tabs" role="tablist" aria-label="${esc(t("solve-tabs"))}">
-        ${solveTabButton("air", t("solve-tab-air"))}
-        ${solveTabButton("lead", t("solve-tab-lead"))}
-        ${solveTabButton("effects", t("solve-tab-effects"))}
+    <p class="ho-hint">${esc(t("solve-tab-effects-intro"))}</p>
+    <p class="ho-hint">${esc(t("field-suffix-hint"))}</p>
+    <p class="ho-hint">${esc((boot && boot.spin_provenance) || t("spin-note"))}</p>
+    <p class="ho-hint">${esc(t("jump-note"))}</p>`;
+  const angular = s.angular || "mrad";
+  return `<div class="ho-shell">
+    <a class="ho-skip" href="#main">${esc(t("skip"))}</a>
+    <header class="ho-top">
+      <span class="brand">${esc(t("app-name"))}</span>
+      <nav class="ho-nav" aria-label="${esc(t("nav-label"))}">
+        ${navButton("solve")}${navButton("card")}${navButton("charts")}${navButton("reticle")}${navButton("targets")}${navButton("groups")}${navButton("pbr")}${navButton("truing")}${navButton("equipment")}${navButton("compare")}${navButton("documents")}${navButton("sync")}${navButton("settings")}
+      </nav>
+      <button type="button" class="ho-btn ho-screens" aria-haspopup="dialog" title="${esc(t("screens"))}">${esc(t("nav-solve"))} ▾</button>
+      <div class="ho-seg preset" role="group" aria-label="${esc(t("preset-label"))}">
+        ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
       </div>
-      ${solvePanel("air", air)}
-      ${solvePanel("lead", lead)}
-      ${solvePanel("effects", effects)}
-    </section>
+      <button type="button" class="ho-btn ghost" id="units-open" aria-expanded="${unitsOpen}" title="${esc(t("units-button"))}">${esc(t("units-button"))}</button>
+    </header>
+    <div class="ho-body">
+      <aside class="ho-rail" aria-label="${esc(t("shot"))}">
+        <div class="ho-summary">
+          <div class="head">
+            <select id="profile" aria-label="${esc(t("profile"))}">${options || `<option value="">${esc(t("no-profile"))}</option>`}</select>
+            <span><kbd>Ctrl</kbd> <kbd>P</kbd></span>
+          </div>
+          <dl class="ho-kv mini" id="profile-facts">${profileFacts(active)}</dl>
+        </div>
+        <p class="banner hidden" id="differs">${esc(t("air-differs"))}</p>
+        <h2>${esc(t("shot"))}</h2>
+        ${qtyField("range", t("range"), s.last_range, s.last_range_unit || units().length, "length", s.last_range_si, s.last_range_display, "range")}
+        ${qtyField("wind_speed", t("wind-speed"), s.last_wind_speed, s.last_wind_speed_unit || units().velocity, "velocity", s.last_wind_speed_si, s.last_wind_speed_display, "wind_speed")}
+        ${windClockField(s.last_wind_direction || "12oc")}
+        ${qtyField("inclination", t("inclination"), s.last_inclination, "deg", "angle", s.last_inclination_si, s.last_inclination_display, "inclination")}
+      </aside>
+      <main class="ho-main" id="main" tabindex="-1">
+        <section class="ho-hero" id="hold" aria-label="${esc(t("hold"))}" aria-live="polite">
+          <div class="ho-readout${stale ? " ho-stale" : ""}" id="hold-elev"></div>
+          <div class="ho-readout${stale ? " ho-stale" : ""}" id="hold-wind"></div>
+          <div class="ho-context">
+            <div class="bar">
+              <span class="ho-cap">${esc(t("hold-unit"))} <kbd>U</kbd></span>
+              <div class="ho-seg small" role="radiogroup" aria-label="${esc(t("hold-unit"))}">
+                ${ANGULAR.map((item) => `<button type="button" data-angular="${esc(item)}" aria-pressed="${angular === item}">${esc(t(angularKey(item)))}</button>`).join("")}
+              </div>
+            </div>
+            <dl class="ho-ctx" id="hold-ctx"></dl>
+            <button type="button" class="ho-btn" id="copy-hold" title="${esc(t("copy-hold"))}"><span>${esc(t("copy-hold"))}</span> <kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>C</kbd></button>
+          </div>
+          <div class="ho-reason-row" id="solve-error" ${stale ? "" : "hidden"}></div>
+        </section>
+        <div class="ho-cards">
+          <section class="ho-card${stale ? " ho-stale" : ""}" id="traj-card">
+            <header><h2>${esc(t("trajectory"))}</h2><span class="meta" id="traj-meta"></span></header>
+            <dl class="ho-kv" id="traj-body"></dl>
+          </section>
+          <section class="ho-card${stale ? " ho-stale" : ""}" id="sens-card">
+            <header><h2>${esc(t("sensitivity"))}</h2><span class="meta">${esc(t("vs-now"))}</span></header>
+            <div id="sens-body"></div>
+          </section>
+          <section class="ho-card solve-tabs">
+            <div class="ho-tabs" role="tablist" aria-label="${esc(t("solve-tabs"))}">
+              ${solveTabButton("air", t("solve-tab-air"))}
+              ${solveTabButton("lead", t("solve-tab-lead"))}
+              ${solveTabButton("effects", t("solve-tab-effects"))}
+            </div>
+            ${solvePanel("air", t("solve-tab-air"), t("solve-air-meta"), air)}
+            ${solvePanel("lead", t("solve-tab-lead"), t("lead"), lead)}
+            ${solvePanel("effects", t("solve-tab-effects"), "", effects)}
+          </section>
+        </div>
+        <ul class="ho-notes" id="solve-notes" aria-label="${esc(t("notes"))}"></ul>
+      </main>
+    </div>
+    <footer class="ho-status">
+      <div class="keys">${statusKeys()}</div>
+      <span class="sp"></span>
+      <span class="ho-legal" title="${esc(boot.disclaimer || "")}">${esc(boot.disclaimer || "")}</span>
+      <button type="button" class="ho-btn ghost" id="open-about">${esc(t("nav-about"))}</button>
+    </footer>
   </div>`;
 }
 
+function navButton(id) {
+  const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings" };
+  const current = page === id ? ` aria-current="page"` : "";
+  return `<button type="button" data-page="${id}"${current}>${esc(t(keys[id] || "nav-solve"))}</button>`;
+}
+
+function angularKey(item) {
+  return { mrad: "angular-mrad", MOA: "angular-moa", IPHY: "angular-iphy", "cm@100m": "angular-cm", clicks: "angular-clicks" }[item] || "angular-mrad";
+}
+
+function statusKeys() {
+  const bit = (keys, label) => `<span>${keys.map((key) => `<kbd>${esc(key)}</kbd>`).join("")} ${esc(label)}</span>`;
+  return [
+    bit(["R"], t("status-range")),
+    bit(["W"], t("status-wind")),
+    bit(["D"], t("status-direction")),
+    bit(["A"], t("status-angle")),
+    bit(["↑", "↓"], t("status-range-step")),
+    bit(["←", "→"], t("status-clock")),
+    bit(["+", "−"], t("status-wind-step")),
+    bit(["U"], t("status-hold-unit")),
+    bit(["Ctrl", "Shift", "C"], t("status-copy")),
+    bit(["Ctrl", "K"], t("status-commands")),
+    bit(["Ctrl", "U"], t("status-preset")),
+    bit(["Ctrl", "P"], t("status-profile")),
+    bit(["F11"], t("status-field")),
+  ].join("");
+}
+
+function profileFacts(profile) {
+  if (!profile) return `<dt>${esc(t("profile"))}</dt><dd>${esc(t("no-profile"))}</dd><span class="ho-unit"></span>`;
+  const air = profile.zero_air || {};
+  const temp = air.temperature_display ? `${air.temperature_display} ${shownUnit(air.temperature_unit || "")}` : "";
+  const scope = (boot.equipment.scopes || []).find((item) => item.id === profile.scope_id);
+  const truing = (lastSolve && lastSolve.truing) || t("truing-none");
+  const warn = !lastSolve || !lastSolve.truing;
+  return `<dt>${esc(t("zero-range"))}</dt><dd>${esc(profile.zero_range_display || "")}</dd><span class="ho-unit">${esc(shownUnit(profile.zero_range_unit || ""))}</span>
+    <dt>${esc(t("zero-air"))}</dt><dd>${esc(temp)}</dd><span class="ho-unit"></span>
+    <dt>${esc(t("click"))}</dt><dd>${esc(scope && scope.click_display || "")}</dd><span class="ho-unit">${esc(shownUnit(scope && scope.click_unit || ""))}</span>
+    <dt>${esc(t("truing"))}</dt><dd id="truing-line" class="${warn ? "ho-warn" : ""}">${esc(String(truing))}</dd><span class="ho-unit"></span>`;
+}
+
+function windClockField(value) {
+  const hour = clockHour(value);
+  const buttons = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((item) =>
+    `<button type="button" role="radio" data-hour="${item}" aria-checked="${item === hour}" title="${esc(tf("clock-hour", { hour: item }))}">${item}</button>`).join("");
+  const hint = tf("hint-clock", { rest: t("wind-clock-hint") });
+  return `<div class="ho-field" data-stepper="wind_direction">
+    <div class="head"><label for="wind_direction">${esc(t("wind-direction"))}</label><kbd>D</kbd></div>
+    <div class="ho-stepper">
+      <button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(tf("step-minus", { field: t("wind-direction"), step: t("one-hour") }))}">−</button>
+      <input id="wind_direction" value="${esc(value)}" title="${esc(t("wind-clock-hint"))}" role="spinbutton" autocomplete="off" spellcheck="false" />
+      <span class="ho-chip" title="${esc(t("wind-clock-hint"))}">${esc(t("clock"))}</span>
+      <button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(tf("step-plus", { field: t("wind-direction"), step: t("one-hour") }))}">+</button>
+    </div>
+    <div class="ho-clock" role="radiogroup" aria-label="${esc(t("wind-clock-hint"))}">${buttons}</div>
+    <p class="ho-hint" data-base="${esc(hint)}">${esc(hint)}</p>
+  </div>`;
+}
+
+function clockHour(value) {
+  const match = String(value || "").match(/(\d+)/);
+  let hour = match ? Number(match[1]) : 12;
+  hour = ((hour % 12) + 12) % 12;
+  return hour === 0 ? 12 : hour;
+}
+
 function check(name, fallback) {
-  const effects = boot.settings.effects || {};
-  const on = effects[name] !== undefined ? effects[name] : fallback;
+  const flags = boot.settings.effects || {};
+  const on = flags[name] !== undefined ? flags[name] : fallback;
   const key = name === "spin_drift" ? "effect-spin" : name === "aerodynamic_jump" ? "effect-jump" : "effect-" + name;
-  return `<label><input type="checkbox" data-effect="${name}" ${on ? "checked" : ""} /> ${esc(t(key))}</label>`;
+  return `<label class="ho-check"><input type="checkbox" data-effect="${name}" ${on ? "checked" : ""} /> ${esc(t(key))}</label>`;
 }
 
 function airPart(air, name, fallbackUnit) {
@@ -613,40 +770,105 @@ function airPart(air, name, fallbackUnit) {
   };
 }
 
-function airFields(air, prefix) {
+function airFields(air, prefix, stepped) {
   const temperature = airPart(air, "temperature", units().temperature);
   const pressure = airPart(air, "pressure", units().pressure);
   const altitude = airPart(air, "altitude", units().length);
   const humidity = air && typeof air.humidity === "string" ? air.humidity : ((air && air.humidity_text) || "0%");
-  return `${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display)}
-    ${qtyField(prefix + "pressure", t("pressure"), pressure.text, pressure.unit, "pressure", pressure.si, pressure.display)}
-    <label class="field">${esc(t("kind"))}
-      <select id="${prefix}pressure_kind">
-        <option value="station" ${!air || air.pressure_kind !== "sea-level" ? "selected" : ""}>${esc(t("pressure-station"))}</option>
-        <option value="sea-level" ${air && air.pressure_kind === "sea-level" ? "selected" : ""}>${esc(t("pressure-sea"))}</option>
-      </select>
-    </label>
-    <label class="field">${esc(t("humidity"))}
-      <input id="${prefix}humidity" value="${esc(humidity)}" />
-      <span class="hint">${esc(t("humidity-hint"))}</span>
-    </label>
-    ${qtyField(prefix + "altitude", t("altitude"), altitude.text, altitude.unit, "length", altitude.si, altitude.display)}`;
+  const kind = `<select id="${prefix}pressure_kind">
+      <option value="station" ${!air || air.pressure_kind !== "sea-level" ? "selected" : ""}>${esc(t("pressure-station"))}</option>
+      <option value="sea-level" ${air && air.pressure_kind === "sea-level" ? "selected" : ""}>${esc(t("pressure-sea"))}</option>
+    </select>`;
+  if (!stepped) {
+    return `${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display)}
+      ${qtyField(prefix + "pressure", t("pressure"), pressure.text, pressure.unit, "pressure", pressure.si, pressure.display)}
+      <label class="field">${esc(t("kind"))}${kind}</label>
+      <label class="field">${esc(t("humidity"))}
+        <input id="${prefix}humidity" value="${esc(humidity)}" />
+        <span class="hint">${esc(t("humidity-hint"))}</span>
+      </label>
+      ${qtyField(prefix + "altitude", t("altitude"), altitude.text, altitude.unit, "length", altitude.si, altitude.display)}`;
+  }
+  return `<div class="ho-row">
+      ${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display, "temperature")}
+      ${qtyField(prefix + "pressure", t("pressure"), pressure.text, pressure.unit, "pressure", pressure.si, pressure.display, "pressure")}
+    </div>
+    <div class="ho-row">
+      <div class="ho-field">
+        <div class="head"><label for="${prefix}pressure_kind">${esc(t("kind"))}</label></div>
+        <div class="ho-entry">${kind}</div>
+      </div>
+      ${humidityField(prefix, humidity)}
+      ${qtyField(prefix + "altitude", t("altitude"), altitude.text, altitude.unit, "length", altitude.si, altitude.display)}
+    </div>`;
 }
 
-function qtyField(id, label, text, unit, dim, si, display) {
+function humidityField(prefix, humidity) {
+  const id = `${prefix}humidity`;
+  const label = t("humidity");
+  const amount = "5 %";
+  return `<div class="ho-field" data-stepper="humidity">
+    <div class="head"><label for="${id}">${esc(label)}</label></div>
+    <div class="ho-stepper">
+      <button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(tf("step-minus", { field: label, step: amount }))}">−</button>
+      <input id="${id}" data-kind="percent" value="${esc(humidity)}" role="spinbutton" class="num" autocomplete="off" spellcheck="false" />
+      <span class="ho-chip">%</span>
+      <button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(tf("step-plus", { field: label, step: amount }))}">+</button>
+    </div>
+    <p class="ho-hint" data-base="${esc(`${tf("hint-step", { step: amount })} · ${t("humidity-hint")}`)}">${esc(`${tf("hint-step", { step: amount })} · ${t("humidity-hint")}`)}</p>
+  </div>`;
+}
+
+function qtyField(id, label, text, unit, dim, si, display, step) {
   const raw = text == null ? "" : String(text);
   const numeric = Number(si);
   const hasSi = si !== undefined && si !== null && si !== "" && Number.isFinite(numeric);
   const shown = display !== undefined && display !== null && String(display) !== ""
     ? String(display)
     : (hasSi ? formatLocal(numeric, dim, unit) : raw);
+  const input = `<input id="${id}" data-dim="${dim}" data-unit="${esc(unit)}" data-text="${esc(raw)}" data-si="${hasSi ? esc(String(numeric)) : ""}" data-dirty="0" value="${esc(shown)}" autocomplete="off" spellcheck="false" />`;
+  if (step || page === "solve") return hoQty(id, label, unit, dim, step, input);
   return `<label class="field">${esc(label)}
     <span class="entry">
-      <input id="${id}" data-dim="${dim}" data-unit="${esc(unit)}" data-text="${esc(raw)}" data-si="${hasSi ? esc(String(numeric)) : ""}" data-dirty="0" value="${esc(shown)}" autocomplete="off" spellcheck="false" />
-      <button type="button" class="chip" data-for="${id}">${esc(unit)}</button>
+      ${input}
+      <button type="button" class="chip" data-for="${id}">${esc(shownUnit(unit))}</button>
     </span>
     <span class="preview" id="${id}-preview"></span>
   </label>`;
+}
+
+function hoQty(id, label, unit, dim, step, input) {
+  const amount = step ? stepAmount(step, unit) : "";
+  const hint = step ? (step === "wind_speed" ? tf("hint-wind", { step: amount }) : tf("hint-step", { step: amount })) : "";
+  const key = { range: "R", wind_speed: "W", inclination: "A" }[id] || "";
+  const chip = unit ? `<button type="button" class="chip ho-chip" data-for="${id}" title="${esc(label)}">${esc(shownUnit(unit))}</button>` : "";
+  const minus = step ? `<button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(tf("step-minus", { field: label, step: amount }))}" title="${esc(tf("step-minus", { field: label, step: amount }))}">−</button>` : "";
+  const plus = step ? `<button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(tf("step-plus", { field: label, step: amount }))}" title="${esc(tf("step-plus", { field: label, step: amount }))}">+</button>` : "";
+  const boxed = input.replace("<input ", `<input class="num"${step ? ` role="spinbutton"` : ""} `);
+  return `<div class="ho-field"${step ? ` data-stepper="${esc(step)}"` : ""}>
+    <div class="head"><label for="${id}">${esc(label)}</label>${key ? `<kbd>${key}</kbd>` : ""}</div>
+    <div class="${step ? "ho-stepper" : "ho-entry"}">${minus}${boxed}${chip}${plus}</div>
+    <p class="ho-hint" id="${id}-preview" data-base="${esc(hint)}">${esc(hint)}</p>
+  </div>`;
+}
+
+function stepSettings() {
+  return {
+    rangeStepSi: (parseLocal(boot.settings.range_step, "length", "m") || { si: 10 }).si,
+    windStepSi: (parseLocal(boot.settings.wind_step, "velocity", "mps") || { si: 1 }).si,
+  };
+}
+
+function stepAmount(step, unit) {
+  const settings = stepSettings();
+  if (step === "range" || step === "zero_range") return `${formatLocal(settings.rangeStepSi, "length", unit)} ${shownUnit(unit)}`;
+  if (step === "wind_speed") return `${formatLocal(settings.windStepSi, "velocity", unit)} ${shownUnit(unit)}`;
+  if (step === "inclination") return `${formatDelta(Math.PI / 180, "angle", unit)} ${shownUnit(unit)}`;
+  if (step === "temperature") return `${formatDelta(1, "temperature", unit)} ${shownUnit(unit)}`;
+  if (step === "pressure") return `${formatLocal(100, "pressure", unit)} ${shownUnit(unit)}`;
+  if (step === "humidity") return "5 %";
+  if (step === "target_speed") return `${formatLocal(0.5, "velocity", unit)} ${shownUnit(unit)}`;
+  return "1×";
 }
 
 function recordField(record, name, label, dim, fallbackUnit) {
@@ -657,36 +879,305 @@ function recordField(record, name, label, dim, fallbackUnit) {
     record[`${name}_unit`] || fallbackUnit,
     dim,
     record[`${name}_si`],
-    record[`${name}_display`]
+    record[`${name}_display`],
+    name === "zero_range" ? "zero_range" : ""
   );
 }
 
-function holdInner() {
-  const elev = lastSolve && lastSolve.elevation;
-  const wind = lastSolve && lastSolve.windage;
-  const line = (dir, primary, clicks) => `<div>
-    <p class="direction">${esc(dir || "—")}</p>
-    <p class="figure">${esc(primary || "—")}</p>
-    <p class="clicks">${clicks === null || clicks === undefined ? "" : esc(clicks) + " " + esc(t("clicks"))}</p>
-  </div>`;
-  const secondary = lastSolve ? [
-    `${t("velocity")} ${lastSolve.velocity_display} ${lastSolve.velocity_unit}`,
-    `${t("energy")} ${lastSolve.energy_display} ${lastSolve.energy_unit}`,
-    `${t("tof")} ${Number(lastSolve.tof_s).toFixed(3)} s`,
-    `${t("mach")} ${Number(lastSolve.mach).toFixed(2)}`,
-    `${t("drop")} ${lastSolve.drop_display} ${lastSolve.drop_unit}`,
-    lastSolve.sg ? `${t("sg")} ${Number(lastSolve.sg).toFixed(2)}` : t("no-sg"),
-    `${t("density-altitude")} ${lastSolve.density_altitude_display} ${lastSolve.density_altitude_unit || ""}`,
-  ].join(" · ") : "";
-  const near = lastSolve && lastSolve.sensitivity ? lastSolve.sensitivity.map((item) => {
-    if (item.kind === "range") return `${Number(item.range_m).toFixed(0)} m ${item.elevation.direction} ${item.elevation.primary}`;
-    return `${t("wind-speed")} ${Number(item.speed_mps).toFixed(1)} ${item.windage.direction} ${item.windage.primary}`;
-  }).join(" · ") : "";
-  return `<div class="hold-grid">${line(elev && elev.direction, elev && elev.primary, elev && elev.clicks)}
-    ${line(wind && wind.direction, wind && wind.primary, wind && wind.clicks)}</div>
-    <p class="secondary">${esc(secondary)}</p>
-    <p class="sensitivity">${esc(near)}</p>
-    <p class="warning" id="warns">${lastSolve ? esc([].concat(lastSolve.warnings || [], lastSolve.station_pressure_note || []).join(" ")) : ""}</p>`;
+function groupDigits(value, digits) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return value == null || value === "" ? "—" : String(value);
+  const text = digits == null ? String(Math.round(number * 10000) / 10000) : number.toFixed(digits);
+  const neg = text.startsWith("-");
+  const body = neg ? text.slice(1) : text;
+  const parts = body.split(".");
+  const grouped = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, "\u202f");
+  const frac = parts.length > 1 ? `.${parts[1]}` : "";
+  return `${neg ? "−" : ""}${grouped}${frac}`;
+}
+
+function holdClicks(hold) {
+  if (!hold || hold.clicks == null || hold.clicks === "") return "";
+  const count = Math.abs(Number(hold.clicks));
+  if (!Number.isFinite(count)) return "";
+  const text = tf("hold-clicks", { dir: hold.direction || "", count: String(count) });
+  return esc(text).replace(esc(String(count)), `<b>${esc(String(count))}</b>`);
+}
+
+function exactAngular(hold) {
+  if (!hold) return "";
+  const angular = ((boot.settings && boot.settings.angular) || "mrad").toLowerCase();
+  const key = { moa: "moa", iphy: "iphy", "cm@100m": "cm_per_100m", clicks: "mrad" }[angular] || "mrad";
+  const number = Number(hold[key]);
+  return Number.isFinite(number) ? Math.abs(number).toFixed(4) : "";
+}
+
+function figureParts(hold) {
+  const primary = (hold && hold.primary) || "—";
+  const match = String(primary).match(/^([+-−]?)(\d+(?:[.,]\d+)?)\s*(.*)$/);
+  if (!match) return { num: primary, unit: "" };
+  return { num: match[2], unit: match[3] };
+}
+
+function dirGlyph(direction) {
+  return { UP: "▲", DOWN: "▼", LEFT: "◀", RIGHT: "▶" }[direction] || "";
+}
+
+function readoutHtml(hold) {
+  const figure = figureParts(hold);
+  const glyph = dirGlyph(hold && hold.direction);
+  const exact = exactAngular(hold);
+  return `<div class="top"><span class="ho-dir">${glyph ? `${glyph} ` : ""}${esc((hold && hold.direction) || "—")}</span><span class="ho-exact">${esc(exact)}</span></div>
+    <div class="ho-fig">${esc(figure.num)}${figure.unit ? `<span class="u">${esc(figure.unit)}</span>` : ""}</div>
+    <div class="ho-clicks">${holdClicks(hold)}</div>`;
+}
+
+function sgBadge(sg) {
+  const number = Number(sg);
+  if (!Number.isFinite(number)) return "";
+  if (number >= 1.5) return `<span class="ho-badge ok">${esc(t("sg-stable"))}</span>`;
+  if (number >= 1.0) return `<span class="ho-badge warn">${esc(t("sg-marginal"))}</span>`;
+  return `<span class="ho-badge err">${esc(t("sg-unstable"))}</span>`;
+}
+
+function kv(label, value, unit) {
+  return `<dt>${label}</dt><dd>${esc(value)}</dd><span class="ho-unit">${esc(unit || "")}</span>`;
+}
+
+function trajectoryHtml(solve) {
+  if (!solve) return kv(esc(t("trajectory")), "—", "");
+  const sg = Number(solve.sg);
+  return [
+    kv(esc(t("velocity")), groupDigits(solve.velocity_display), shownUnit(solve.velocity_unit)),
+    kv(esc(t("mach")), Number.isFinite(Number(solve.mach)) ? Number(solve.mach).toFixed(2) : "—", ""),
+    kv(esc(t("energy")), groupDigits(solve.energy_display), shownUnit(solve.energy_unit)),
+    kv(esc(t("tof")), Number.isFinite(Number(solve.tof_s)) ? Number(solve.tof_s).toFixed(3) : "—", "s"),
+    kv(esc(t("drop")), groupDigits(solve.drop_display), shownUnit(solve.drop_unit)),
+    kv(`${esc(t("stability"))} ${sgBadge(sg)}`, Number.isFinite(sg) ? sg.toFixed(2) : t("no-sg"), ""),
+    kv(esc(t("density-altitude")), groupDigits(solve.density_altitude_display), shownUnit(solve.density_altitude_unit)),
+  ].join("");
+}
+
+function clicksCell(hold) {
+  if (!hold || hold.clicks == null || hold.clicks === "") return "—";
+  const count = Math.abs(Number(hold.clicks));
+  if (!Number.isFinite(count)) return "—";
+  return `${hold.direction} · ${count}`;
+}
+
+function primaryNumber(hold) {
+  return figureParts(hold).num || "—";
+}
+
+function sensHeading(hold) {
+  const angular = (boot.settings && boot.settings.angular) || "mrad";
+  const unit = t(angularKey(angular));
+  const dir = hold && hold.direction && hold.direction !== "—" ? hold.direction : "";
+  return `${dir} ${unit}`.trim();
+}
+
+function sensitivityHtml(solve) {
+  if (!solve) return "";
+  const length = units().length;
+  const velocity = units().velocity;
+  const items = solve.sensitivity || [];
+  const rangeRows = items.filter((item) => item.kind === "range");
+  const windRows = items.filter((item) => item.kind === "wind");
+  const currentRange = formatLocal(Number(solve.range_m), "length", length);
+  const windInput = document.getElementById("wind_speed");
+  const parsedWind = windInput ? parseLocal(windInput.value, "velocity", windInput.dataset.unit) : null;
+  const currentWind = parsedWind ? parsedWind.si : lastGood.windSi;
+  const windText = Number.isFinite(currentWind) ? Number(formatLocal(currentWind, "velocity", velocity)).toFixed(1) : "—";
+  const rangeBody = [];
+  const pushRange = (label, hold, current) => {
+    rangeBody.push(`<tr class="${current ? "current" : ""}"><td>${esc(label)}</td><td>${esc(primaryNumber(hold))}</td><td>${esc(clicksCell(hold))}</td></tr>`);
+  };
+  rangeRows.filter((item) => item.label === "minus").forEach((item) => pushRange(`${formatLocal(item.range_m, "length", length)} ${shownUnit(length)}`, item.elevation, false));
+  pushRange(`${currentRange} ${shownUnit(length)}`, solve.elevation, true);
+  rangeRows.filter((item) => item.label === "plus").forEach((item) => pushRange(`${formatLocal(item.range_m, "length", length)} ${shownUnit(length)}`, item.elevation, false));
+  const windBody = [];
+  const pushWind = (label, hold, current) => {
+    windBody.push(`<tr class="${current ? "current" : ""}"><td>${esc(label)}</td><td>${esc(primaryNumber(hold))}</td><td>${esc(clicksCell(hold))}</td></tr>`);
+  };
+  windRows.filter((item) => item.label === "slower").forEach((item) => {
+    const text = Number(formatLocal(item.speed_mps, "velocity", velocity)).toFixed(1);
+    if (text === windText) return;
+    pushWind(`${text} ${shownUnit(velocity)}`, item.windage, false);
+  });
+  pushWind(`${windText} ${shownUnit(velocity)}`, solve.windage, true);
+  windRows.filter((item) => item.label === "faster").forEach((item) => {
+    pushWind(`${Number(formatLocal(item.speed_mps, "velocity", velocity)).toFixed(1)} ${shownUnit(velocity)}`, item.windage, false);
+  });
+  const elevHead = sensHeading(solve.elevation);
+  const windHead = sensHeading(solve.windage);
+  return `<table class="ho-table"><caption>${esc(tf("sensitivity-range-caption", { step: stepAmount("range", length), name: t("status-range-step") }))}</caption>
+      <thead><tr><th>${esc(t("range"))}</th><th>${esc(elevHead)}</th><th>${esc(t("clicks-heading"))}</th></tr></thead><tbody>${rangeBody.join("")}</tbody></table>
+    <table class="ho-table"><caption>${esc(tf("sensitivity-wind-caption", { step: stepAmount("wind_speed", velocity), name: t("status-wind-step") }))}</caption>
+      <thead><tr><th>${esc(t("wind-speed"))}</th><th>${esc(windHead)}</th><th>${esc(t("clicks-heading"))}</th></tr></thead><tbody>${windBody.join("")}</tbody></table>`;
+}
+
+function contextHtml() {
+  const range = document.getElementById("range");
+  const wind = document.getElementById("wind_speed");
+  const dir = document.getElementById("wind_direction");
+  const angle = document.getElementById("inclination");
+  const hour = dir ? clockHour(dir.value) : "";
+  const rangeText = range ? `${range.value} ${shownUnit(range.dataset.unit)}` : "";
+  const windParsed = wind ? parseLocal(wind.value, "velocity", wind.dataset.unit) : null;
+  const windText = windParsed
+    ? `${wind.value} ${shownUnit(wind.dataset.unit)} @ ${hour}`
+    : (lastGood.wind ? `${lastGood.wind} @ ${hour}` : "");
+  const angleText = angle ? `${angle.value}${shownUnit(angle.dataset.unit) === "deg" ? "°" : " " + shownUnit(angle.dataset.unit)}` : "";
+  const air = (boot.settings.current_air && boot.settings.current_air.provenance && boot.settings.current_air.provenance.source === "fetched")
+    ? t("weather-fetched")
+    : t("atmosphere-manual");
+  const row = (label, value) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`;
+  return `${row(t("range"), rangeText)}${row(t("wind-speed"), windText)}${row(t("inclination"), angleText)}${row(t("solve-tab-air"), air)}`;
+}
+
+function zeroWindSpin(solve) {
+  if (!solve || !solve.windage) return false;
+  if (!effects().spin_drift) return false;
+  const wind = document.getElementById("wind_speed");
+  const parsed = wind ? parseLocal(wind.value, "velocity", wind.dataset.unit) : null;
+  const speed = parsed ? parsed.si : lastGood.windSi;
+  if (speed == null || Math.abs(speed) > 0.05) return false;
+  const mrad = Math.abs(Number(solve.windage.mrad));
+  return Number.isFinite(mrad) && mrad > 0.0005;
+}
+
+function notesHtml(solve) {
+  const items = [];
+  const warnings = [];
+  if (solve) {
+    (solve.warnings || []).forEach((item) => { if (item) warnings.push(item); });
+    if (solve.station_pressure_note) warnings.push(solve.station_pressure_note);
+  }
+  if (!warnings.length) items.push(`<li class="ok">${esc(t("notes-none"))}</li>`);
+  warnings.forEach((item) => items.push(`<li class="warn">${esc(item)}</li>`));
+  if (zeroWindSpin(solve)) items.push(`<li class="info">${esc(t("spin-zero-wind"))}</li>`);
+  return items.join("");
+}
+
+function paintSolve() {
+  const elev = document.getElementById("hold-elev");
+  const wind = document.getElementById("hold-wind");
+  if (!elev || !wind) return;
+  elev.innerHTML = readoutHtml(lastSolve && lastSolve.elevation);
+  wind.innerHTML = readoutHtml(lastSolve && lastSolve.windage);
+  elev.classList.toggle("ho-stale", stale);
+  wind.classList.toggle("ho-stale", stale);
+  const traj = document.getElementById("traj-card");
+  const sens = document.getElementById("sens-card");
+  if (traj) traj.classList.toggle("ho-stale", stale);
+  if (sens) sens.classList.toggle("ho-stale", stale);
+  const ctx = document.getElementById("hold-ctx");
+  if (ctx) ctx.innerHTML = contextHtml();
+  const meta = document.getElementById("traj-meta");
+  const range = document.getElementById("range");
+  if (meta && range) meta.textContent = tf("at-range", { range: `${range.value} ${shownUnit(range.dataset.unit)}` });
+  const trajBody = document.getElementById("traj-body");
+  if (trajBody) trajBody.innerHTML = trajectoryHtml(lastSolve);
+  const sensBody = document.getElementById("sens-body");
+  if (sensBody) sensBody.innerHTML = sensitivityHtml(lastSolve);
+  const notes = document.getElementById("solve-notes");
+  if (notes) notes.innerHTML = notesHtml(lastSolve);
+  const error = document.getElementById("solve-error");
+  if (error) {
+    error.hidden = !stale || !solveError;
+    error.innerHTML = stale && solveError ? `<p class="ho-reason" role="status"><span>●</span><span>${esc(solveError)}</span></p>` : "";
+  }
+  const differs = document.getElementById("differs");
+  if (differs && lastSolve) differs.classList.toggle("hidden", !lastSolve.current_differs);
+  const truing = document.getElementById("truing-line");
+  if (truing && lastSolve) {
+    const text = lastSolve.truing || t("truing-none");
+    truing.textContent = text;
+    truing.classList.toggle("ho-warn", !lastSolve.truing);
+  }
+  document.querySelectorAll("[data-angular]").forEach((button) => {
+    const angular = (boot.settings && boot.settings.angular) || "mrad";
+    button.setAttribute("aria-pressed", button.dataset.angular === angular ? "true" : "false");
+  });
+}
+
+function kindKey(input) {
+  const dim = (input && (input.dataset.kind || input.dataset.dim)) || "number";
+  return { length: "kind-length", velocity: "kind-speed", temperature: "kind-temperature", pressure: "kind-pressure", angle: "kind-angle", percent: "kind-percent", count: "kind-count" }[dim] || "kind-number";
+}
+
+function invalidQuantity(input) {
+  const sample = (String(input.value).match(/[+-]?\d+(?:[.,]\d+)?/) || [""])[0];
+  if (!sample) return t("invalid-number");
+  const suffix = (input.dataset.kind === "percent") ? "%" : ((input.dataset.dim === "velocity") ? "mps" : (input.dataset.unit || ""));
+  return tf("invalid-quantity", { kind: t(kindKey(input)), sample, suffix });
+}
+
+function staleSentence(input) {
+  const labelNode = input.id && document.querySelector(`label[for="${input.id}"]`);
+  const last = lastGoodText(input);
+  return tf("stale-hold", {
+    field: labelNode ? labelNode.textContent : t("range"),
+    text: input.value,
+    kind: t(kindKey(input)),
+    last,
+  });
+}
+
+function lastGoodText(input) {
+  if (input.dataset.dim === "velocity" && lastGood.wind) return lastGood.wind;
+  if (input.dataset.text) return `${input.dataset.text}`.replace(/\bmps\b/, "m/s");
+  return "—";
+}
+
+let lastGood = { wind: "", windSi: null };
+
+function rememberGood() {
+  const wind = document.getElementById("wind_speed");
+  if (!wind) return;
+  const parsed = parseLocal(wind.value, "velocity", wind.dataset.unit);
+  if (!parsed) return;
+  lastGood.windSi = parsed.si;
+  lastGood.wind = `${formatLocal(parsed.si, "velocity", wind.dataset.unit)} ${shownUnit(wind.dataset.unit)}`;
+}
+
+function fieldIsInvalid(input) {
+  if (!input) return false;
+  const text = String(input.value || "").trim();
+  const field = input.closest(".ho-field");
+  if (field && field.dataset.stepper === "humidity") {
+    if (!text) return false;
+    const raw = text.replace(",", ".");
+    const match = raw.match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+))\s*(%)?$/);
+    if (!match) return true;
+    const value = Number(match[1]);
+    if (!Number.isFinite(value)) return true;
+    const percent = (match[2] || Math.abs(value) > 1) ? value : value * 100;
+    return percent < 0 || percent > 100;
+  }
+  if (field && field.dataset.stepper === "wind_direction") {
+    if (!text) return true;
+    return !/^\s*\d{1,2}\s*(oc)?\s*$/i.test(text) && !/deg/i.test(text);
+  }
+  if (!input.dataset.dim) return false;
+  if (!text) return input.id !== "target_speed";
+  return !parseLocal(input.value, input.dataset.dim, input.dataset.unit);
+}
+
+function markInvalid(input, bad) {
+  const field = input.closest(".ho-field");
+  if (field) field.classList.toggle("invalid", bad);
+  input.setAttribute("aria-invalid", bad ? "true" : "false");
+  const hint = field && field.querySelector(".ho-hint");
+  if (!hint) return;
+  if (bad) hint.textContent = invalidQuantity(input);
+  else if (hint.dataset.base) hint.textContent = hint.dataset.base;
+}
+
+function syncWindClock(hour) {
+  document.querySelectorAll('.ho-clock button[data-hour]').forEach((button) => {
+    button.setAttribute("aria-checked", String(Number(button.dataset.hour) === hour));
+  });
 }
 
 function leadNote() {
@@ -970,6 +1461,10 @@ function textInput(id, label, value) {
 }
 
 function numberInput(id, label, value) {
+  if (id === "mag_min" || id === "mag_max" || id === "calibrated_mag") {
+    const input = `<input id="${id}" value="${esc(value ?? "")}" inputmode="decimal" autocomplete="off" spellcheck="false" />`;
+    return hoQty(id, label, "", "count", id, input);
+  }
   return `<label class="field">${esc(label)}<input id="${id}" value="${esc(value ?? "")}" inputmode="decimal" /></label>`;
 }
 
@@ -1091,9 +1586,19 @@ function bindShell() {
   document.querySelectorAll("[data-preset]").forEach((button) => {
     button.addEventListener("click", () => setPreset(button.dataset.preset));
   });
-  document.getElementById("units-open").addEventListener("click", () => {
-    unitsOpen = !unitsOpen;
-    render();
+  const unitsButton = document.getElementById("units-open");
+  if (unitsButton) {
+    unitsButton.addEventListener("click", () => {
+      unitsOpen = !unitsOpen;
+      render();
+    });
+  }
+  document.querySelectorAll(".ho-screens").forEach((button) => {
+    button.addEventListener("click", () => {
+      paletteOpen = true;
+      render();
+      fillPalette();
+    });
   });
   const apply = document.getElementById("units-apply");
   if (apply) {
@@ -1142,6 +1647,30 @@ function bindPage() {
   if (page === "documents") bindDocuments();
   if (page === "sync") bindSync();
   if (page === "settings") bindSettings();
+  if (window.attachSteppers) {
+    attachSteppers(document.getElementById("app"), {
+      parse: parseLocal,
+      format: formatLocal,
+      settings: stepSettings,
+      changed(input) {
+        input.dataset.dirty = "1";
+        if (input.id === "target_speed") {
+          moving.open = true;
+          moving.speedText = input.value;
+          moving.speedUnit = input.dataset.unit || moving.speedUnit;
+        }
+        if (input.id === "reticle-mag") reticleState.mag = Number(input.value) || reticleState.mag;
+        if (input.id === "reticle-cal") reticleState.cal = Number(input.value) || reticleState.cal;
+        if (input.closest(".ho-field")) markInvalid(input, fieldIsInvalid(input));
+        showPreview(input);
+        if (page === "solve") {
+          if (input.id === "temperature" || input.id === "pressure" || input.id === "altitude" || input.id === "humidity") noteAirEdit();
+          scheduleSolve(0);
+        }
+        if (page === "reticle") scheduleReticle();
+      },
+    });
+  }
 }
 
 function bindSolve() {
@@ -1149,6 +1678,11 @@ function bindSolve() {
     const node = document.getElementById(id);
     if (!node) return;
     node.addEventListener("input", () => {
+      if (id === "profile") {
+        const chosen = (boot.equipment.profiles || []).find((item) => item.id === node.value);
+        const facts = document.getElementById("profile-facts");
+        if (facts) facts.innerHTML = profileFacts(chosen);
+      }
       if (id === "pressure_kind" || id === "humidity") noteAirEdit();
       scheduleSolve(80);
     });
@@ -1169,11 +1703,14 @@ function bindSolve() {
       moving.speedUnit = "mps";
       const speed = document.getElementById("target_speed");
       if (speed) {
-        speed.value = moving.speedText;
+        speed.value = formatLocal(Number(item.speed_mps), "velocity", "mps");
         speed.dataset.unit = "mps";
+        speed.dataset.si = String(item.speed_mps);
+        speed.dataset.text = `${speed.value} mps`;
         speed.dataset.dirty = "1";
+        moving.speedText = speed.value;
         const chip = document.querySelector('[data-for="target_speed"]');
-        if (chip) chip.textContent = "mps";
+        if (chip) chip.textContent = shownUnit("mps");
       }
     }
     if (item && !item.speed_known) {
@@ -1211,8 +1748,18 @@ function bindSolve() {
     moving.open = true;
     scheduleSolve(0);
   });
+  const copy = document.getElementById("copy-hold");
+  if (copy) copy.addEventListener("click", () => copyHold());
+  document.querySelectorAll("[data-angular]").forEach((button) => {
+    button.addEventListener("click", () => setAngular(button.dataset.angular));
+  });
+  if (!window.__hoResize) {
+    window.__hoResize = () => { if (page === "solve") selectSolveTab(solveTab); };
+    window.addEventListener("resize", window.__hoResize);
+  }
   bindSolveTabs();
   paintLeadFace();
+  paintSolve();
 }
 
 function bindSolveTabs() {
@@ -1243,8 +1790,11 @@ function selectSolveTab(id, focus) {
     button.setAttribute("aria-selected", on ? "true" : "false");
     button.tabIndex = on ? 0 : -1;
   });
+  const wide = window.matchMedia("(min-width: 1400px)").matches;
   document.querySelectorAll(".solve-tabs [role=tabpanel]").forEach((panel) => {
-    panel.hidden = panel.dataset.tab !== id;
+    const hide = !wide && panel.dataset.tab !== id;
+    panel.classList.toggle("is-hidden", hide);
+    panel.setAttribute("aria-hidden", hide ? "true" : "false");
   });
   if (focus) focus.focus();
 }
@@ -2161,7 +2711,7 @@ function cycleChip(chip) {
     si = parsed ? parsed.si : NaN;
   }
   input.dataset.unit = next;
-  chip.textContent = next;
+  chip.textContent = shownUnit(next);
   if (Number.isFinite(si)) {
     input.dataset.si = String(si);
     input.value = formatLocal(si, input.dataset.dim, next);
@@ -2190,13 +2740,15 @@ function cycleChip(chip) {
 function showPreview(input) {
   const preview = document.getElementById(`${input.id}-preview`);
   if (!preview) return;
-  const parsed = parseLocal(input.value, input.dataset.dim, input.dataset.unit);
+  const field = input.closest(".ho-field");
+  if (field && field.classList.contains("invalid")) return;
+  const parsed = input.dataset.dim ? parseLocal(input.value, input.dataset.dim, input.dataset.unit) : null;
   if (!parsed || parsed.bare) {
-    preview.textContent = "";
+    preview.textContent = preview.dataset.base || "";
     return;
   }
   const shown = formatLocal(parsed.si, input.dataset.dim, input.dataset.unit);
-  preview.textContent = `${input.value.trim()} ${t("preview-arrow")} ${shown} ${input.dataset.unit}`;
+  preview.textContent = `${input.value.trim()} ${t("preview-arrow")} ${shown} ${shownUnit(input.dataset.unit)}`;
 }
 
 function qtyPayload(id) {
@@ -2298,32 +2850,37 @@ function scheduleSolve(delay) {
 
 async function runSolve() {
   const hold = document.getElementById("hold");
-  const error = document.getElementById("solve-error");
-  if (!hold) return;
+  if (!hold || page !== "solve") return;
+  const bad = ["range", "wind_speed", "wind_direction", "inclination", "temperature", "pressure", "humidity", "altitude", "target_speed", "latitude", "azimuth", "cant"]
+    .map((id) => document.getElementById(id))
+    .find((input) => input && fieldIsInvalid(input));
+  if (bad) {
+    markInvalid(bad, true);
+    stale = true;
+    solveError = staleSentence(bad);
+    paintSolve();
+    return;
+  }
   try {
     const body = solveBody();
     if (!body.profile_id) {
-      error.textContent = t("no-profile");
+      stale = true;
+      solveError = t("no-profile");
+      paintSolve();
       return;
     }
     lastSolve = await call("solve", { body });
     stale = false;
     solveError = "";
-    hold.classList.remove("stale");
-    hold.innerHTML = holdInner();
+    rememberGood();
     const leadHost = document.getElementById("lead-result");
     if (leadHost) leadHost.innerHTML = leadHold();
     paintLeadFace();
-    error.textContent = "";
-    const differs = document.getElementById("differs");
-    if (differs) differs.classList.toggle("hidden", !lastSolve.current_differs);
-    const summary = document.getElementById("zero-summary");
-    if (summary) summary.textContent = lastSolve.zero_summary || "";
+    paintSolve();
   } catch (err) {
     stale = true;
-    solveError = String(err);
-    hold.classList.add("stale");
-    error.textContent = `${t("last-valid")} ${solveError}`;
+    solveError = `${t("last-valid")} ${err}`;
+    paintSolve();
   }
 }
 
@@ -2335,8 +2892,9 @@ function parseLocal(text, dim, unit) {
   const value = Number(match[1].replace(",", "."));
   if (!Number.isFinite(value)) return null;
   const suffix = (match[2] || "").replace(/[°·\s]/g, "").toLowerCase();
-  if (!suffix) return { si: toSi(value, dim, unit), bare: true };
-  return { si: toSi(value, dim, suffix), bare: false };
+  const si = toSi(value, dim, suffix || unit);
+  if (!Number.isFinite(si)) return null;
+  return { si, bare: !suffix };
 }
 
 function toSi(value, dim, unit) {
@@ -2344,7 +2902,8 @@ function toSi(value, dim, unit) {
   if (dim === "temperature") {
     if (u === "f") return (value - 32) * 5 / 9;
     if (u === "k") return value - 273.15;
-    return value;
+    if (u === "c" || u === "") return value;
+    return NaN;
   }
   const factors = {
     m: 1, mm: 0.001, cm: 0.01, in: 0.0254, ft: 0.3048, yd: 0.9144,
@@ -2352,10 +2911,19 @@ function toSi(value, dim, unit) {
     mps: 1, "m/s": 1, fps: 0.3048, mph: 0.44704, "km/h": 1000 / 3600, kn: 1852 / 3600,
     hpa: 100, mbar: 100, inhg: 3386.389, mmhg: 3386.389 / 25.4, psi: 6894.757293168361, pa: 1,
     mrad: 0.001, mil: 0.001, moa: Math.PI / (180 * 60), deg: Math.PI / 180,
-    iphy: 0.001 / 3.6, "cm@100m": 0.0001,
+    iphy: 0.001 / 3.6, "cm@100m": 0.0001, "cm/100m": 0.0001,
     j: 1, ftlb: 0.3048 * 0.45359237 * 9.80665,
   };
-  return value * (factors[u] || 1);
+  if (!Object.prototype.hasOwnProperty.call(factors, u)) return NaN;
+  return value * factors[u];
+}
+
+function formatDelta(si, dim, unit) {
+  if (dim === "temperature") {
+    const shown = String(unit || "").toLowerCase() === "f" ? si * 9 / 5 : si;
+    return String(Math.round(shown * 10000) / 10000);
+  }
+  return formatLocal(si, dim, unit);
 }
 
 function formatLocal(si, dim, unit) {
@@ -2429,21 +2997,28 @@ function focusId(id) {
   if (node) node.focus();
 }
 
+async function setAngular(angular) {
+  boot = await call("set_preferences", { body: preferencesBody({ angular }) });
+  if (lastSolve) lastSolve.angular = angular;
+  scheduleSolve(0);
+}
+
 async function cycleAngular() {
   const index = ANGULAR.indexOf(boot.settings.angular || "mrad");
-  const angular = ANGULAR[(index + 1) % ANGULAR.length];
-  boot = await call("set_preferences", { body: preferencesBody({ angular }) });
-  scheduleSolve(0);
-  const hold = document.getElementById("hold");
-  if (hold && lastSolve) {
-    lastSolve.angular = angular;
-  }
+  await setAngular(ANGULAR[(index + 1) % ANGULAR.length]);
 }
 
 function stepRange(sign, event) {
   const input = document.getElementById("range");
   if (!input) return;
-  const parsed = parseLocal(input.value, "length", input.dataset.unit) || { si: 0 };
+  const parsed = parseLocal(input.value, "length", input.dataset.unit);
+  if (!parsed) {
+    markInvalid(input, true);
+    stale = true;
+    solveError = staleSentence(input);
+    paintSolve();
+    return;
+  }
   let factor = 1;
   if (event.shiftKey) factor *= 4;
   if (event.ctrlKey) factor *= 0.1;
@@ -2451,7 +3026,9 @@ function stepRange(sign, event) {
   const next = Math.max(1, parsed.si + step);
   input.value = formatLocal(next, "length", input.dataset.unit);
   input.dataset.dirty = "1";
+  input.dataset.si = String(next);
   input.dataset.text = `${input.value} ${input.dataset.unit}`;
+  markInvalid(input, false);
   scheduleSolve(0);
 }
 
@@ -2463,17 +3040,28 @@ function stepClock(sign) {
   hour = (hour + sign + 12) % 12;
   if (hour === 0) hour = 12;
   input.value = `${hour}oc`;
+  syncWindClock(hour);
   scheduleSolve(0);
 }
 
 function stepWind(sign) {
   const input = document.getElementById("wind_speed");
   if (!input) return;
-  const parsed = parseLocal(input.value, "velocity", input.dataset.unit) || { si: 0 };
+  const parsed = parseLocal(input.value, "velocity", input.dataset.unit);
+  if (!parsed) {
+    markInvalid(input, true);
+    stale = true;
+    solveError = staleSentence(input);
+    paintSolve();
+    return;
+  }
   const windStep = (parseLocal(boot.settings.wind_step, "velocity", "mps") || { si: 1 }).si;
   const next = Math.max(0, parsed.si + windStep * sign);
   input.value = formatLocal(next, "velocity", input.dataset.unit);
   input.dataset.dirty = "1";
+  input.dataset.si = String(next);
+  input.dataset.text = `${input.value} ${input.dataset.unit}`;
+  markInvalid(input, false);
   scheduleSolve(0);
 }
 
@@ -2484,7 +3072,10 @@ async function copyHold() {
     await navigator.clipboard.writeText(text);
   } catch (error) {
     const node = document.getElementById("solve-error");
-    if (node) node.textContent = t("copy-failed");
+    if (node) {
+      node.hidden = false;
+      node.innerHTML = `<p class="ho-reason">${esc(t("copy-failed"))}</p>`;
+    }
   }
 }
 
@@ -3374,7 +3965,7 @@ function recoilDefaults() {
 
 function recoilHtml() {
   const form = recoilDefaults();
-  const result = recoilResult ? `<p>${esc(t("recoil-velocity"))} ${esc(recoilResult.velocity_display)} ${esc(recoilResult.velocity_unit)} · ${esc(t("energy"))} ${esc(recoilResult.energy_display)} ${esc(recoilResult.energy_unit)}</p>
+  const result = recoilResult ? `<p>${esc(t("recoil-velocity"))} ${esc(recoilResult.velocity_display)} ${esc(shownUnit(recoilResult.velocity_unit))} · ${esc(t("energy"))} ${esc(recoilResult.energy_display)} ${esc(recoilResult.energy_unit)}</p>
     <p>${esc(recoilResult.convention || boot.ejecta_convention || "")}</p>
     ${recoilResult.reduction_is_estimate ? `<p class="hint">${esc(t("recoil-estimate"))}</p>` : ""}` : `<p>${esc(boot.ejecta_convention || "")}</p>`;
   return `<div class="fields">
@@ -3416,7 +4007,7 @@ async function runRecoil() {
       reduction: Number(String(form.reduction).replace(",", ".")) || 0,
     } });
     const host = document.getElementById("recoil-result");
-    if (host) host.innerHTML = recoilHtml().includes("unused") ? "" : `<p>${esc(t("recoil-velocity"))} ${esc(recoilResult.velocity_display)} ${esc(recoilResult.velocity_unit)} · ${esc(t("energy"))} ${esc(recoilResult.energy_display)} ${esc(recoilResult.energy_unit)}</p><p>${esc(recoilResult.convention || "")}</p>${recoilResult.reduction_is_estimate ? `<p class="hint">${esc(t("recoil-estimate"))}</p>` : ""}`;
+    if (host) host.innerHTML = recoilHtml().includes("unused") ? "" : `<p>${esc(t("recoil-velocity"))} ${esc(recoilResult.velocity_display)} ${esc(shownUnit(recoilResult.velocity_unit))} · ${esc(t("energy"))} ${esc(recoilResult.energy_display)} ${esc(recoilResult.energy_unit)}</p><p>${esc(recoilResult.convention || "")}</p>${recoilResult.reduction_is_estimate ? `<p class="hint">${esc(t("recoil-estimate"))}</p>` : ""}`;
   } catch (error) {
     if (msg) msg.textContent = String(error);
   }
@@ -3640,15 +4231,11 @@ function reticleHtml() {
         <select id="reticle-pick" title="${esc(t("reticle-pick-tip"))}">${reticleChoices()}</select>
       </label>
       <div class="cluster">
-        <label class="field" title="${esc(t("reticle-mag-tip"))}">${esc(t("reticle-mag"))}
-          <input id="reticle-mag" value="${esc(reticleState.mag)}" inputmode="decimal" title="${esc(t("reticle-mag-tip"))}" />
-        </label>
+        ${hoQty("reticle-mag", t("reticle-mag"), "", "count", "reticle-mag", `<input id="reticle-mag" value="${esc(reticleState.mag)}" inputmode="decimal" title="${esc(t("reticle-mag-tip"))}" autocomplete="off" spellcheck="false" />`)}
         <div class="row">
           ${[5, 10, 20].map((mag) => `<button type="button" data-mag="${mag}" title="${esc(t("reticle-mag-check"))}">${mag}×</button>`).join("")}
         </div>
-        <label class="field" title="${esc(t("reticle-cal-tip"))}">${esc(t("reticle-cal"))}
-          <input id="reticle-cal" value="${esc(reticleState.cal)}" inputmode="decimal" title="${esc(t("reticle-cal-tip"))}" />
-        </label>
+        ${hoQty("reticle-cal", t("reticle-cal"), "", "count", "reticle-cal", `<input id="reticle-cal" value="${esc(reticleState.cal)}" inputmode="decimal" title="${esc(t("reticle-cal-tip"))}" autocomplete="off" spellcheck="false" />`)}
         <label class="field" title="${esc(t("reticle-fov-tip"))}">${esc(t("reticle-fov"))}
           <input id="reticle-fov" value="${esc(reticleState.fov)}" inputmode="decimal" title="${esc(t("reticle-fov-tip"))}" />
         </label>
@@ -4731,7 +5318,7 @@ function logForm() {
 }
 
 function chronoRow(item, checked) {
-  const mean = Number.isFinite(Number(item.mean_mps)) ? `${formatLocal(Number(item.mean_mps), "velocity", units().velocity)} ${units().velocity}` : "";
+  const mean = Number.isFinite(Number(item.mean_mps)) ? `${formatLocal(Number(item.mean_mps), "velocity", units().velocity)} ${shownUnit(units().velocity)}` : "";
   return `<div class="row"><label><input type="checkbox" class="log-chrono" value="${esc(item.id)}" ${checked ? "checked" : ""} /> ${esc(item.label)} ${esc(mean)}</label>
     <button type="button" data-use-mv="${esc(item.id)}">${esc(t("chrono-set-mv"))}</button></div>`;
 }

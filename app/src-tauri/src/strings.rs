@@ -43,4 +43,18 @@ mod tests {
         assert!(text.contains("CC BY 4.0"));
         assert!(text.contains("py-ballisticcalc 3.1.1"));
     }
+
+    #[test]
+    fn spin_note_matches_the_solver_and_the_key_hint_names_the_clock() {
+        let strings = super::english_strings();
+        assert_eq!(
+            strings.get("spin-note").map(String::as_str),
+            Some(holdover_core::SPIN_DRIFT_PROVENANCE)
+        );
+        let hint = strings.get("keys-hint").map(String::as_str).unwrap();
+        assert!(hint.contains("↑↓ range step"));
+        assert!(hint.contains("←→ clock"));
+        assert!(!hint.contains("10 m"));
+        assert!(strings.contains_key("hold-clicks"));
+    }
 }
