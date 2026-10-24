@@ -51,8 +51,7 @@ button {
 }
 
 button:focus, input:focus, select:focus {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
+  outline: none;
 }
 
 button.active, button[aria-pressed="true"] {
@@ -328,7 +327,7 @@ table.words th, table.words td {
   stroke-dasharray: 4 3;
 }
 
-.chart .band {
+.chart .band, .chart .zone {
   stroke: var(--warning);
   stroke-width: 1.5;
   stroke-dasharray: 6 4;

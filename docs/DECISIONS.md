@@ -159,3 +159,9 @@ The checklist is `docs/REDESIGN-PR2.md`. PR1 restyled Solve. PR2 restyles the ot
 - The on-screen range card is a preview. The file you print is still the Rust PDF. T2–T6 and the US targets stay unmeasured. The moose outline stays dashed and is not scored.
 - Settings can edit the range step and the wind step. They are stored on the existing settings row. Empty text is refused. There is no language control and no second text-size control in this round. Larger text stays the one checkbox.
 - The workspace version, the window title, and `packaging/PKGBUILD` are 1.3.0. No tag and no release.
+
+## Redesign fix 1.3.1
+
+The checklist is `docs/REDESIGN-FIX-1.3.1.md`. It corrects the Solve hold figure and the review items from PR1 and PR2. The solver physics is unchanged. There is no language control and no second text-size control.
+
+- The workspace version, the window title, and `packaging/PKGBUILD` are 1.3.1. No tag and no release.
