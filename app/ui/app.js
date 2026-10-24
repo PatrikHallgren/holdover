@@ -50,6 +50,10 @@ let pbrWindow = null;
 let cardConditions = "";
 let cardBrackets = "2 mps, 4 mps, 6 mps";
 let chartKinds = { drop: true, wind: true, velocity: false, energy: false, tof: false, mach: false };
+let chartPane = "trajectory";
+let reticlePane = "view";
+let paletteQuery = "";
+let paletteIndex = 0;
 let pbrResult = null;
 let pbrPreview = null;
 let pbrZonePreset = "moose";
@@ -211,58 +215,95 @@ function render() {
   window.clearInterval(weatherTimer);
   const app = document.getElementById("app");
   const onboarded = boot.settings.onboarded;
+  document.body.classList.add("ho");
   document.body.classList.toggle("fit-solve", page === "solve" && onboarded);
-  document.body.classList.toggle("ho", page === "solve" && onboarded);
   if (!onboarded) {
     app.innerHTML = onboardHtml();
     bindOnboard();
     return;
   }
-  if (page === "solve") {
-    app.innerHTML = `${solveShell()}${overlays()}`;
-  } else {
-    app.innerHTML = `${shellHtml()}<main class="page" id="page" tabindex="-1">${pageHtml()}</main><footer class="footer"><p class="disclaimer">${esc(boot.disclaimer)}</p><button type="button" id="open-about">${esc(t("nav-about"))}</button></footer>${overlays()}`;
-  }
+  const shell = page === "solve" ? solveShell() : pageHtml();
+  app.innerHTML = `${shell}${overlays()}`;
   bindShell();
   bindPage();
   if (page === "solve") scheduleSolve(0);
   if (page === "compare") scheduleCompare(0);
 }
 
-function shellHtml() {
-  const preset = boot.settings.preset;
-  return `<div class="shell"><a class="skip" href="#page">${esc(t("skip"))}</a><header class="top">
-    <span class="brand">${esc(t("app-name"))}</span>
-    <nav aria-label="${esc(t("nav-label"))}">
-      ${nav("solve")}${nav("card")}${nav("charts")}${nav("reticle")}${nav("targets")}${nav("groups")}${nav("pbr")}${nav("truing")}${nav("equipment")}${nav("compare")}${nav("documents")}${nav("sync")}${nav("settings")}
-    </nav>
-    <div class="presets">
-      ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
-      <button type="button" id="units-open" aria-expanded="${unitsOpen}">${esc(t("units-button"))}</button>
-    </div>
-  </header>`;
-  function nav(id) {
-    const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings" };
-    const key = keys[id] || "nav-solve";
-    const current = page === id ? ` aria-current="page"` : "";
-    return `<button type="button" data-page="${id}" class="${page === id ? "active" : ""}"${current}>${esc(t(key))}</button>`;
+function navKey(id) {
+  const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings", about: "nav-about" };
+  return keys[id] || "nav-solve";
+}
+
+function topBar() {
+  const pages = ["solve", "card", "charts", "reticle", "targets", "groups", "pbr", "truing", "equipment", "compare", "documents", "sync", "settings"];
+  return `<a class="ho-skip" href="#main">${esc(t("skip"))}</a>
+    <header class="ho-top">
+      <span class="brand">${esc(t("app-name"))}</span>
+      <nav class="ho-nav" aria-label="${esc(t("nav-label"))}">${pages.map(navButton).join("")}</nav>
+      <button type="button" class="ho-btn ho-screens" aria-haspopup="dialog" title="${esc(t("screens"))}">${esc(t(navKey(page)))} ▾</button>
+      <div class="ho-seg preset" role="group" aria-label="${esc(t("preset-label"))}">
+        ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
+      </div>
+      <button type="button" class="ho-btn ghost" id="units-open" aria-expanded="${unitsOpen}" title="${esc(t("units-button"))}">${esc(t("units-button"))}</button>
+    </header>`;
+}
+
+function keyBit(keys, label) {
+  return `<span>${keys.map((key) => `<kbd>${esc(key)}</kbd>`).join("")} ${esc(label)}</span>`;
+}
+
+function globalKeys() {
+  return [
+    keyBit(["Ctrl", "K"], t("status-commands")),
+    keyBit(["Ctrl", "U"], t("status-preset")),
+    keyBit(["Ctrl", "P"], t("status-profile")),
+    keyBit(["F11"], t("status-field")),
+  ].join("");
+}
+
+function pageKeys() {
+  const bits = [];
+  const rangeStep = page === "card" || page === "reticle" || page === "compare" || page === "truing" || (page === "pbr" && pbrMode === "fixed");
+  if (rangeStep) bits.push(keyBit(["↑", "↓"], t("status-range-step")));
+  if (page === "compare") {
+    bits.push(keyBit(["←", "→"], t("status-clock")));
+    bits.push(keyBit(["+", "−"], t("status-wind-step")));
   }
-  function presetButton(id) {
-    return `<button type="button" data-preset="${id}" aria-pressed="${preset === id}">${esc(t("preset-" + id))}</button>`;
-  }
+  if (page === "charts") bits.push(keyBit(["←", "→"], t("status-cursor")));
+  return bits.join("") + globalKeys();
+}
+
+function statusFooter(keys) {
+  return `<footer class="ho-status">
+    <div class="keys">${keys}</div>
+    <span class="sp"></span>
+    <span class="ho-legal" title="${esc(boot.disclaimer || "")}">${esc(boot.disclaimer || "")}</span>
+    <button type="button" class="ho-btn ghost" id="open-about">${esc(t("nav-about"))}</button>
+  </footer>`;
+}
+
+function frame(opts) {
+  const bodyClass = opts.body ? ` ${opts.body}` : "";
+  const rail = opts.rail
+    ? `<aside class="ho-rail" aria-label="${esc(opts.railLabel || t("inputs"))}">${opts.rail}</aside>`
+    : "";
+  return `<div class="ho-shell">${topBar()}<div class="ho-body${bodyClass}">${rail}<main class="ho-main" id="main" tabindex="-1">${opts.main}</main></div>${statusFooter(opts.keys || pageKeys())}</div>`;
 }
 
 function overlays() {
-  return `<div id="palette" class="dialog ${paletteOpen ? "" : "hidden"}" role="dialog" aria-modal="true" aria-label="${esc(t("commands"))}"></div>
-    <div id="units-pop" class="popover ${unitsOpen ? "" : "hidden"}">${unitsPopover()}</div>`;
+  return `<div id="palette" class="ho-scrim${paletteOpen ? "" : " hidden"}" role="dialog" aria-modal="true" aria-label="${esc(t("commands"))}"></div>
+    <div id="units-pop" class="ho-scrim${unitsOpen ? "" : " hidden"}" role="dialog" aria-modal="true" aria-label="${esc(t("units-button"))}">
+      <div class="ho-dialog"><header><h2>${esc(t("settings-units"))}</h2></header><div class="body">${unitsPopover()}</div></div>
+    </div>`;
 }
 
 function unitsPopover(includeApply = true) {
   const u = units();
-  const row = (key, label, cycle) => `<label class="field">${esc(t(label))}
-    <select data-unit-key="${key}">${cycle.map((item) => `<option value="${esc(item)}" ${item === u[key] ? "selected" : ""}>${esc(shownUnit(item))}</option>`).join("")}</select>
-  </label>`;
-  return `<div class="fields">
+  const row = (key, label, cycle) => `<div class="ho-field"><div class="head"><label for="unit-${key}">${esc(t(label))}</label></div>
+    <div class="ho-entry"><select id="unit-${key}" data-unit-key="${key}">${cycle.map((item) => `<option value="${esc(item)}" ${item === u[key] ? "selected" : ""}>${esc(shownUnit(item))}</option>`).join("")}</select></div>
+  </div>`;
+  return `<div class="ho-fields">
     ${row("length", "custom-length", CYCLES.length)}
     ${row("small", "custom-small", CYCLES.length)}
     ${row("angle", "custom-angle", CYCLES.angle)}
@@ -272,8 +313,26 @@ function unitsPopover(includeApply = true) {
     ${row("mass", "custom-mass", CYCLES.mass)}
     ${row("energy", "custom-energy", CYCLES.energy)}
     ${row("angular", "custom-angular", ANGULAR)}
-    ${includeApply ? `<button type="button" id="units-apply">${esc(t("apply"))}</button>` : ""}
+    ${includeApply ? `<button type="button" class="ho-btn primary" id="units-apply">${esc(t("apply"))}</button>` : ""}
   </div>`;
+}
+
+function settingsUnitFields() {
+  const u = units();
+  const row = (key, label, cycle) => `<div class="ho-field"><div class="head"><label for="settings-unit-${key}">${esc(t(label))}</label></div>
+    <div class="ho-entry"><select id="settings-unit-${key}" data-settings-unit="${key}">${cycle.map((item) => `<option value="${esc(item)}" ${item === u[key] ? "selected" : ""}>${esc(shownUnit(item))}</option>`).join("")}</select></div>
+  </div>`;
+  return [
+    row("length", "custom-length", CYCLES.length),
+    row("small", "custom-small", CYCLES.length),
+    row("angle", "custom-angle", CYCLES.angle),
+    row("temperature", "custom-temperature", CYCLES.temperature),
+    row("pressure", "custom-pressure", CYCLES.pressure),
+    row("velocity", "custom-velocity", CYCLES.velocity),
+    row("mass", "custom-mass", CYCLES.mass),
+    row("energy", "custom-energy", CYCLES.energy),
+    row("angular", "custom-angular", ANGULAR),
+  ].join("");
 }
 
 function pageHtml() {
@@ -601,18 +660,7 @@ function solveShell() {
     <p class="ho-hint">${esc(t("jump-note"))}</p>`;
   const angular = s.angular || "mrad";
   return `<div class="ho-shell">
-    <a class="ho-skip" href="#main">${esc(t("skip"))}</a>
-    <header class="ho-top">
-      <span class="brand">${esc(t("app-name"))}</span>
-      <nav class="ho-nav" aria-label="${esc(t("nav-label"))}">
-        ${navButton("solve")}${navButton("card")}${navButton("charts")}${navButton("reticle")}${navButton("targets")}${navButton("groups")}${navButton("pbr")}${navButton("truing")}${navButton("equipment")}${navButton("compare")}${navButton("documents")}${navButton("sync")}${navButton("settings")}
-      </nav>
-      <button type="button" class="ho-btn ho-screens" aria-haspopup="dialog" title="${esc(t("screens"))}">${esc(t("nav-solve"))} ▾</button>
-      <div class="ho-seg preset" role="group" aria-label="${esc(t("preset-label"))}">
-        ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
-      </div>
-      <button type="button" class="ho-btn ghost" id="units-open" aria-expanded="${unitsOpen}" title="${esc(t("units-button"))}">${esc(t("units-button"))}</button>
-    </header>
+    ${topBar()}
     <div class="ho-body">
       <aside class="ho-rail" aria-label="${esc(t("shot"))}">
         <div class="ho-summary">
@@ -668,12 +716,7 @@ function solveShell() {
         <ul class="ho-notes" id="solve-notes" aria-label="${esc(t("notes"))}"></ul>
       </main>
     </div>
-    <footer class="ho-status">
-      <div class="keys">${statusKeys()}</div>
-      <span class="sp"></span>
-      <span class="ho-legal" title="${esc(boot.disclaimer || "")}">${esc(boot.disclaimer || "")}</span>
-      <button type="button" class="ho-btn ghost" id="open-about">${esc(t("nav-about"))}</button>
-    </footer>
+    ${statusFooter(statusKeys())}
   </div>`;
 }
 
@@ -688,21 +731,17 @@ function angularKey(item) {
 }
 
 function statusKeys() {
-  const bit = (keys, label) => `<span>${keys.map((key) => `<kbd>${esc(key)}</kbd>`).join("")} ${esc(label)}</span>`;
   return [
-    bit(["R"], t("status-range")),
-    bit(["W"], t("status-wind")),
-    bit(["D"], t("status-direction")),
-    bit(["A"], t("status-angle")),
-    bit(["↑", "↓"], t("status-range-step")),
-    bit(["←", "→"], t("status-clock")),
-    bit(["+", "−"], t("status-wind-step")),
-    bit(["U"], t("status-hold-unit")),
-    bit(["Ctrl", "Shift", "C"], t("status-copy")),
-    bit(["Ctrl", "K"], t("status-commands")),
-    bit(["Ctrl", "U"], t("status-preset")),
-    bit(["Ctrl", "P"], t("status-profile")),
-    bit(["F11"], t("status-field")),
+    keyBit(["R"], t("status-range")),
+    keyBit(["W"], t("status-wind")),
+    keyBit(["D"], t("status-direction")),
+    keyBit(["A"], t("status-angle")),
+    keyBit(["↑", "↓"], t("status-range-step")),
+    keyBit(["←", "→"], t("status-clock")),
+    keyBit(["+", "−"], t("status-wind-step")),
+    keyBit(["U"], t("status-hold-unit")),
+    keyBit(["Ctrl", "Shift", "C"], t("status-copy")),
+    globalKeys(),
   ].join("");
 }
 
@@ -719,18 +758,23 @@ function profileFacts(profile) {
     <dt>${esc(t("truing"))}</dt><dd id="truing-line" class="${warn ? "ho-warn" : ""}">${esc(String(truing))}</dd><span class="ho-unit"></span>`;
 }
 
-function windClockField(value) {
+function windClockField(value, opts) {
+  const options = opts || {};
+  const id = options.id || "wind_direction";
+  const stepper = options.stepper || "wind_direction";
+  const label = options.label || t("wind-direction");
   const hour = clockHour(value);
   const buttons = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((item) =>
     `<button type="button" role="radio" data-hour="${item}" aria-checked="${item === hour}" title="${esc(tf("clock-hour", { hour: item }))}">${item}</button>`).join("");
   const hint = tf("hint-clock", { rest: t("wind-clock-hint") });
-  return `<div class="ho-field" data-stepper="wind_direction">
-    <div class="head"><label for="wind_direction">${esc(t("wind-direction"))}</label><kbd>D</kbd></div>
+  const key = options.key === false ? "" : `<kbd>D</kbd>`;
+  return `<div class="ho-field" data-stepper="${esc(stepper)}">
+    <div class="head"><label for="${id}">${esc(label)}</label>${key}</div>
     <div class="ho-stepper">
-      <button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(tf("step-minus", { field: t("wind-direction"), step: t("one-hour") }))}">−</button>
-      <input id="wind_direction" value="${esc(value)}" title="${esc(t("wind-clock-hint"))}" role="spinbutton" autocomplete="off" spellcheck="false" />
+      <button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(tf("step-minus", { field: label, step: t("one-hour") }))}">−</button>
+      <input id="${id}" value="${esc(value)}" title="${esc(t("wind-clock-hint"))}" role="spinbutton" autocomplete="off" spellcheck="false" />
       <span class="ho-chip" title="${esc(t("wind-clock-hint"))}">${esc(t("clock"))}</span>
-      <button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(tf("step-plus", { field: t("wind-direction"), step: t("one-hour") }))}">+</button>
+      <button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(tf("step-plus", { field: label, step: t("one-hour") }))}">+</button>
     </div>
     <div class="ho-clock" role="radiogroup" aria-label="${esc(t("wind-clock-hint"))}">${buttons}</div>
     <p class="ho-hint" data-base="${esc(hint)}">${esc(hint)}</p>
@@ -780,14 +824,22 @@ function airFields(air, prefix, stepped) {
       <option value="sea-level" ${air && air.pressure_kind === "sea-level" ? "selected" : ""}>${esc(t("pressure-sea"))}</option>
     </select>`;
   if (!stepped) {
-    return `${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display)}
+    return `<div class="ho-row">
+      ${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display)}
       ${qtyField(prefix + "pressure", t("pressure"), pressure.text, pressure.unit, "pressure", pressure.si, pressure.display)}
-      <label class="field">${esc(t("kind"))}${kind}</label>
-      <label class="field">${esc(t("humidity"))}
-        <input id="${prefix}humidity" value="${esc(humidity)}" />
-        <span class="hint">${esc(t("humidity-hint"))}</span>
-      </label>
-      ${qtyField(prefix + "altitude", t("altitude"), altitude.text, altitude.unit, "length", altitude.si, altitude.display)}`;
+    </div>
+    <div class="ho-row">
+      <div class="ho-field">
+        <div class="head"><label for="${prefix}pressure_kind">${esc(t("kind"))}</label></div>
+        <div class="ho-entry">${kind}</div>
+      </div>
+      <div class="ho-field">
+        <div class="head"><label for="${prefix}humidity">${esc(t("humidity"))}</label></div>
+        <div class="ho-entry"><input id="${prefix}humidity" value="${esc(humidity)}" autocomplete="off" /></div>
+        <p class="ho-hint">${esc(t("humidity-hint"))}</p>
+      </div>
+      ${qtyField(prefix + "altitude", t("altitude"), altitude.text, altitude.unit, "length", altitude.si, altitude.display)}
+    </div>`;
   }
   return `<div class="ho-row">
       ${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display, "temperature")}
@@ -827,14 +879,7 @@ function qtyField(id, label, text, unit, dim, si, display, step) {
     ? String(display)
     : (hasSi ? formatLocal(numeric, dim, unit) : raw);
   const input = `<input id="${id}" data-dim="${dim}" data-unit="${esc(unit)}" data-text="${esc(raw)}" data-si="${hasSi ? esc(String(numeric)) : ""}" data-dirty="0" value="${esc(shown)}" autocomplete="off" spellcheck="false" />`;
-  if (step || page === "solve") return hoQty(id, label, unit, dim, step, input);
-  return `<label class="field">${esc(label)}
-    <span class="entry">
-      ${input}
-      <button type="button" class="chip" data-for="${id}">${esc(shownUnit(unit))}</button>
-    </span>
-    <span class="preview" id="${id}-preview"></span>
-  </label>`;
+  return hoQty(id, label, unit, dim, step, input);
 }
 
 function hoQty(id, label, unit, dim, step, input) {
@@ -861,8 +906,9 @@ function stepSettings() {
 
 function stepAmount(step, unit) {
   const settings = stepSettings();
-  if (step === "range" || step === "zero_range") return `${formatLocal(settings.rangeStepSi, "length", unit)} ${shownUnit(unit)}`;
-  if (step === "wind_speed") return `${formatLocal(settings.windStepSi, "velocity", unit)} ${shownUnit(unit)}`;
+  const rangeSteps = ["range", "zero_range", "compare-range", "reticle-range", "impact-range", "observe_range", "pbr-zero", "from", "to", "step"];
+  if (rangeSteps.includes(step)) return `${formatLocal(settings.rangeStepSi, "length", unit)} ${shownUnit(unit)}`;
+  if (step === "wind_speed" || step === "compare-wind") return `${formatLocal(settings.windStepSi, "velocity", unit)} ${shownUnit(unit)}`;
   if (step === "inclination") return `${formatDelta(Math.PI / 180, "angle", unit)} ${shownUnit(unit)}`;
   if (step === "temperature") return `${formatDelta(1, "temperature", unit)} ${shownUnit(unit)}`;
   if (step === "pressure") return `${formatLocal(100, "pressure", unit)} ${shownUnit(unit)}`;
@@ -1224,64 +1270,92 @@ function cardHtml() {
   const s = boot.settings;
   const pages = (boot.card_pages || []).map((item) =>
     `<option value="${esc(item.id)}" ${item.id === cardPageId ? "selected" : ""}>${esc(item.name)}</option>`).join("");
-  return `<section class="card">
-    <div class="row noprint">
-      ${qtyField("from", t("card-from"), "100 m", units().length, "length", 100)}
-      ${qtyField("to", t("card-to"), "600 m", units().length, "length", 600)}
-      ${qtyField("step", t("card-step"), "50 m", units().length, "length", 50)}
-      <label class="field">${esc(t("card-winds"))}<input id="brackets" value="${esc(cardBrackets)}" /></label>
-      <label class="field">${esc(t("card-size"))}<select id="card-page">${pages}</select></label>
-      <label class="field">${esc(t("card-conditions"))}<input id="conditions" value="${esc(cardConditions)}" placeholder="-10 C, 30 C" /></label>
-      <button type="button" id="card-build">${esc(t("apply"))}</button>
-      <button type="button" id="card-pdf" title="${esc(t("card-pdf-tip"))}">${esc(t("card-pdf"))}</button>
-      <button type="button" id="card-print" title="${esc(t("card-print-note"))}">${esc(t("card-print"))}</button>
-      <button type="button" id="card-csv">${esc(t("card-csv"))}</button>
-      <button type="button" id="card-json">${esc(t("card-json"))}</button>
-      <label><input type="checkbox" id="card-pin" ${s.card_pinned ? "checked" : ""} /> ${esc(t("card-pin"))}</label>
+  const rail = `<h2>${esc(t("nav-card"))}</h2>
+    ${qtyField("from", t("card-from"), "100 m", units().length, "length", 100, null, "from")}
+    ${qtyField("to", t("card-to"), "600 m", units().length, "length", 600, null, "to")}
+    ${qtyField("step", t("card-step"), "50 m", units().length, "length", 50, null, "step")}
+    <div class="ho-field"><div class="head"><label for="brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="brackets" value="${esc(cardBrackets)}" autocomplete="off" /></div></div>
+    ${hoSelect("card-page", t("card-size"), pages)}
+    <div class="ho-field"><div class="head"><label for="conditions">${esc(t("card-conditions"))}</label></div><div class="ho-entry"><input id="conditions" value="${esc(cardConditions)}" placeholder="-10 C, 30 C" autocomplete="off" /></div></div>
+    <label class="ho-check"><input type="checkbox" id="card-pin" ${s.card_pinned ? "checked" : ""} /> ${esc(t("card-pin"))}</label>
+    <div class="btnrow">
+      <button type="button" class="ho-btn primary" id="card-build">${esc(t("apply"))}</button>
+      <button type="button" class="ho-btn" id="card-pdf" title="${esc(t("card-pdf-tip"))}">${esc(t("card-pdf"))}</button>
     </div>
-    <p class="hint noprint">${esc(t("page-pin-note"))} ${esc(t("card-paper-note"))}</p>
-    <p class="hint noprint">${esc(t("card-print-note"))}</p>
-    <p class="hint noprint" id="card-pdf-status"></p>
-    <div id="card-body">${card && card.rows ? cardTable(card) : `<p>${esc(t("card-empty"))}</p>`}</div>
-  </section>`;
+    <div class="btnrow">
+      <button type="button" class="ho-btn ghost" id="card-print" title="${esc(t("card-print-note"))}">${esc(t("card-print"))}</button>
+      <button type="button" class="ho-btn ghost" id="card-csv">${esc(t("card-csv"))}</button>
+      <button type="button" class="ho-btn ghost" id="card-json">${esc(t("card-json"))}</button>
+    </div>
+    <p class="ho-hint">${esc(t("page-pin-note"))} ${esc(t("card-paper-note"))}</p>
+    <p class="ho-hint">${esc(t("card-print-note"))}</p>
+    <p class="ho-hint" id="card-pdf-status"></p>`;
+  const main = `<div id="card-body">${card && card.rows ? cardTable(card) : `<p class="ho-hint">${esc(t("card-empty"))}</p>`}</div>`;
+  return frame({ rail, main, railLabel: t("nav-card") });
+}
+
+function clickNote(hold) {
+  if (!hold || hold.clicks == null || hold.clicks === "") return "";
+  const count = Math.abs(Number(hold.clicks));
+  if (!Number.isFinite(count)) return "";
+  return `<small>${esc(String(count))}</small>`;
 }
 
 function cardTable(data) {
-  const heads = data.brackets.map((label) => `<th>${esc(label)}</th>`).join("");
-  const conditionHeads = (data.conditions || []).map((label) => `<th>${esc(label)}</th>`).join("");
-  const rows = data.rows.map((row) => `<tr>
-    <td>${esc(row.range_display)} ${esc(data.length_unit)}</td>
-    <td>${esc(row.elevation.direction)} ${esc(row.elevation.primary)}</td>
-    <td>${esc(row.drop_display)}</td>
-    <td>${esc(row.velocity_display)}</td>
-    <td>${esc(row.energy_display)}</td>
-    <td>${Number(row.tof_s).toFixed(3)}</td>
-    <td>${Number(row.mach).toFixed(2)}</td>
-    ${(row.winds || []).map((wind) => `<td>${esc(wind.windage.direction)} ${esc(wind.windage.primary)}</td>`).join("")}
-    ${(row.conditions || []).map((item) => `<td>${esc(item.elevation.direction)} ${esc(item.elevation.primary)}</td>`).join("")}
-  </tr>`).join("");
+  const current = Number(boot.settings && boot.settings.last_range_si);
+  const heads = (data.brackets || []).map((label, index) =>
+    `<th class="group-start">${esc(label)}${index === 0 ? `<small>${esc(t("card-wind-note"))}</small>` : ""}</th>`).join("");
+  const conditionHeads = (data.conditions || []).map((label) => `<th class="group-start">${esc(label)}</th>`).join("");
+  const rows = data.rows.map((row) => {
+    const on = Number.isFinite(current) && Number.isFinite(Number(row.range_m)) && Math.abs(Number(row.range_m) - current) < 0.51;
+    return `<tr class="${on ? "current" : ""}">
+      <td>${esc(row.range_display)} ${esc(data.length_unit)}${on ? ` <span class="ho-badge accent">${esc(t("card-current"))}</span>` : ""}</td>
+      <td>${esc(row.elevation.direction)} ${esc(row.elevation.primary)} ${clickNote(row.elevation)}</td>
+      <td>${esc(row.drop_display)}</td>
+      <td>${esc(row.velocity_display)}</td>
+      <td>${esc(row.energy_display)}</td>
+      <td>${Number(row.tof_s).toFixed(3)}</td>
+      <td>${Number(row.mach).toFixed(2)}</td>
+      ${(row.winds || []).map((wind) => `<td class="group-start">${esc(wind.windage.direction)} ${esc(wind.windage.primary)} ${clickNote(wind.windage)}</td>`).join("")}
+      ${(row.conditions || []).map((item) => `<td class="group-start">${esc(item.elevation.direction)} ${esc(item.elevation.primary)} ${clickNote(item.elevation)}</td>`).join("")}
+    </tr>`;
+  }).join("");
   const barMm = Number(data.scale_bar_mm);
   const barLabel = esc(data.scale_bar_label || "");
   const bar = barMm
-    ? `<div class="scale-bar scale-bar-screen" style="width:${barMm}mm"><span>${barLabel}</span></div>
-       <div class="scale-bar scale-bar-print"><span>${barLabel}</span></div>`
+    ? `<div class="scale-bar scale-bar-screen" style="width:${barMm}mm" aria-hidden="true"><span>${barLabel}</span></div>
+       <p class="ho-hint">${barLabel}</p>`
     : "";
-  return `<h2>${esc(data.profile_label || "")}</h2>
-    <p>${esc(data.zero_summary || "")}</p>
-    <p class="meta">${esc(t("truing"))}: ${esc(data.truing || t("truing-none"))} · ${esc(data.date || "")}</p>
-    <p class="meta">${esc(t("from-zero"))}. ${esc(t("crosswind"))}.</p>
-    ${bar}
-    <table><thead><tr>
-      <th>${esc(t("range"))}</th><th>${esc(t("cards-elevation"))}</th><th>${esc(t("drop"))}</th>
-      <th>${esc(t("velocity"))}</th><th>${esc(t("energy"))}</th><th>${esc(t("tof"))}</th><th>${esc(t("mach"))}</th>
-      ${heads}${conditionHeads}
-    </tr></thead><tbody>${rows}</tbody></table>
-    <p class="disclaimer">${esc(data.footer || t("range-card-footer"))}</p>
-    <p class="disclaimer">${esc(data.disclaimer || boot.disclaimer)}</p>`;
+  return `<section class="ho-card flush">
+      <header><h2>${esc(data.profile_label || t("nav-card"))}</h2><span class="meta">${esc(t("card-preview-only"))}</span></header>
+      <div class="ho-table-wrap"><table class="ho-table zebra"><thead><tr>
+        <th>${esc(t("range"))}</th><th>${esc(t("cards-elevation"))}</th><th>${esc(t("drop"))}</th>
+        <th>${esc(t("velocity"))}</th><th>${esc(t("energy"))}</th><th>${esc(t("tof"))}</th><th>${esc(t("mach"))}</th>
+        ${heads}${conditionHeads}
+      </tr></thead><tbody>${rows}</tbody></table></div>
+    </section>
+    <div class="grid2">
+      <section class="ho-card">
+        <header><h2>${esc(t("card-conditions-title"))}</h2></header>
+        <dl class="ho-kv">
+          <dt>${esc(t("zero"))}</dt><dd>${esc(data.zero_summary || t("missing-not-set"))}</dd><span class="ho-unit"></span>
+          <dt>${esc(t("truing"))}</dt><dd>${esc(data.truing || t("truing-none"))}</dd><span class="ho-unit"></span>
+          <dt>${esc(t("documents-date"))}</dt><dd>${esc(data.date || "")}</dd><span class="ho-unit"></span>
+        </dl>
+        <p class="ho-hint">${esc(t("from-zero"))}. ${esc(t("crosswind"))}.</p>
+      </section>
+      <section class="ho-card">
+        <header><h2>${esc(t("card-scale-title"))}</h2></header>
+        ${bar}
+        <p class="ho-hint">${esc(t("card-scale-hint"))}</p>
+      </section>
+    </div>
+    <p class="ho-hint">${esc(data.footer || t("range-card-footer"))}</p>
+    <p class="ho-hint">${esc(data.disclaimer || boot.disclaimer)}</p>`;
 }
 
 function chartHtml() {
-  const profiles = boot.equipment.profiles;
+  const profiles = boot.equipment.profiles || [];
   const boxes = profiles.map((item) => `<label><input type="checkbox" class="overlay" value="${esc(item.id)}" ${item.id === boot.settings.active_profile_id ? "checked" : ""} /> ${esc(item.label)}</label>`).join("");
   const kindTitle = {
     drop: "chart-drop-tip",
@@ -1296,78 +1370,78 @@ function chartHtml() {
     const label = kind === "drop" ? "chart-drop" : kind === "wind" ? "chart-wind" : kind;
     return `<label title="${tip}"><input type="checkbox" class="chart-kind" value="${kind}" title="${tip}" ${chartKinds[kind] ? "checked" : ""} /> ${esc(t(label))}</label>`;
   }).join("");
-  return `<section class="panel">
-    <div class="checks noprint">${boxes}</div>
-    <div class="checks noprint">${kinds}</div>
-    <div class="row noprint">
-      <button type="button" id="chart-build">${esc(t("apply"))}</button>
-      <button type="button" id="chart-svg">${esc(t("download-svg"))}</button>
-      <button type="button" id="chart-png">${esc(t("download-png"))}</button>
-      <button type="button" id="chart-csv">${esc(t("card-csv"))}</button>
+  const rail = `<h2>${esc(t("nav-charts"))}</h2>
+    <div class="checks">${boxes}</div>
+    <div class="checks">${kinds}</div>
+    <div class="btnrow">
+      <button type="button" class="ho-btn primary" id="chart-build">${esc(t("apply"))}</button>
+      <button type="button" class="ho-btn ghost" id="chart-svg">${esc(t("download-svg"))}</button>
+      <button type="button" class="ho-btn ghost" id="chart-png">${esc(t("download-png"))}</button>
+      <button type="button" class="ho-btn ghost" id="chart-csv">${esc(t("card-csv"))}</button>
     </div>
-    <p class="hint">${esc(t("charts-note"))} ${esc(t("same-conditions"))} ${esc(t("chart-limit"))}</p>
-    <div id="chart-body"></div>
-    <h3>${esc(t("impact-title"))}</h3>
-    <p class="hint">${esc(t("impact-intro"))}</p>
-    <div class="compact noprint">
-      <div class="cluster">
-        <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
-          <select id="impact-target" title="${esc(t("impact-target-tip"))}">
-            ${targetOptions(impactTarget)}
-            <option value="custom" ${impactTarget === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
-          </select>
-        </label>
-        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
-          <select id="impact-facing" title="${esc(t("facing-tip"))}">
-            <option value="left" ${impactFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
-            <option value="right" ${impactFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
-          </select>
-        </label>
-        <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
-          <select id="impact-ringing" title="${esc(t("ringing-tip"))}">
-            <option value="primary" ${impactRinging === "primary" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
-            <option value="alt" ${impactRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
-          </select>
-        </label>
-        <label title="${esc(t("silhouette-tip"))}"><input id="impact-silhouette" type="checkbox" ${impactSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+    <p class="ho-hint">${esc(t("charts-note"))} ${esc(t("same-conditions"))} ${esc(t("chart-limit"))}</p>`;
+  const groups = (boot.equipment.groups || []).map((item) => `<option value="${esc(item.id)}" ${item.id === impactGroupId ? "selected" : ""}>${esc(item.label)}</option>`).join("");
+  const impact = `<div id="chart-pane-impact" class="pane${chartPane === "impact" ? "" : " is-hidden"}">
+      <p class="ho-hint">${esc(t("impact-intro"))}</p>
+      <div class="ho-fields">
+        ${hoSelect("impact-target", t("impact-target"), `${targetOptions(impactTarget)}<option value="custom" ${impactTarget === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>`, t("impact-target-tip"))}
+        ${hoSelect("impact-facing", t("facing"), `<option value="left" ${impactFacing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option><option value="right" ${impactFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>`, t("facing-tip"))}
+        ${hoSelect("impact-ringing", t("ringing"), `<option value="primary" ${impactRinging === "primary" ? "selected" : ""}>${esc(t("ringing-primary"))}</option><option value="alt" ${impactRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>`, t("ringing-tip"))}
       </div>
-      <div class="cluster">
-        <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length")}</span>
+      <label class="ho-check" title="${esc(t("silhouette-tip"))}"><input id="impact-silhouette" type="checkbox" ${impactSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+      <div class="ho-fields">
+        <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length", null, null, "impact-range")}</span>
         <span title="${esc(t("impact-mv-tip"))}">${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}</span>
         <span title="${esc(t("impact-error-tip"))}">${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}</span>
-      </div>
-      <div class="cluster">
-        <label class="field phrase" title="${esc(t("impact-wind-tip"))}">${esc(t("card-winds"))}
-          <input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" />
-        </label>
+        <div class="ho-field" title="${esc(t("impact-wind-tip"))}"><div class="head"><label for="impact-brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" autocomplete="off" /></div></div>
         <span title="${esc(t("impact-zone-tip"))}">${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}</span>
-        <label class="field">${esc(t("group-saved"))}
-          <select id="impact-group" title="${esc(t("group-impact"))}">
-            <option value="">${esc(t("group-blank"))}</option>
-            ${(boot.equipment.groups || []).map((item) => `<option value="${esc(item.id)}" ${item.id === impactGroupId ? "selected" : ""}>${esc(item.label)}</option>`).join("")}
-          </select>
-        </label>
-        <button type="button" id="impact-draw" title="${esc(t("impact-draw-tip"))}">${esc(t("impact-draw"))}</button>
+        ${hoSelect("impact-group", t("group-saved"), `<option value="">${esc(t("group-blank"))}</option>${groups}`, t("group-impact"))}
+      </div>
+      <button type="button" class="ho-btn" id="impact-draw" title="${esc(t("impact-draw-tip"))}">${esc(t("impact-draw"))}</button>
+      <div id="impact-body"></div>
+    </div>`;
+  const main = `<div class="ho-tabs" role="tablist" aria-label="${esc(t("nav-charts"))}">
+      <button type="button" role="tab" data-chart-pane="trajectory" aria-selected="${chartPane === "trajectory"}">${esc(t("chart-tab-trajectory"))}</button>
+      <button type="button" role="tab" data-chart-pane="impact" aria-selected="${chartPane === "impact"}">${esc(t("impact-title"))}</button>
+    </div>
+    <div id="chart-pane-traj" class="pane${chartPane === "trajectory" ? "" : " is-hidden"}">
+      <div class="grid2">
+        <section class="ho-card">
+          <p class="legend" id="chart-legend"></p>
+          <div id="chart-body"></div>
+        </section>
+        <section class="ho-card" id="chart-readout" aria-label="${esc(t("chart-at"))}">
+          <header><h2>${esc(t("chart-at"))}</h2></header>
+          <div id="chart-table"><p class="ho-hint">${esc(t("chart-cursor"))}</p></div>
+        </section>
       </div>
     </div>
-    <div id="impact-body"></div>
-  </section>`;
+    ${impact}`;
+  return frame({ rail, main, railLabel: t("nav-charts") });
 }
 
 function equipmentHtml() {
   const tabs = ["rifle", "scope", "bullet", "load", "profile", "chrono", "recoil", "log", "groups", "archive"].map((kind) =>
-    `<button type="button" data-kind="${kind}" class="${equipKind === kind ? "active" : ""}">${esc(t("equip-" + kind))}</button>`).join("");
+    `<button type="button" role="tab" data-kind="${kind}" aria-selected="${equipKind === kind}">${esc(t("equip-" + kind))}</button>`).join("");
+  const tablist = `<div class="ho-tabs" role="tablist" aria-label="${esc(t("nav-equipment"))}">${tabs}</div>`;
   if (equipKind === "archive") {
-    return `<section class="panel"><div class="row">${tabs}</div>${archiveHtml()}</section>`;
+    return frame({
+      rail: `<h2>${esc(t("equip-archive"))}</h2><p class="ho-hint">${esc(t("archive-intro"))}</p>`,
+      main: `${tablist}<section class="ho-card">${archiveHtml()}</section>`,
+      body: "with-list",
+      railLabel: t("nav-equipment"),
+    });
   }
   const items = equipList().map((item) =>
-    `<button type="button" data-pick="${esc(item.id)}">${esc(item.label)}</button>`).join("");
-  const library = equipKind === "recoil" ? "" : (items || `<p>${esc(t("equip-empty"))}</p>`);
-  const newer = equipKind === "recoil" || equipKind === "chrono" || equipKind === "groups" ? "" : `<button type="button" id="equip-new">${esc(t("new"))}</button>`;
-  return `<div class="layout">
-    <section class="panel list"><div class="row">${tabs}</div>${newer}${library}</section>
-    <section class="panel" id="equip-form">${equipForm()}</section>
-  </div>`;
+    `<button type="button" data-pick="${esc(item.id)}" aria-selected="${item.id === selectedId}"><span>${esc(item.label)}</span><span class="sub">${esc(t("equip-" + equipKind))}</span></button>`).join("");
+  const library = equipKind === "recoil" ? "" : `<div class="ho-list">${items || `<p class="ho-hint">${esc(t("equip-empty"))}</p>`}</div>`;
+  const newer = equipKind === "recoil" || equipKind === "chrono" || equipKind === "groups" ? "" : `<button type="button" class="ho-btn" id="equip-new">${esc(t("new"))}</button>`;
+  return frame({
+    rail: `<h2>${esc(t("nav-equipment"))}</h2>${newer}${library}`,
+    main: `${tablist}<section class="ho-card" id="equip-form">${equipForm()}</section>`,
+    body: "with-list",
+    railLabel: t("nav-equipment"),
+  });
 }
 
 function equipList() {
@@ -1450,14 +1524,14 @@ function equipForm() {
   }
   const notice = equipNotice;
   equipNotice = "";
-  return `${id}<div class="fields">${fields}</div>
-    <div class="row"><button type="button" id="equip-save">${esc(t("save"))}</button>
-    ${record.id ? `<button type="button" id="equip-delete">${esc(t("archive"))}</button>` : ""}</div>
+  return `${id}<div class="ho-fields">${fields}</div>
+    <div class="btnrow"><button type="button" class="ho-btn primary" id="equip-save">${esc(t("save"))}</button>
+    ${record.id ? `<button type="button" class="ho-btn" id="equip-delete">${esc(t("archive"))}</button>` : ""}</div>
     <p id="equip-msg" class="meta">${esc(notice)}</p>`;
 }
 
 function textInput(id, label, value) {
-  return `<label class="field">${esc(label)}<input id="${id}" value="${esc(value || "")}" /></label>`;
+  return `<div class="ho-field"><div class="head"><label for="${id}">${esc(label)}</label></div><div class="ho-entry"><input id="${id}" value="${esc(value || "")}" autocomplete="off" /></div></div>`;
 }
 
 function numberInput(id, label, value) {
@@ -1465,7 +1539,12 @@ function numberInput(id, label, value) {
     const input = `<input id="${id}" value="${esc(value ?? "")}" inputmode="decimal" autocomplete="off" spellcheck="false" />`;
     return hoQty(id, label, "", "count", id, input);
   }
-  return `<label class="field">${esc(label)}<input id="${id}" value="${esc(value ?? "")}" inputmode="decimal" /></label>`;
+  return `<div class="ho-field"><div class="head"><label for="${id}">${esc(label)}</label></div><div class="ho-entry"><input id="${id}" class="num" value="${esc(value ?? "")}" inputmode="decimal" autocomplete="off" /></div></div>`;
+}
+
+function hoSelect(id, label, options, title) {
+  const tip = title ? ` title="${esc(title)}"` : "";
+  return `<div class="ho-field"${tip}><div class="head"><label for="${id}">${esc(label)}</label></div><div class="ho-entry"><select id="${id}"${tip}>${options}</select></div></div>`;
 }
 
 function settingsHtml() {
@@ -1473,90 +1552,113 @@ function settingsHtml() {
   const rings = boot.targets || { moose_cm: [], roe_cm: [] };
   const lat = s.weather_latitude == null ? "" : String(s.weather_latitude);
   const lon = s.weather_longitude == null ? "" : String(s.weather_longitude);
-  return `<section class="panel">
-    <p class="hint">${esc(t("settings-page-intro"))}</p>
-    <h2>${esc(t("settings-appearance"))}</h2>
-    <div class="checks">
-      ${["follow", "light", "dark"].map((mode) => `<label><input type="radio" name="appearance" value="${mode}" ${s.appearance === mode ? "checked" : ""} /> ${esc(t("settings-" + mode))}</label>`).join("")}
-    </div>
-    <p class="hint">${esc(t("follow-note"))}</p>
-    <label><input type="checkbox" id="large-text" ${s.large_text ? "checked" : ""} /> ${esc(t("settings-large"))}</label>
-    <label><input type="checkbox" id="reduced-motion" ${s.reduced_motion ? "checked" : ""} /> ${esc(t("settings-motion"))}</label>
-    <p class="meta">${esc(t("palette"))}: ${esc(theme.source || "")} · ${esc(t("text-scale"))} ${esc(theme.text_scale || 1)}</p>
-    <h2>${esc(t("settings-weather"))}</h2>
-    <p class="hint">${esc(t("settings-weather-intro"))}</p>
-    <div class="compact">
-      <label class="field wide">${esc(t("weather-place"))}
-        <input id="weather-place" value="${esc(s.weather_place || "")}" title="${esc(t("weather-place-tip"))}" />
-      </label>
-      <div class="cluster">
-        <label class="field">${esc(t("weather-latitude"))}
-          <input id="weather-lat" value="${esc(lat)}" inputmode="decimal" title="${esc(t("weather-latitude-tip"))}" />
-        </label>
-        <label class="field">${esc(t("weather-longitude"))}
-          <input id="weather-lon" value="${esc(lon)}" inputmode="decimal" title="${esc(t("weather-longitude-tip"))}" />
-        </label>
-        <label class="field">${esc(t("weather-stale-minutes"))}
-          <input id="weather-stale" value="${esc(s.weather_stale_minutes || 60)}" inputmode="numeric" title="${esc(t("weather-stale-tip"))}" />
-        </label>
-      </div>
-    </div>
-    <button type="button" id="weather-save" title="${esc(t("weather-save-tip"))}">${esc(t("weather-save"))}</button>
-    <p id="weather-save-msg" class="meta"></p>
-    <p class="hint">${esc(t("weather-attribution"))}</p>
-    <p class="hint">${esc(t("weather-noncommercial"))}</p>
-    <h2>${esc(t("settings-library"))}</h2>
-    <p class="hint">${esc(t("settings-library-intro"))}</p>
-    <label><input type="checkbox" id="include-location" title="${esc(t("include-location-tip"))}" /> ${esc(t("include-location"))}</label>
-    <div class="row">
-      <button type="button" id="export">${esc(t("settings-export"))}</button>
-      <button type="button" id="export-csv" title="${esc(t("settings-library-intro"))}">${esc(t("settings-export-csv"))}</button>
-      <button type="button" id="show-json">${esc(t("open-backup"))}</button>
-    </div>
-    <p id="backup-path" class="meta"></p>
-    <pre id="backup-json" class="hidden"></pre>
-    <p class="hint">${esc(t("include-note"))}</p>
-    <div class="compact"><label class="field">${esc(t("settings-restore"))}<input id="restore-file" type="file" accept="application/json,.json,text/csv,.csv" title="${esc(t("settings-library-intro"))}" /></label></div>
-    <pre id="restore-preview"></pre>
-    <div class="row">
-      <button type="button" id="restore-commit" class="hidden">${esc(t("settings-replace"))}</button>
-      <button type="button" id="restore-merge" class="hidden">${esc(t("import-merge"))}</button>
-    </div>
-    <p class="hint">${esc(t("restore-warning"))}</p>
-    <h2>${esc(t("targets-title"))}</h2>
-    <p>${esc(t("rings-moose"))}: ${esc((rings.moose_cm || []).join(" / "))} cm</p>
-    <p>${esc(t("rings-roe"))}: ${esc((rings.roe_cm || []).join(" / "))} cm</p>
-    <p class="hint">${esc(t("targets-note"))} ${esc(t("older-rings"))}</p>
-    <p class="hint">${esc(boot.spin_provenance || "")}</p>
-    <h2>${esc(t("nav-about"))}</h2>
-    <p class="hint">${esc(t("settings-about"))}</p>
-    <button type="button" id="open-about-settings">${esc(t("nav-about"))}</button>
-  </section>`;
+  const rangeParsed = parseLocal(s.range_step || "10 m", "length", "m");
+  const windParsed = parseLocal(s.wind_step || "1 mps", "velocity", "mps");
+  const main = `<p class="ho-hint">${esc(t("settings-page-intro"))}</p>
+    <div class="cols">
+      <section class="ho-card stack">
+        <header><h2>${esc(t("settings-appearance"))}</h2></header>
+        <div class="ho-seg" role="radiogroup" aria-label="${esc(t("settings-appearance"))}">
+          ${["follow", "light", "dark"].map((mode) => `<button type="button" data-appearance="${mode}" aria-checked="${s.appearance === mode}">${esc(t("settings-" + mode))}</button>`).join("")}
+        </div>
+        <p class="ho-hint">${esc(t("follow-note"))}</p>
+        <label class="ho-check"><input type="checkbox" id="large-text" ${s.large_text ? "checked" : ""} /> ${esc(t("settings-large"))}</label>
+        <label class="ho-check"><input type="checkbox" id="reduced-motion" ${s.reduced_motion ? "checked" : ""} /> ${esc(t("settings-motion"))}</label>
+        <p class="ho-hint">${esc(t("palette"))}: ${esc(theme.source || "")} · ${esc(t("text-scale"))} ${esc(theme.text_scale || 1)}</p>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("settings-steps"))}</h2></header>
+        ${qtyField("range-step", t("settings-range-step"), "", "m", "length", rangeParsed ? rangeParsed.si : 10)}
+        ${qtyField("wind-step", t("settings-wind-step"), "", "mps", "velocity", windParsed ? windParsed.si : 1)}
+        <p class="ho-hint">${esc(t("settings-steps-hint"))}</p>
+        <header><h2>${esc(t("settings-units"))}</h2></header>
+        <div id="settings-units" class="ho-fields">${settingsUnitFields()}</div>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("settings-weather"))}</h2></header>
+        <p class="ho-hint">${esc(t("settings-weather-intro"))}</p>
+        <div class="ho-fields">
+          <div class="ho-field wide"><div class="head"><label for="weather-place">${esc(t("weather-place"))}</label></div><div class="ho-entry"><input id="weather-place" value="${esc(s.weather_place || "")}" title="${esc(t("weather-place-tip"))}" autocomplete="off" /></div></div>
+          <div class="ho-field"><div class="head"><label for="weather-lat">${esc(t("weather-latitude"))}</label></div><div class="ho-entry"><input id="weather-lat" class="num" value="${esc(lat)}" inputmode="decimal" title="${esc(t("weather-latitude-tip"))}" autocomplete="off" /></div></div>
+          <div class="ho-field"><div class="head"><label for="weather-lon">${esc(t("weather-longitude"))}</label></div><div class="ho-entry"><input id="weather-lon" class="num" value="${esc(lon)}" inputmode="decimal" title="${esc(t("weather-longitude-tip"))}" autocomplete="off" /></div></div>
+          <div class="ho-field"><div class="head"><label for="weather-stale">${esc(t("weather-stale-minutes"))}</label></div><div class="ho-entry"><input id="weather-stale" class="num" value="${esc(s.weather_stale_minutes || 60)}" inputmode="numeric" title="${esc(t("weather-stale-tip"))}" autocomplete="off" /></div></div>
+        </div>
+        <button type="button" class="ho-btn" id="weather-save" title="${esc(t("weather-save-tip"))}">${esc(t("weather-save"))}</button>
+        <p id="weather-save-msg" class="meta"></p>
+        <p class="ho-hint">${esc(t("weather-attribution"))}</p>
+        <p class="ho-hint">${esc(t("weather-noncommercial"))}</p>
+        <header><h2>${esc(t("settings-library"))}</h2></header>
+        <p class="ho-hint">${esc(t("settings-library-intro"))}</p>
+        <label class="ho-check"><input type="checkbox" id="include-location" title="${esc(t("include-location-tip"))}" /> ${esc(t("include-location"))}</label>
+        <div class="btnrow">
+          <button type="button" class="ho-btn" id="export">${esc(t("settings-export"))}</button>
+          <button type="button" class="ho-btn" id="export-csv" title="${esc(t("settings-library-intro"))}">${esc(t("settings-export-csv"))}</button>
+          <button type="button" class="ho-btn ghost" id="show-json">${esc(t("open-backup"))}</button>
+        </div>
+        <p id="backup-path" class="meta"></p>
+        <pre id="backup-json" class="hidden"></pre>
+        <p class="ho-hint">${esc(t("include-note"))}</p>
+        <div class="ho-field"><div class="head"><label for="restore-file">${esc(t("settings-restore"))}</label></div><input id="restore-file" type="file" accept="application/json,.json,text/csv,.csv" title="${esc(t("settings-library-intro"))}" /></div>
+        <pre id="restore-preview"></pre>
+        <div class="btnrow">
+          <button type="button" class="ho-btn hidden" id="restore-commit">${esc(t("settings-replace"))}</button>
+          <button type="button" class="ho-btn hidden" id="restore-merge">${esc(t("import-merge"))}</button>
+        </div>
+        <p class="ho-hint">${esc(t("restore-warning"))}</p>
+        <header><h2>${esc(t("targets-title"))}</h2></header>
+        <p>${esc(t("rings-moose"))}: ${esc((rings.moose_cm || []).join(" / "))} cm</p>
+        <p>${esc(t("rings-roe"))}: ${esc((rings.roe_cm || []).join(" / "))} cm</p>
+        <p class="ho-hint">${esc(t("targets-note"))} ${esc(t("older-rings"))}</p>
+        <header><h2>${esc(t("nav-about"))}</h2></header>
+        <p class="ho-hint">${esc(t("settings-about"))}</p>
+        <button type="button" class="ho-btn" id="open-about-settings">${esc(t("nav-about"))}</button>
+      </section>
+    </div>`;
+  return frame({ body: "no-rail", main, railLabel: t("nav-settings") });
 }
 
 function onboardHtml() {
-  return `<main class="onboard">
-    <h1>${esc(t("onboard-title"))}</h1>
-    <div class="choices">
-      <button type="button" data-onboard="metric"><strong>${esc(t("onboard-metric"))}</strong>${esc(t("onboard-metric-detail"))}</button>
-      <button type="button" data-onboard="us"><strong>${esc(t("onboard-us"))}</strong>${esc(t("onboard-us-detail"))}</button>
-      <button type="button" data-onboard="custom"><strong>${esc(t("onboard-custom"))}</strong>${esc(t("onboard-custom-detail"))}</button>
+  const choice = (id, title, detail) => `<button type="button" class="ho-choice" data-onboard="${id}" aria-checked="false"><b>${esc(t(title))}</b><span>${esc(t(detail))}</span></button>`;
+  return `<a class="ho-skip" href="#onboard-title">${esc(t("skip"))}</a>
+    <div class="ho-shell" inert>
+      <header class="ho-top"><span class="brand">${esc(t("app-name"))}</span></header>
+      <div class="ho-body no-rail"><main class="ho-main" id="main"></main></div>
+      <footer class="ho-status"><span class="ho-legal">${esc(boot.disclaimer || "")}</span></footer>
     </div>
-    <label><input type="checkbox" id="example" checked /> ${esc(t("onboard-example"))}</label>
-    <div id="onboard-custom" class="hidden">${unitsPopover(false)}</div>
-    <p class="hint">${esc(t("example-note"))}</p>
-    <p class="disclaimer">${esc(boot.disclaimer)}</p>
-    <p class="hint" id="onboard-custom-note"></p>
-    <button type="button" id="onboard-accept" disabled>${esc(t("onboard-accept"))}</button>
-  </main>`;
+    <div class="ho-scrim" role="dialog" aria-modal="true" aria-labelledby="onboard-title">
+      <div class="ho-dialog">
+        <header><h2 id="onboard-title">${esc(t("onboard-title"))}</h2></header>
+        <div class="body">
+          ${choice("metric", "onboard-metric", "onboard-metric-detail")}
+          ${choice("us", "onboard-us", "onboard-us-detail")}
+          ${choice("custom", "onboard-custom", "onboard-custom-detail")}
+          <div class="ho-seg" role="radiogroup" aria-label="${esc(t("onboard-example"))}">
+            <button type="button" data-example="yes" aria-checked="true">${esc(t("onboard-example-yes"))}</button>
+            <button type="button" data-example="no" aria-checked="false">${esc(t("onboard-example-no"))}</button>
+          </div>
+          <input type="checkbox" id="example" class="hidden" checked />
+          <div id="onboard-custom" class="hidden">${unitsPopover(false)}</div>
+          <p class="ho-hint">${esc(t("example-note"))}</p>
+          <p class="ho-hint">${esc(boot.disclaimer)}</p>
+          <p class="ho-hint" id="onboard-custom-note"></p>
+        </div>
+        <footer><button type="button" class="ho-btn primary" id="onboard-accept" disabled>${esc(t("onboard-accept"))}</button></footer>
+      </div>
+    </div>`;
 }
 
 function bindOnboard() {
   let preset = "";
+  document.querySelectorAll("[data-example]").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.getElementById("example").checked = button.dataset.example === "yes";
+      document.querySelectorAll("[data-example]").forEach((item) => item.setAttribute("aria-checked", item === button ? "true" : "false"));
+    });
+  });
   document.querySelectorAll("[data-onboard]").forEach((button) => {
     button.addEventListener("click", () => {
       preset = button.dataset.onboard;
-      document.querySelectorAll("[data-onboard]").forEach((item) => item.classList.toggle("active", item === button));
+      document.querySelectorAll("[data-onboard]").forEach((item) => item.setAttribute("aria-checked", item === button ? "true" : "false"));
       document.getElementById("onboard-custom").classList.toggle("hidden", preset !== "custom");
       document.getElementById("onboard-accept").disabled = false;
     });
@@ -1604,7 +1706,7 @@ function bindShell() {
   if (apply) {
     apply.addEventListener("click", async () => {
       const custom = {};
-      document.querySelectorAll("[data-unit-key]").forEach((select) => { custom[select.dataset.unitKey] = select.value; });
+      document.querySelectorAll("#units-pop [data-unit-key]").forEach((select) => { custom[select.dataset.unitKey] = select.value; });
       boot = await call("set_preferences", { body: { preset: "custom", units: custom, angular: custom.angular, appearance: boot.settings.appearance, large_text: boot.settings.large_text, reduced_motion: boot.settings.reduced_motion, card_pinned: boot.settings.card_pinned } });
       unitsOpen = false;
       render();
@@ -1647,12 +1749,16 @@ function bindPage() {
   if (page === "documents") bindDocuments();
   if (page === "sync") bindSync();
   if (page === "settings") bindSettings();
-  if (window.attachSteppers) {
-    attachSteppers(document.getElementById("app"), {
-      parse: parseLocal,
-      format: formatLocal,
-      settings: stepSettings,
-      changed(input) {
+  wireSteppers();
+}
+
+function wireSteppers(root) {
+  if (!window.attachSteppers) return;
+  attachSteppers(root || document.getElementById("app"), {
+    parse: parseLocal,
+    format: formatLocal,
+    settings: stepSettings,
+    changed(input) {
         input.dataset.dirty = "1";
         if (input.id === "target_speed") {
           moving.open = true;
@@ -1661,16 +1767,24 @@ function bindPage() {
         }
         if (input.id === "reticle-mag") reticleState.mag = Number(input.value) || reticleState.mag;
         if (input.id === "reticle-cal") reticleState.cal = Number(input.value) || reticleState.cal;
+        if (input.id === "reticle-range") reticleState.rangeText = input.value;
+        if (input.id === "compare-direction") compareForm.direction = input.value;
+        if (input.id === "pbr-zero") pbrZeroText = input.value;
         if (input.closest(".ho-field")) markInvalid(input, fieldIsInvalid(input));
         showPreview(input);
         if (page === "solve") {
           if (input.id === "temperature" || input.id === "pressure" || input.id === "altitude" || input.id === "humidity") noteAirEdit();
           scheduleSolve(0);
         }
+        if (page === "compare") {
+          rememberCompareNumbers();
+          scheduleCompare(0);
+        }
+        if (page === "groups") scheduleGroup(0);
         if (page === "reticle") scheduleReticle();
-      },
-    });
-  }
+        if (input.id === "range-step" || input.id === "wind-step") saveSteps();
+    },
+  });
 }
 
 function bindSolve() {
@@ -1886,6 +2000,15 @@ function downloadBase64(name, encoded) {
 }
 
 function bindChart() {
+  document.querySelectorAll("[data-chart-pane]").forEach((button) => button.addEventListener("click", () => {
+    chartPane = button.dataset.chartPane;
+    document.querySelectorAll("[data-chart-pane]").forEach((item) => item.setAttribute("aria-selected", item === button ? "true" : "false"));
+    const traj = document.getElementById("chart-pane-traj");
+    const impact = document.getElementById("chart-pane-impact");
+    if (traj) traj.classList.toggle("is-hidden", chartPane !== "trajectory");
+    if (impact) impact.classList.toggle("is-hidden", chartPane !== "impact");
+    if (chartPane === "trajectory" && chartData) paintCharts(true);
+  }));
   document.getElementById("chart-build").addEventListener("click", buildChart);
   document.querySelectorAll(".overlay").forEach((box) => box.addEventListener("change", buildChart));
   document.querySelectorAll(".chart-kind").forEach((box) => box.addEventListener("change", () => {
@@ -1995,12 +2118,14 @@ function paintCharts(force) {
   bindChartPointers();
   positionCursor();
   writeReadouts();
+  const legend = document.getElementById("chart-legend");
+  if (legend) legend.innerHTML = legendItems();
   chartPainting = false;
 }
 
 function legendItems() {
   return (chartData.series || []).map((item, index) =>
-    `<span><i class="swatch swatch-${index % 6}"></i>${esc(item.label)}</span>`).join("");
+    `<span><i class="swatch" style="border-color:var(--chart-${index % 6})"></i>${esc(item.label)}</span>`).join("");
 }
 
 function xLabelStride(count, plotW) {
@@ -2173,6 +2298,29 @@ function positionCursor() {
 }
 
 function writeReadouts() {
+  const table = document.getElementById("chart-table");
+  if (table && chartData && chartData.series && chartData.series.length) {
+    if (chartCursor === null) {
+      table.innerHTML = `<p class="ho-hint">${esc(t("chart-cursor"))}</p>`;
+    } else {
+      const sample = chartData.series[0].points[chartCursor];
+      const head = chartData.series.map((item) => `<th>${esc(item.label)}</th>`).join("");
+      const row = (label, pick) => `<tr><th>${esc(label)}</th>${chartData.series.map((item) => {
+        const point = item.points[chartCursor];
+        return `<td>${point ? esc(pick(point)) : ""}</td>`;
+      }).join("")}</tr>`;
+      table.innerHTML = sample ? `<p class="ho-cap">${esc(t("chart-at"))} ${esc(signed(sample.range))} ${esc(chartData.x.unit)}</p>
+        <div class="ho-table-wrap"><table class="ho-table"><thead><tr><th></th>${head}</tr></thead><tbody>
+          ${row(t("drop"), (point) => `${signed(point.path)} ${chartData.drop.unit}`)}
+          ${row(t("elevation"), (point) => `${signed(point.elevation)} ${chartData.drop.hold_unit || ""}`)}
+          ${row(t("windage"), (point) => `${signed(point.windage)} ${chartData.wind.unit || ""}`)}
+          ${row(t("velocity"), (point) => `${signed(point.velocity)} ${chartData.velocity.unit || ""}`)}
+          ${row(t("energy"), (point) => `${signed(point.energy)} ${chartData.energy.unit || ""}`)}
+          ${row(t("tof"), (point) => signed(point.tof))}
+          ${row(t("mach"), (point) => signed(point.mach))}
+        </tbody></table></div>` : "";
+    }
+  }
   document.querySelectorAll("[data-readout]").forEach((node) => {
     const kind = node.dataset.readout;
     if (!chartData) return;
@@ -2293,12 +2441,40 @@ function equipPayload() {
   return body;
 }
 
+async function saveSteps() {
+  const range = document.getElementById("range-step");
+  const wind = document.getElementById("wind-step");
+  if (!range || !wind) return;
+  const rangeText = `${range.value} ${range.dataset.unit || "m"}`.trim();
+  const windText = `${wind.value} ${wind.dataset.unit || "mps"}`.trim();
+  if (!rangeText || !windText) return;
+  boot = await call("set_preferences", { body: preferencesBody({ range_step: rangeText, wind_step: windText }) });
+}
+
+async function saveSettingsUnits() {
+  const custom = {};
+  document.querySelectorAll("#settings-units [data-settings-unit]").forEach((select) => {
+    custom[select.dataset.settingsUnit] = select.value;
+  });
+  boot = await call("set_preferences", { body: preferencesBody({ preset: "custom", units: custom, angular: custom.angular }) });
+  render();
+}
+
 function bindSettings() {
   const about = document.getElementById("open-about-settings");
   if (about) about.addEventListener("click", () => { page = "about"; render(); });
-  document.querySelectorAll("input[name=appearance]").forEach((input) => input.addEventListener("change", async () => {
-    boot = await call("set_preferences", { body: preferencesBody({ appearance: input.value }) });
+  document.querySelectorAll("[data-appearance]").forEach((button) => button.addEventListener("click", async () => {
+    boot = await call("set_preferences", { body: preferencesBody({ appearance: button.dataset.appearance }) });
+    applyTheme();
+    render();
   }));
+  ["range-step", "wind-step"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("change", saveSteps);
+  });
+  document.querySelectorAll("#settings-units [data-settings-unit]").forEach((select) => {
+    select.addEventListener("change", saveSettingsUnits);
+  });
   document.getElementById("large-text").addEventListener("change", async (event) => {
     boot = await call("set_preferences", { body: preferencesBody({ large_text: event.target.checked }) });
     applyTheme();
@@ -2382,58 +2558,61 @@ async function commitLibrary(policy) {
 function syncHtml() {
   const exportOn = syncTab === "export";
   const importOn = syncTab === "import";
-  return `<section class="panel sync-page">
-    <h2>${esc(t("nav-sync"))}</h2>
-    <p class="hint">${esc(t("sync-intro"))}</p>
-    <div class="tabs" id="sync-tabs" role="tablist" aria-label="${esc(t("sync-tabs"))}">
+  const facts = bundlePreview
+    ? `<dl class="ho-kv mini"><dt>${esc(t("sync-schema"))}</dt><dd>${esc(bundlePreview.schema_version)}</dd><span class="ho-unit"></span><dt>${esc(t("sync-local-only"))}</dt><dd>${esc(bundlePreview.local_only || 0)}</dd><span class="ho-unit"></span></dl>`
+    : "";
+  const rail = `<h2>${esc(t("sync-bundle"))}</h2>
+    <p class="ho-hint">${esc(t("sync-intro"))}</p>
+    <div class="ho-seg" id="sync-tabs" role="tablist" aria-label="${esc(t("sync-tabs"))}">
       ${syncModeButton("export", "sync-export", exportOn)}
       ${syncModeButton("import", "sync-import", importOn)}
     </div>
     <div role="tabpanel" data-sync-panel="export" ${exportOn ? "" : "hidden"}>
-      <p class="hint">${esc(t("sync-export-intro"))}</p>
-      <label><input type="checkbox" id="bundle-include" title="${esc(t("sync-include-tip"))}" ${bundleInclude ? "checked" : ""} /> ${esc(t("include-location"))}</label>
-      <div class="row">
-        <button type="button" id="bundle-export" title="${esc(t("sync-export-tip"))}">${esc(t("sync-export-button"))}</button>
-      </div>
+      <p class="ho-hint">${esc(t("sync-export-intro"))}</p>
+      <label class="ho-check"><input type="checkbox" id="bundle-include" title="${esc(t("sync-include-tip"))}" ${bundleInclude ? "checked" : ""} /> ${esc(t("include-location"))}</label>
+      <button type="button" class="ho-btn primary" id="bundle-export" title="${esc(t("sync-export-tip"))}">${esc(t("sync-export-button"))}</button>
     </div>
     <div role="tabpanel" data-sync-panel="import" ${importOn ? "" : "hidden"}>
-      ${syncImportHtml()}
+      ${syncImportControls()}
     </div>
+    ${facts}
     <p id="bundle-message" class="${bundleError ? "error" : "meta"}">${esc(bundleMessage)}</p>
-    ${bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}
-  </section>`;
+    ${bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}`;
+  const main = importOn ? syncImportTable() : `<p class="ho-hint">${esc(t("sync-export-intro"))}</p>`;
+  return frame({ rail, main, body: "with-list", railLabel: t("nav-sync") });
 }
 
 function syncModeButton(id, key, on) {
   return `<button type="button" role="tab" data-sync-tab="${id}" aria-selected="${on}" tabindex="${on ? 0 : -1}">${esc(t(key))}</button>`;
 }
 
-function syncImportHtml() {
-  const file = `<div class="compact"><label class="field wide">${esc(t("sync-file"))}<input id="bundle-file" type="file" accept=".holdover,application/zip" title="${esc(t("sync-file-tip"))}" /></label></div>`;
-  if (!bundlePreview) {
-    return `<p class="hint">${esc(t("sync-import-intro"))}</p>${file}`;
-  }
+function syncImportControls() {
+  return `<p class="ho-hint">${esc(t("sync-import-intro"))}</p>
+    <p class="ho-hint">${esc(t("sync-import-privacy"))}</p>
+    <div class="ho-field"><div class="head"><label for="bundle-file">${esc(t("sync-file"))}</label></div>
+      <input id="bundle-file" type="file" accept=".holdover,application/zip" title="${esc(t("sync-file-tip"))}" />
+    </div>`;
+}
+
+function syncImportTable() {
+  if (!bundlePreview) return `<p class="ho-hint">${esc(t("sync-import-intro"))}</p>`;
   const rows = bundlePreview.rows || [];
   const shown = syncVisibleRows(rows);
   const hidden = syncFilteredRows(rows).length - shown.length;
-  const more = hidden > 0 ? `<p class="sync-more">${esc(t("sync-more").replace("{count}", String(hidden)))}</p>` : "";
+  const more = hidden > 0 ? `<p class="ho-hint">${esc(t("sync-more").replace("{count}", String(hidden)))}</p>` : "";
   const note = bundleConflictsOpen()
-    ? `<p class="hint">${esc(t("sync-unresolved-note"))}</p>`
-    : (bundleHasWork() ? "" : `<p class="hint">${esc(t("sync-nothing"))}</p>`);
-  const localOnly = `<p class="meta">${esc(t("sync-local-only"))}: ${esc(bundlePreview.local_only || 0)} · ${esc(t("sync-schema"))} ${esc(bundlePreview.schema_version)}</p>`;
-  return `<p class="hint">${esc(t("sync-import-intro"))}</p>
-    <p class="hint">${esc(t("sync-import-privacy"))}</p>
-    ${file}
-    ${localOnly}
-    <div class="tabs" id="sync-filters" role="tablist" aria-label="${esc(t("sync-filter"))}">
+    ? `<p class="ho-hint">${esc(t("sync-unresolved-note"))}</p>`
+    : (bundleHasWork() ? "" : `<p class="ho-hint">${esc(t("sync-nothing"))}</p>`);
+  const body = shown.map(syncRowHtml).join("") || `<tr><td class="text" colspan="4">${esc(t("sync-filter-empty"))}</td></tr>`;
+  return `<div class="filters" id="sync-filters" role="tablist" aria-label="${esc(t("sync-filter"))}">
       ${["conflict", "new", "updated", "deleted", "unchanged", "all"].map(syncFilterButton).join("")}
     </div>
-    <div class="sync-list">${shown.map(syncRowHtml).join("") || `<p class="meta">${esc(t("sync-filter-empty"))}</p>`}</div>
+    <section class="ho-card flush"><div class="ho-table-wrap"><table class="ho-table"><thead><tr>
+      <th class="text">${esc(t("archive-kind"))}</th><th class="text">${esc(t("sync-filter"))}</th><th class="text">${esc(t("label"))}</th><th class="text"></th>
+    </tr></thead><tbody>${body}</tbody></table></div></section>
     ${more}
     ${note}
-    <div class="row">
-      <button type="button" id="bundle-apply" title="${esc(t("sync-apply-tip"))}" ${bundleCanApply() ? "" : "disabled"}>${esc(t("sync-apply"))}</button>
-    </div>`;
+    <button type="button" class="ho-btn primary" id="bundle-apply" title="${esc(t("sync-apply-tip"))}" ${bundleCanApply() ? "" : "disabled"}>${esc(t("sync-apply"))}</button>`;
 }
 
 function syncFilterButton(id) {
@@ -2442,7 +2621,7 @@ function syncFilterButton(id) {
   const count = id === "all" ? rows.length : (counts[id] || 0);
   const on = syncFilter === id;
   const label = id === "all" ? t("sync-filter-all") : t("sync-status-" + id);
-  return `<button type="button" role="tab" data-sync-filter="${id}" aria-selected="${on}" tabindex="${on ? 0 : -1}">${esc(label)} ${count}</button>`;
+  return `<button type="button" class="ho-btn" role="tab" data-sync-filter="${id}" aria-selected="${on}" tabindex="${on ? 0 : -1}">${esc(label)} <span class="ho-badge">${count}</span></button>`;
 }
 
 function syncFilteredRows(rows) {
@@ -2459,13 +2638,13 @@ function syncRowHtml(row) {
     const pressed = bundleChoices[row.id] === choice;
     return `<button type="button" data-bundle-choice="${esc(choice)}" data-id="${esc(row.id)}" aria-pressed="${pressed}" title="${esc(t("sync-choice-tip"))}">${esc(choiceLabel(choice))}</button>`;
   }).join("");
-  const actions = choices ? `<span class="sync-choices">${choices}</span>` : "";
-  return `<div class="sync-row">
-    <span class="kind">${esc(kindLabel(row.kind))}</span>
-    <span class="status">${esc(statusLabel(row.status))}</span>
-    ${syncNames(row)}
-    ${actions}
-  </div>`;
+  const actions = choices ? `<span class="ho-seg">${choices}</span>` : "";
+  return `<tr>
+    <td class="text">${esc(kindLabel(row.kind))}</td>
+    <td class="text">${esc(statusLabel(row.status))}</td>
+    <td class="text">${syncNames(row)}</td>
+    <td class="text">${actions}</td>
+  </tr>`;
 }
 
 function syncNames(row) {
@@ -3079,34 +3258,94 @@ async function copyHold() {
   }
 }
 
+function paletteRows() {
+  const screens = [
+    ["solve", t("nav-solve"), ""],
+    ["card", t("nav-card"), ""],
+    ["charts", t("nav-charts"), ""],
+    ["reticle", t("nav-reticle"), ""],
+    ["targets", t("nav-targets"), ""],
+    ["groups", t("nav-groups"), ""],
+    ["pbr", t("nav-pbr"), ""],
+    ["truing", t("nav-truing"), ""],
+    ["equipment", t("nav-equipment"), ""],
+    ["compare", t("nav-compare"), ""],
+    ["documents", t("nav-documents"), ""],
+    ["sync", t("nav-sync"), ""],
+    ["about", t("nav-about"), ""],
+    ["settings", t("nav-settings"), ""],
+  ];
+  const commands = [
+    ["metric", t("command-metric"), ""],
+    ["us", t("command-us"), ""],
+    ["custom", t("command-custom"), "Ctrl+U"],
+    ["field", t("command-field"), "F11"],
+    ["copy", t("command-copy"), "Ctrl+Shift+C"],
+  ];
+  const q = paletteQuery.trim().toLowerCase();
+  const keep = (row) => !q || row[1].toLowerCase().includes(q);
+  return { screens: screens.filter(keep), commands: commands.filter(keep) };
+}
+
+function paletteMark(label) {
+  const query = paletteQuery.trim();
+  if (!query) return esc(label);
+  const at = label.toLowerCase().indexOf(query.toLowerCase());
+  if (at < 0) return esc(label);
+  return `${esc(label.slice(0, at))}<mark>${esc(label.slice(at, at + query.length))}</mark>${esc(label.slice(at + query.length))}`;
+}
+
 function fillPalette() {
   const box = document.getElementById("palette");
   if (!box) return;
-  const items = [
-    ["solve", t("nav-solve")],
-    ["card", t("nav-card")],
-    ["charts", t("nav-charts")],
-    ["reticle", t("nav-reticle")],
-    ["targets", t("nav-targets")],
-    ["groups", t("nav-groups")],
-    ["pbr", t("nav-pbr")],
-    ["truing", t("nav-truing")],
-    ["equipment", t("nav-equipment")],
-    ["compare", t("nav-compare")],
-    ["documents", t("nav-documents")],
-    ["sync", t("nav-sync")],
-    ["about", t("nav-about")],
-    ["settings", t("nav-settings")],
-    ["metric", t("command-metric")],
-    ["us", t("command-us")],
-    ["custom", t("command-custom")],
-    ["field", t("command-field")],
-    ["copy", t("command-copy")],
-  ];
-  box.innerHTML = `<p>${esc(t("commands"))}</p>` + items.map(([id, label]) => `<button type="button" data-cmd="${id}">${esc(label)}</button>`).join("");
+  const { screens, commands } = paletteRows();
+  const flat = screens.map((row) => row.concat([t("palette-group-screens")])).concat(commands.map((row) => row.concat([t("palette-group-commands")])));
+  if (paletteIndex >= flat.length) paletteIndex = 0;
+  const item = (row, index) => {
+    const keys = row[2] ? row[2].split("+").map((part) => `<kbd>${esc(part)}</kbd>`).join("") : "";
+    return `<li role="option" data-cmd="${esc(row[0])}" aria-selected="${index === paletteIndex}"><span class="grp">${esc(row[3])}</span><span>${paletteMark(row[1])}</span><span class="sp"></span>${keys}</li>`;
+  };
+  let html = "";
+  let index = 0;
+  if (screens.length) {
+    html += `<li class="sec" role="presentation">${esc(t("palette-group-screens"))}</li>`;
+    screens.forEach((row) => { html += item(row.concat([t("palette-group-screens")]), index); index += 1; });
+  }
+  if (commands.length) {
+    html += `<li class="sec" role="presentation">${esc(t("palette-group-commands"))}</li>`;
+    commands.forEach((row) => { html += item(row.concat([t("palette-group-commands")]), index); index += 1; });
+  }
+  box.innerHTML = `<div class="ho-dialog ho-palette">
+      <div class="q"><input id="palette-q" type="search" role="combobox" aria-expanded="true" aria-controls="palette-list" aria-autocomplete="list" placeholder="${esc(t("palette-search"))}" aria-label="${esc(t("palette-search"))}" value="${esc(paletteQuery)}" autocomplete="off" spellcheck="false" /></div>
+      <ul id="palette-list" role="listbox" aria-label="${esc(t("commands"))}">${html || `<li class="sec">${esc(t("sync-filter-empty"))}</li>`}</ul>
+      <footer><span class="ho-cap"><kbd>↑</kbd><kbd>↓</kbd> ${esc(t("palette-move"))} · <kbd>Enter</kbd> ${esc(t("palette-open"))} · <kbd>Esc</kbd> ${esc(t("palette-close"))}</span></footer>
+    </div>`;
+  const input = document.getElementById("palette-q");
+  if (input) {
+    input.focus();
+    const end = input.value.length;
+    try { input.setSelectionRange(end, end); } catch (error) { /* search inputs can refuse a range */ }
+    input.addEventListener("input", () => {
+      paletteQuery = input.value;
+      paletteIndex = 0;
+      fillPalette();
+    });
+    input.addEventListener("keydown", (event) => {
+      const count = flat.length;
+      if (!count) return;
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        event.stopPropagation();
+        paletteIndex = event.key === "ArrowDown" ? (paletteIndex + 1) % count : (paletteIndex + count - 1) % count;
+        fillPalette();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        const chosen = flat[paletteIndex];
+        if (chosen) runCommand(chosen[0]);
+      }
+    });
+  }
   box.querySelectorAll("[data-cmd]").forEach((button) => button.addEventListener("click", () => runCommand(button.dataset.cmd)));
-  const first = box.querySelector("button");
-  if (first) first.focus();
 }
 
 function runCommand(id) {
@@ -3251,27 +3490,20 @@ function impactView(data) {
 }
 
 function pbrHtml() {
-  return `<section class="panel">
+  const zero = pbrMode === "fixed"
+    ? qtyField("pbr-zero", t("pbr-zero-input"), pbrZeroText, units().length, "length", null, null, "pbr-zero")
+    : `<div class="ho-field"><div class="head"><label for="pbr-zero">${esc(t("pbr-zero-input"))}</label></div><div class="ho-entry"><input id="pbr-zero" value="${esc(pbrZeroText)}" disabled autocomplete="off" /></div><p class="ho-hint">${esc(t("pbr-fixed-tip"))}</p></div>`;
+  const rail = `<h2>${esc(t("nav-pbr"))}</h2>
     <div class="checks">
-      <label title="${esc(t("pbr-optimal-tip"))}"><input type="radio" name="pbr-mode" value="optimal" ${pbrMode !== "fixed" ? "checked" : ""} /> ${esc(t("pbr-optimal"))}</label>
-      <label title="${esc(t("pbr-fixed-tip"))}"><input type="radio" name="pbr-mode" value="fixed" ${pbrMode === "fixed" ? "checked" : ""} /> ${esc(t("pbr-fixed"))}</label>
+      <label class="ho-check" title="${esc(t("pbr-optimal-tip"))}"><input type="radio" name="pbr-mode" value="optimal" ${pbrMode !== "fixed" ? "checked" : ""} /> ${esc(t("pbr-optimal"))}</label>
+      <label class="ho-check" title="${esc(t("pbr-fixed-tip"))}"><input type="radio" name="pbr-mode" value="fixed" ${pbrMode === "fixed" ? "checked" : ""} /> ${esc(t("pbr-fixed"))}</label>
     </div>
-    <div class="compact">
-      <div class="cluster">
-        <label class="field">${esc(t("pbr-preset"))}
-          <select id="pbr-preset">
-            <option value="moose" ${pbrZonePreset === "moose" ? "selected" : ""}>${esc(t("pbr-moose"))}</option>
-            <option value="roe" ${pbrZonePreset === "roe" ? "selected" : ""}>${esc(t("pbr-roe"))}</option>
-            <option value="custom" ${pbrZonePreset === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>
-          </select>
-        </label>
-        ${qtyField("zone", t("pbr-zone"), pbrZoneText(), pbrZoneUnit(), "length")}
-        <div class="${pbrMode === "fixed" ? "" : "hidden"}">${qtyField("pbr-zero", t("pbr-zero-input"), pbrZeroText, units().length, "length")}</div>
-        <button type="button" id="pbr-build">${esc(t("apply"))}</button>
-      </div>
-    </div>
-    <div id="pbr-body">${pbrResult ? pbrView(pbrResult) : `<div class="pbr-notes"><p class="hint">${esc(t(pbrMode === "fixed" ? "pbr-fixed-note" : "pbr-note"))}</p></div>`}</div>
-  </section>`;
+    ${hoSelect("pbr-preset", t("pbr-preset"), `<option value="moose" ${pbrZonePreset === "moose" ? "selected" : ""}>${esc(t("pbr-moose"))}</option><option value="roe" ${pbrZonePreset === "roe" ? "selected" : ""}>${esc(t("pbr-roe"))}</option><option value="custom" ${pbrZonePreset === "custom" ? "selected" : ""}>${esc(t("impact-custom"))}</option>`)}
+    ${qtyField("zone", t("pbr-zone"), pbrZoneText(), pbrZoneUnit(), "length")}
+    ${zero}
+    <button type="button" class="ho-btn primary" id="pbr-build">${esc(t("apply"))}</button>`;
+  const main = `<div id="pbr-body">${pbrResult ? pbrView(pbrResult) : `<p class="ho-hint">${esc(t(pbrMode === "fixed" ? "pbr-fixed-note" : "pbr-note"))}</p>`}</div>`;
+  return frame({ rail, main, railLabel: t("nav-pbr") });
 }
 
 function pbrZoneText() {
@@ -3292,31 +3524,37 @@ function pbrView(data) {
   const inside = data.starts_inside ? `<p class="hint">${esc(t("pbr-starts-inside"))}</p>` : "";
   const above = data.exits_above ? `<p class="hint">${esc(t("pbr-exits-above"))}</p>` : "";
   const unit = data.length_unit || "";
-  const cell = (label, value) => `<div><dt>${esc(label)}</dt><dd>${esc(value)} ${esc(unit)}</dd></div>`;
+  const kv = (label, value) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd><span class="ho-unit">${esc(unit)}</span>`;
   const ordinate = `${data.ordinate_display} ${unit} ${t("pbr-at")} ${data.ordinate_range_display} ${unit}`;
-  return `<dl class="pbr-results">
-      ${cell(t("pbr-start-label"), data.near_display)}
-      ${cell(t("pbr-near-zero-label"), data.near_zero_display)}
-      ${cell(t("pbr-far-zero-label"), data.far_zero_display)}
-      ${cell(t("pbr-end-label"), data.far_display)}
-      <div><dt>${esc(t("pbr-ordinate"))}</dt><dd>${esc(ordinate)}</dd></div>
-    </dl>
-    <div id="pbr-chart"></div>
-    <div class="row" id="pbr-spans">${pbrSpanButtons(data)}</div>
-    ${confirm}
-    <div class="pbr-notes">
-      <p class="hint">${esc(t(data.mode === "fixed" ? "pbr-fixed-note" : "pbr-note"))}</p>
-      <p class="hint">${esc(t("pbr-start-help"))}</p>
-      ${inside}
-      <p class="hint">${esc(t("pbr-near-zero-help"))}</p>
-      <p class="hint">${esc(t("pbr-far-zero-help"))}</p>
-      <p class="hint">${esc(t("pbr-end-help"))}</p>
-      ${above}
-      <p class="hint">${esc(t("pbr-ordinate-help"))}</p>
-      <p class="hint">${esc(t("pbr-band"))}</p>
-      <p class="hint">${esc(t("pbr-still-air"))}</p>
-      <p class="hint">${esc(t("pbr-zoom-hint"))}</p>
-    </div>`;
+  return `<div class="grid2">
+    <section class="ho-card">
+      <div id="pbr-chart"></div>
+      <div class="ho-seg wrap" id="pbr-spans">${pbrSpanButtons(data)}</div>
+    </section>
+    <section class="ho-card stack">
+      <dl class="ho-kv">
+        ${kv(t("pbr-start-label"), data.near_display)}
+        ${kv(t("pbr-near-zero-label"), data.near_zero_display)}
+        ${kv(t("pbr-far-zero-label"), data.far_zero_display)}
+        ${kv(t("pbr-end-label"), data.far_display)}
+        <dt>${esc(t("pbr-ordinate"))}</dt><dd>${esc(ordinate)}</dd><span class="ho-unit"></span>
+      </dl>
+      ${confirm}
+      <ul class="ho-notes">
+        <li class="info">${esc(t(data.mode === "fixed" ? "pbr-fixed-note" : "pbr-note"))}</li>
+        <li class="info">${esc(t("pbr-start-help"))}</li>
+        ${inside ? `<li class="warn">${esc(t("pbr-starts-inside"))}</li>` : ""}
+        <li class="info">${esc(t("pbr-near-zero-help"))}</li>
+        <li class="info">${esc(t("pbr-far-zero-help"))}</li>
+        <li class="info">${esc(t("pbr-end-help"))}</li>
+        ${above ? `<li class="warn">${esc(t("pbr-exits-above"))}</li>` : ""}
+        <li class="info">${esc(t("pbr-ordinate-help"))}</li>
+        <li class="info">${esc(t("pbr-band"))}</li>
+        <li class="info">${esc(t("pbr-still-air"))}</li>
+        <li class="info">${esc(t("pbr-zoom-hint"))}</li>
+      </ul>
+    </section>
+  </div>`;
 }
 
 function pbrSpanButtons(data) {
@@ -3678,29 +3916,27 @@ function truingHtml() {
   const profile = activeProfile();
   const history = (profile && profile.truing && profile.truing.history) || [];
   const active = (profile && profile.truing && profile.truing.active && profile.truing.active.label) || t("truing-none");
-  const rows = history.map((entry) => `<li>${esc(entry.summary || "")}
-    <button type="button" data-history="${esc(entry.id)}" data-action="activate">${esc(t("truing-activate"))}</button>
-    <button type="button" data-history="${esc(entry.id)}" data-action="revert">${esc(t("truing-revert"))}</button>
-  </li>`).join("");
-  return `<section class="panel">
-    <p>${esc(t("truing-intro"))}</p>
-    <p class="meta">${esc(t("truing-active"))}: ${esc(active)}</p>
-    <div class="compact">
-      <label class="field" title="${esc(t("truing-kind-tip"))}">${esc(t("truing-kind"))}
-        <select id="truing-kind" title="${esc(t("truing-kind-tip"))}">
-          <option value="mv" ${truingKind === "mv" ? "selected" : ""}>${esc(t("truing-mv"))}</option>
-          <option value="drag" ${truingKind === "drag" ? "selected" : ""}>${esc(t("truing-drag"))}</option>
-          <option value="tracking" ${truingKind === "tracking" ? "selected" : ""}>${esc(t("truing-tracking"))}</option>
-        </select>
-      </label>
+  const rows = history.map((entry) => `<div class="stack">
+    <span>${esc(entry.summary || "")}</span>
+    <div class="btnrow">
+      <button type="button" class="ho-btn" data-history="${esc(entry.id)}" data-action="activate">${esc(t("truing-activate"))}</button>
+      <button type="button" class="ho-btn ghost" data-history="${esc(entry.id)}" data-action="revert">${esc(t("truing-revert"))}</button>
     </div>
-    <div id="truing-fields" class="compact">${truingFields()}</div>
-    <button type="button" id="truing-preview">${esc(t("settings-preview"))}</button>
-    <div id="truing-result">${truingPreview ? truingDiff(truingPreview) : ""}</div>
-    <h3>${esc(t("truing-history"))}</h3>
-    <ul>${rows || `<li>${esc(t("truing-history-empty"))}</li>`}</ul>
-    <p class="hint">${esc(t("truing-confirm-note"))}</p>
-  </section>`;
+  </div>`).join("");
+  const rail = `<h2>${esc(t("nav-truing"))}</h2>
+    <p class="ho-hint">${esc(t("truing-intro"))}</p>
+    ${hoSelect("truing-kind", t("truing-kind"), `<option value="mv" ${truingKind === "mv" ? "selected" : ""}>${esc(t("truing-mv"))}</option><option value="drag" ${truingKind === "drag" ? "selected" : ""}>${esc(t("truing-drag"))}</option><option value="tracking" ${truingKind === "tracking" ? "selected" : ""}>${esc(t("truing-tracking"))}</option>`, t("truing-kind-tip"))}
+    <div id="truing-fields">${truingFields()}</div>
+    <button type="button" class="ho-btn primary" id="truing-preview">${esc(t("settings-preview"))}</button>`;
+  const main = `<div class="grid2">
+      <section class="ho-card" id="truing-result">${truingPreview ? truingDiff(truingPreview) : `<p class="ho-hint">${esc(t("truing-intro"))}</p>`}</section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("truing-history"))}</h2><span class="meta">${esc(t("truing-active"))}: ${esc(active)}</span></header>
+        <div class="ho-list">${rows || `<p class="ho-hint">${esc(t("truing-history-empty"))}</p>`}</div>
+        <p class="ho-hint">${esc(t("truing-confirm-note"))}</p>
+      </section>
+    </div>`;
+  return frame({ rail, main, railLabel: t("nav-truing") });
 }
 
 function truingFields() {
@@ -3721,7 +3957,7 @@ function truingFields() {
       <p class="hint">${esc(t("truing-tracking-guidance"))}</p>`;
   }
   return `<div class="cluster">
-      <span title="${esc(t("truing-range-tip"))}">${qtyField("observe_range", t("range"), truingForm.range, units().length, "length")}</span>
+      <span title="${esc(t("truing-range-tip"))}">${qtyField("observe_range", t("range"), truingForm.range, units().length, "length", null, null, "observe_range")}</span>
       <span title="${esc(t("truing-elev-tip"))}">${qtyField("observe_elevation", t("elevation"), truingForm.elevation, "mrad", "angle")}</span>
     </div>
     <div class="cluster">
@@ -3735,21 +3971,35 @@ function truingFields() {
     <p class="hint">${esc(t("truing-mv-guidance"))}</p>`;
 }
 
+function snapshotBits(snap) {
+  if (!snap || typeof snap !== "object") return t("truing-none");
+  if (snap.label) return String(snap.label);
+  const bits = [];
+  if (snap.mv_mps != null && snap.mv_mps !== "") bits.push(`MV ${Number(snap.mv_mps).toFixed(1)} m/s`);
+  if (snap.tracking_factor != null && snap.tracking_factor !== "") bits.push(String(snap.tracking_factor));
+  return bits.join(" · ") || t("truing-none");
+}
+
 function truingDiff(preview) {
   const detail = preview.detail || {};
   const warnings = [];
   if (detail.large_change) warnings.push(t("truing-large"));
   if (detail.before_transonic === false && preview.kind === "mv") warnings.push(t("truing-transonic"));
   if (detail.guidance) warnings.push(detail.guidance);
-  const apply = preview.applied ? "" : `<button type="button" id="truing-apply">${esc(t("truing-apply"))}</button>`;
+  const apply = preview.applied ? "" : `<button type="button" class="ho-btn primary" id="truing-apply">${esc(t("truing-apply"))}</button>`;
   const changed = preview.kind === "drag"
     ? t("truing-result-drag")
     : preview.kind === "tracking"
       ? t("truing-result-tracking")
       : t("truing-result-mv");
-  return `<p>${esc(preview.summary || preview.action || "")}</p>
-    <p class="hint">${esc(changed)}</p>
-    <p class="warning">${esc(warnings.join(" "))}</p>
+  const notes = warnings.filter(Boolean).map((item) => `<li class="warn">${esc(item)}</li>`).join("");
+  return `<p class="big">${esc(preview.summary || preview.action || "")}</p>
+    <p class="ho-hint">${esc(changed)}</p>
+    <dl class="ho-kv">
+      <dt>${esc(t("truing-before"))}</dt><dd>${esc(snapshotBits(preview.before))}</dd><span class="ho-unit"></span>
+      <dt>${esc(t("truing-after"))}</dt><dd>${esc(snapshotBits(preview.after))}</dd><span class="ho-unit"></span>
+    </dl>
+    ${notes ? `<ul class="ho-notes">${notes}</ul>` : ""}
     ${apply}`;
 }
 
@@ -3808,7 +4058,10 @@ function bindTruing() {
     truingKind = kind.value;
     truingPreview = null;
     const host = document.getElementById("truing-fields");
-    if (host) host.innerHTML = truingFields();
+    if (host) {
+      host.innerHTML = truingFields();
+      wireSteppers(host);
+    }
   });
   const preview = document.getElementById("truing-preview");
   if (preview) preview.addEventListener("click", () => runTruing(false));
@@ -4035,7 +4288,8 @@ function flagHtml(flags) {
   return (flags || []).map((flag) => {
     const kind = t("badge-" + (flag.kind || "placeholder"));
     const detail = t(flag.detail || ("flag-" + flag.code));
-    return `<p class="badge badge-${esc(flag.kind || "placeholder")}">${esc(kind)} · ${esc(flag.code || "")} · ${esc(detail)}</p>`;
+    const cls = flag.kind === "verified" || flag.kind === "ok" ? "ok" : "warn";
+    return `<p><span class="ho-badge ${cls}">${esc(kind)} · ${esc(flag.code || "")}</span> ${esc(detail)}</p>`;
   }).join("");
 }
 
@@ -4223,100 +4477,62 @@ function reticleChoices() {
 }
 
 function reticleHtml() {
-  return `<section class="panel">
-    <h2>${esc(t("reticle-title"))}</h2>
-    <p class="hint">${esc(t("reticle-intro"))}</p>
-    <div class="compact">
-      <label class="field wide" title="${esc(t("reticle-pick-tip"))}">${esc(t("reticle-pick"))}
-        <select id="reticle-pick" title="${esc(t("reticle-pick-tip"))}">${reticleChoices()}</select>
-      </label>
-      <div class="cluster">
-        ${hoQty("reticle-mag", t("reticle-mag"), "", "count", "reticle-mag", `<input id="reticle-mag" value="${esc(reticleState.mag)}" inputmode="decimal" title="${esc(t("reticle-mag-tip"))}" autocomplete="off" spellcheck="false" />`)}
-        <div class="row">
-          ${[5, 10, 20].map((mag) => `<button type="button" data-mag="${mag}" title="${esc(t("reticle-mag-check"))}">${mag}×</button>`).join("")}
+  const tools = ["line", "hash", "dot", "circle", "text"].map((tool) => `<option value="${tool}" ${reticleState.tool === tool ? "selected" : ""}>${esc(t("tool-" + tool))}</option>`).join("");
+  const rail = `<h2>${esc(t("reticle-title"))}</h2>
+    <p class="ho-hint">${esc(t("reticle-intro"))}</p>
+    ${hoSelect("reticle-pick", t("reticle-pick"), reticleChoices(), t("reticle-pick-tip"))}
+    ${hoQty("reticle-mag", t("reticle-mag"), "", "count", "reticle-mag", `<input id="reticle-mag" value="${esc(reticleState.mag)}" inputmode="decimal" title="${esc(t("reticle-mag-tip"))}" autocomplete="off" spellcheck="false" />`)}
+    <div class="btnrow">${[5, 10, 20].map((mag) => `<button type="button" class="ho-btn ghost" data-mag="${mag}" title="${esc(t("reticle-mag-check"))}">${mag}×</button>`).join("")}</div>
+    ${hoQty("reticle-cal", t("reticle-cal"), "", "count", "reticle-cal", `<input id="reticle-cal" value="${esc(reticleState.cal)}" inputmode="decimal" title="${esc(t("reticle-cal-tip"))}" autocomplete="off" spellcheck="false" />`)}
+    <div class="ho-field" title="${esc(t("reticle-fov-tip"))}"><div class="head"><label for="reticle-fov">${esc(t("reticle-fov"))}</label></div><div class="ho-entry"><input id="reticle-fov" class="num" value="${esc(reticleState.fov)}" inputmode="decimal" title="${esc(t("reticle-fov-tip"))}" autocomplete="off" /></div></div>
+    ${hoSelect("reticle-focal", t("reticle-focal"), `<option value="ffp" ${reticleState.focal === "ffp" ? "selected" : ""}>${esc(t("focal-ffp"))}</option><option value="sfp" ${reticleState.focal === "sfp" ? "selected" : ""}>${esc(t("focal-sfp"))}</option>`, t("reticle-focal-tip"))}
+    ${hoSelect("reticle-target", t("impact-target"), `<option value="">${esc(t("reticle-no-target"))}</option>${targetOptions(reticleState.target)}`, t("impact-target-tip"))}
+    <span title="${esc(t("reticle-range-tip"))}">${qtyField("reticle-range", t("range"), reticleState.rangeText, units().length, "length", null, null, "reticle-range")}</span>
+    ${hoSelect("reticle-facing", t("facing"), `<option value="left" ${reticleState.facing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option><option value="right" ${reticleState.facing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>`, t("facing-tip"))}
+    ${hoSelect("reticle-ringing", t("ringing"), `<option value="primary" ${reticleState.ringing !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option><option value="alt" ${reticleState.ringing === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>`, t("ringing-tip"))}
+    <label class="ho-check" title="${esc(t("reticle-hold-tip"))}"><input id="reticle-hold" type="checkbox" ${reticleState.showHold ? "checked" : ""} /> ${esc(t("reticle-hold"))}</label>
+    <label class="ho-check" title="${esc(t("silhouette-tip"))}"><input id="reticle-silhouette" type="checkbox" ${reticleState.showSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>`;
+  const main = `<div class="ho-tabs" role="tablist" aria-label="${esc(t("reticle-title"))}">
+      <button type="button" role="tab" data-reticle-pane="view" aria-selected="${reticlePane === "view"}">${esc(t("reticle-tab-view"))}</button>
+      <button type="button" role="tab" data-reticle-pane="editor" aria-selected="${reticlePane === "editor"}">${esc(t("editor-title"))}</button>
+    </div>
+    <div id="reticle-view" class="pane${reticlePane === "view" ? "" : " is-hidden"}">
+      <div class="grid2">
+        <div id="reticle-face"></div>
+        <section class="ho-card stack">
+          <p id="reticle-readout" class="ho-hint"></p>
+          <p id="reticle-warn" class="ho-badge warn hidden"></p>
+          <div id="reticle-flags"></div>
+          <dl class="ho-kv" id="reticle-kv"></dl>
+        </section>
+      </div>
+    </div>
+    <div id="reticle-editor-pane" class="pane${reticlePane === "editor" ? "" : " is-hidden"}">
+      <section class="ho-card stack">
+        <p class="ho-hint">${esc(t("editor-intro"))}</p>
+        <div class="ho-field wide" title="${esc(t("editor-name-tip"))}"><div class="head"><label for="reticle-name">${esc(t("editor-name"))}</label></div><div class="ho-entry"><input id="reticle-name" title="${esc(t("editor-name-tip"))}" autocomplete="off" /></div></div>
+        <div class="ho-fields">
+          ${hoSelect("reticle-tool", t("editor-tool"), tools, t("editor-tool-tip"))}
+          <div class="ho-field" title="${esc(t("editor-text-tip"))}"><div class="head"><label for="reticle-text">${esc(t("editor-text"))}</label></div><div class="ho-entry"><input id="reticle-text" value="1" title="${esc(t("editor-text-tip"))}" autocomplete="off" /></div></div>
+          <div class="ho-field" title="${esc(t("editor-snap-tip"))}"><div class="head"><label for="reticle-snap">${esc(t("editor-snap"))}</label></div><div class="ho-entry"><input id="reticle-snap" class="num" value="${esc(reticleState.snap)}" inputmode="decimal" title="${esc(t("editor-snap-tip"))}" autocomplete="off" /></div></div>
+          <div class="ho-field" title="${esc(t("editor-repeat-tip"))}"><div class="head"><label for="reticle-copies">${esc(t("editor-repeat"))}</label></div><div class="ho-entry"><input id="reticle-copies" class="num" value="3" inputmode="decimal" title="${esc(t("editor-repeat-tip"))}" autocomplete="off" /></div></div>
+          <div class="ho-field" title="${esc(t("editor-dx-tip"))}"><div class="head"><label for="reticle-dx">${esc(t("editor-dx"))}</label></div><div class="ho-entry"><input id="reticle-dx" class="num" value="1" inputmode="decimal" title="${esc(t("editor-dx-tip"))}" autocomplete="off" /></div></div>
+          <div class="ho-field" title="${esc(t("editor-dy-tip"))}"><div class="head"><label for="reticle-dy">${esc(t("editor-dy"))}</label></div><div class="ho-entry"><input id="reticle-dy" class="num" value="0" inputmode="decimal" title="${esc(t("editor-dy-tip"))}" autocomplete="off" /></div></div>
         </div>
-        ${hoQty("reticle-cal", t("reticle-cal"), "", "count", "reticle-cal", `<input id="reticle-cal" value="${esc(reticleState.cal)}" inputmode="decimal" title="${esc(t("reticle-cal-tip"))}" autocomplete="off" spellcheck="false" />`)}
-        <label class="field" title="${esc(t("reticle-fov-tip"))}">${esc(t("reticle-fov"))}
-          <input id="reticle-fov" value="${esc(reticleState.fov)}" inputmode="decimal" title="${esc(t("reticle-fov-tip"))}" />
-        </label>
-        <label class="field" title="${esc(t("reticle-focal-tip"))}">${esc(t("reticle-focal"))}
-          <select id="reticle-focal" title="${esc(t("reticle-focal-tip"))}">
-            <option value="ffp" ${reticleState.focal === "ffp" ? "selected" : ""}>${esc(t("focal-ffp"))}</option>
-            <option value="sfp" ${reticleState.focal === "sfp" ? "selected" : ""}>${esc(t("focal-sfp"))}</option>
-          </select>
-        </label>
-      </div>
-      <div class="cluster">
-        <label class="field" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
-          <select id="reticle-target" title="${esc(t("impact-target-tip"))}">
-            <option value="">${esc(t("reticle-no-target"))}</option>
-            ${targetOptions(reticleState.target)}
-          </select>
-        </label>
-        <span title="${esc(t("reticle-range-tip"))}">${qtyField("reticle-range", t("range"), reticleState.rangeText, units().length, "length")}</span>
-        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
-          <select id="reticle-facing" title="${esc(t("facing-tip"))}">
-            <option value="left" ${reticleState.facing === "left" ? "selected" : ""}>${esc(t("facing-left"))}</option>
-            <option value="right" ${reticleState.facing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
-          </select>
-        </label>
-        <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
-          <select id="reticle-ringing" title="${esc(t("ringing-tip"))}">
-            <option value="primary" ${reticleState.ringing !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
-            <option value="alt" ${reticleState.ringing === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
-          </select>
-        </label>
-        <label title="${esc(t("reticle-hold-tip"))}"><input id="reticle-hold" type="checkbox" ${reticleState.showHold ? "checked" : ""} /> ${esc(t("reticle-hold"))}</label>
-        <label title="${esc(t("silhouette-tip"))}"><input id="reticle-silhouette" type="checkbox" ${reticleState.showSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
-      </div>
-    </div>
-    <p id="reticle-readout" class="hint"></p>
-    <p id="reticle-warn" class="badge hidden"></p>
-    <div id="reticle-flags"></div>
-    <div id="reticle-face"></div>
-    <h3>${esc(t("editor-title"))}</h3>
-    <p class="hint">${esc(t("editor-intro"))}</p>
-    <div class="compact">
-      <label class="field wide" title="${esc(t("editor-name-tip"))}">${esc(t("editor-name"))}
-        <input id="reticle-name" title="${esc(t("editor-name-tip"))}" />
-      </label>
-      <div class="cluster">
-        <label class="field" title="${esc(t("editor-tool-tip"))}">${esc(t("editor-tool"))}
-          <select id="reticle-tool" title="${esc(t("editor-tool-tip"))}">
-            ${["line", "hash", "dot", "circle", "text"].map((tool) => `<option value="${tool}" ${reticleState.tool === tool ? "selected" : ""}>${esc(t("tool-" + tool))}</option>`).join("")}
-          </select>
-        </label>
-        <label class="field" title="${esc(t("editor-text-tip"))}">${esc(t("editor-text"))}
-          <input id="reticle-text" value="1" title="${esc(t("editor-text-tip"))}" />
-        </label>
-        <label class="field" title="${esc(t("editor-snap-tip"))}">${esc(t("editor-snap"))}
-          <input id="reticle-snap" value="${esc(reticleState.snap)}" inputmode="decimal" title="${esc(t("editor-snap-tip"))}" />
-        </label>
-      </div>
-      <div class="cluster">
-        <label class="field" title="${esc(t("editor-repeat-tip"))}">${esc(t("editor-repeat"))}
-          <input id="reticle-copies" value="3" inputmode="decimal" title="${esc(t("editor-repeat-tip"))}" />
-        </label>
-        <label class="field" title="${esc(t("editor-dx-tip"))}">${esc(t("editor-dx"))}
-          <input id="reticle-dx" value="1" inputmode="decimal" title="${esc(t("editor-dx-tip"))}" />
-        </label>
-        <label class="field" title="${esc(t("editor-dy-tip"))}">${esc(t("editor-dy"))}
-          <input id="reticle-dy" value="0" inputmode="decimal" title="${esc(t("editor-dy-tip"))}" />
-        </label>
-      </div>
-    </div>
-    <div class="row">
-      <button type="button" id="reticle-mirror-x" title="${esc(t("editor-mirror-x-tip"))}">${esc(t("editor-mirror-x"))}</button>
-      <button type="button" id="reticle-mirror-y" title="${esc(t("editor-mirror-y-tip"))}">${esc(t("editor-mirror-y"))}</button>
-      <button type="button" id="reticle-repeat" title="${esc(t("editor-repeat-tip"))}">${esc(t("editor-repeat-apply"))}</button>
-      <button type="button" id="reticle-undo" title="${esc(t("editor-undo-tip"))}">${esc(t("editor-undo"))}</button>
-      <button type="button" id="reticle-save" title="${esc(t("editor-save-tip"))}">${esc(t("editor-save"))}</button>
-      <button type="button" id="reticle-export" title="${esc(t("editor-export-tip"))}">${esc(t("editor-export"))}</button>
-      <label class="field" title="${esc(t("editor-import-tip"))}">${esc(t("editor-import"))}<input id="reticle-import" type="file" accept="application/json,.json" title="${esc(t("editor-import-tip"))}" /></label>
-    </div>
-    <p id="reticle-notice" class="hint">${esc(reticleNotice)}</p>
-    <p class="hint">${esc(t("reticle-pdf-note"))}</p>
-  </section>`;
+        <div class="btnrow">
+          <button type="button" class="ho-btn" id="reticle-mirror-x" title="${esc(t("editor-mirror-x-tip"))}">${esc(t("editor-mirror-x"))}</button>
+          <button type="button" class="ho-btn" id="reticle-mirror-y" title="${esc(t("editor-mirror-y-tip"))}">${esc(t("editor-mirror-y"))}</button>
+          <button type="button" class="ho-btn" id="reticle-repeat" title="${esc(t("editor-repeat-tip"))}">${esc(t("editor-repeat-apply"))}</button>
+          <button type="button" class="ho-btn ghost" id="reticle-undo" title="${esc(t("editor-undo-tip"))}">${esc(t("editor-undo"))}</button>
+          <button type="button" class="ho-btn primary" id="reticle-save" title="${esc(t("editor-save-tip"))}">${esc(t("editor-save"))}</button>
+          <button type="button" class="ho-btn" id="reticle-export" title="${esc(t("editor-export-tip"))}">${esc(t("editor-export"))}</button>
+        </div>
+        <div class="ho-field" title="${esc(t("editor-import-tip"))}"><div class="head"><label for="reticle-import">${esc(t("editor-import"))}</label></div><input id="reticle-import" type="file" accept="application/json,.json" title="${esc(t("editor-import-tip"))}" /></div>
+        <p id="reticle-notice" class="ho-hint">${esc(reticleNotice)}</p>
+        <p class="ho-hint">${esc(t("reticle-pdf-note"))}</p>
+      </section>
+    </div>`;
+  return frame({ rail, main, railLabel: t("nav-reticle") });
 }
 
 function ensureDraft() {
@@ -4335,6 +4551,14 @@ function ensureDraft() {
 }
 
 function bindReticle() {
+  document.querySelectorAll("[data-reticle-pane]").forEach((button) => button.addEventListener("click", () => {
+    reticlePane = button.dataset.reticlePane;
+    document.querySelectorAll("[data-reticle-pane]").forEach((item) => item.setAttribute("aria-selected", item === button ? "true" : "false"));
+    const view = document.getElementById("reticle-view");
+    const editor = document.getElementById("reticle-editor-pane");
+    if (view) view.classList.toggle("is-hidden", reticlePane !== "view");
+    if (editor) editor.classList.toggle("is-hidden", reticlePane !== "editor");
+  }));
   ensureDraft();
   const name = document.getElementById("reticle-name");
   if (name && reticleState.draft) name.value = reticleState.draft.name || "";
@@ -4500,6 +4724,17 @@ async function drawReticle() {
     host.innerHTML = reticleSvg(reticleScene);
     const readout = document.getElementById("reticle-readout");
     if (readout) readout.textContent = reticleReadout(reticleScene);
+    const kv = document.getElementById("reticle-kv");
+    if (kv) {
+      const one = Number(reticleScene.nominal_one_true_mrad);
+      const ring = reticleScene.target && reticleScene.target.rings && reticleScene.target.rings[0];
+      const ringText = ring && reticleScene.cm_per_mrad
+        ? `${(Number(ring.diameter_cm) / Number(reticleScene.cm_per_mrad)).toFixed(2)} mrad`
+        : t("missing-not-set");
+      kv.innerHTML = `<dt>${esc(t("reticle-scale"))}</dt><dd>${Number.isFinite(one) ? esc(one.toFixed(3)) : ""}</dd><span class="ho-unit">mrad</span>
+        <dt>${esc(t("reticle-factor"))}</dt><dd>${esc(Number(reticleScene.sfp_factor).toFixed(3))}</dd><span class="ho-unit"></span>
+        <dt>${esc(t("reticle-ring-px"))}</dt><dd>${esc(ringText)}</dd><span class="ho-unit"></span>`;
+    }
     const warn = document.getElementById("reticle-warn");
     if (warn) {
       warn.textContent = reticleScene.sfp_warning ? t("sfp-warning") : "";
@@ -4705,60 +4940,71 @@ function svgPoint(svg, event) {
   return point.matrixTransform(matrix.inverse());
 }
 
+function targetListButtons() {
+  const library = (boot.targets && boot.targets.library) || [];
+  const saved = (boot.equipment && boot.equipment.targets) || [];
+  const seen = new Set();
+  return library.concat(saved).filter((item) => {
+    if (!item || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  }).map((item) => {
+    const badge = (item.flags || []).map((flag) => flag.code).filter(Boolean).slice(0, 2).map((code) => `<span class="ho-badge warn">${esc(code)}</span>`).join(" ");
+    return `<button type="button" data-target-list="${esc(item.id)}" aria-selected="${item.id === targetPickId()}"><span>${esc(item.name)}</span><span class="sub">${badge}</span></button>`;
+  }).join("");
+}
+
+function targetRingsTable(spec) {
+  const rings = ((spec && spec.rings) || []).filter((ring) => Number(ring.diameter_cm) > 0);
+  if (!rings.length) return `<p class="ho-hint">${esc(t("target-no-points"))}</p>`;
+  const rows = rings.map((ring) => `<tr><td>${esc(ring.label_primary || ring.label_alt || "")}</td><td>${esc(String(ring.diameter_cm))}</td><td>${ring.verified === false ? esc(t("missing-not-set")) : ""}</td></tr>`).join("");
+  return `<table class="ho-table"><thead><tr><th class="text">${esc(t("label"))}</th><th>cm</th><th class="text"></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function targetsHtml() {
   const pages = (boot.card_pages || []).map((item) => `<option value="${esc(item.id)}" ${reticleState.page === item.id ? "selected" : ""}>${esc(item.name)}</option>`).join("");
   const spec = currentTarget();
-  return `<section class="panel">
-    <h2>${esc(t("targets-page-title"))}</h2>
-    <p class="hint">${esc(t("targets-intro"))}</p>
-    <h3>${esc(t("open-items"))}</h3>
-    <p class="hint">${esc(t("open-items-intro"))}</p>
-    <div id="open-items">${openItemsHtml()}</div>
-    <div class="compact">
-      <div class="cluster">
-        <label class="field wide" title="${esc(t("impact-target-tip"))}">${esc(t("impact-target"))}
-          <select id="target-pick" title="${esc(t("impact-target-tip"))}">${targetOptions(targetPickId())}</select>
-        </label>
-        <label class="field" title="${esc(t("facing-tip"))}">${esc(t("facing"))}
-          <select id="target-facing" title="${esc(t("facing-tip"))}">
-            <option value="left" ${targetFacing !== "right" ? "selected" : ""}>${esc(t("facing-left"))}</option>
-            <option value="right" ${targetFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>
-          </select>
-        </label>
-        <label class="field" title="${esc(t("ringing-tip"))}">${esc(t("ringing"))}
-          <select id="target-ringing" title="${esc(t("ringing-tip"))}">
-            <option value="primary" ${targetRinging !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option>
-            <option value="alt" ${targetRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>
-          </select>
-        </label>
-        <label title="${esc(t("silhouette-tip"))}"><input id="target-silhouette" type="checkbox" ${targetSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
-        <label class="field" title="${esc(t("card-size"))}">${esc(t("card-size"))}
-          <select id="target-page" title="${esc(t("card-size"))}">${pages}</select>
-        </label>
-      </div>
-    </div>
-    <div id="target-flags">${spec ? flagHtml(spec.flags) : ""}</div>
-    <p class="hint">${spec ? esc(spec.subtitle || "") : ""} ${spec && spec.distance_note ? "· " + esc(spec.distance_note) : ""}</p>
-    <div id="target-face">${spec ? faceSvg(spec, { showSilhouette: true, ringing: "primary", label: spec.name }) : ""}</div>
-    <h3>${esc(t("target-edit-title"))}</h3>
-    <p class="hint">${esc(t("target-edit-intro"))}</p>
-    <div id="target-editor" class="compact">${targetEditorHtml(spec)}</div>
-    <div class="row">
-      <button type="button" id="target-save" title="${esc(t("target-save-tip"))}">${esc(t("target-save"))}</button>
-      <button type="button" id="target-pdf" title="${esc(t("target-pdf-tip"))}">${esc(t("target-pdf"))}</button>
-    </div>
-    <p id="target-notice" class="hint">${esc(targetNotice)}</p>
-    <h3>${esc(t("svg-title"))}</h3>
-    <p class="hint">${esc(t("svg-intro"))}</p>
-    <div class="compact">
-      <div class="cluster">
-        <label class="field" title="${esc(t("svg-file-tip"))}">${esc(t("svg-file"))}<input id="svg-file" type="file" accept=".svg,image/svg+xml" title="${esc(t("svg-file-tip"))}" /></label>
-        <span title="${esc(t("svg-width-tip"))}">${qtyField("svg-width", t("svg-width"), "20 cm", units().small, "length")}</span>
-        <span title="${esc(t("svg-height-tip"))}">${qtyField("svg-height", t("svg-height"), "20 cm", units().small, "length")}</span>
-        <button type="button" id="svg-save" title="${esc(t("svg-save-tip"))}">${esc(t("svg-save"))}</button>
-      </div>
-    </div>
-  </section>`;
+  const rail = `<h2>${esc(t("targets-page-title"))}</h2>
+    <p class="ho-hint">${esc(t("targets-intro"))}</p>
+    <div class="ho-list">${targetListButtons()}</div>
+    <select id="target-pick" class="hidden" title="${esc(t("impact-target-tip"))}">${targetOptions(targetPickId())}</select>`;
+  const main = `<div class="grid2">
+      <section class="ho-card stack">
+        <div class="ho-fields">
+          ${hoSelect("target-facing", t("facing"), `<option value="left" ${targetFacing !== "right" ? "selected" : ""}>${esc(t("facing-left"))}</option><option value="right" ${targetFacing === "right" ? "selected" : ""}>${esc(t("facing-right"))}</option>`, t("facing-tip"))}
+          ${hoSelect("target-ringing", t("ringing"), `<option value="primary" ${targetRinging !== "alt" ? "selected" : ""}>${esc(t("ringing-primary"))}</option><option value="alt" ${targetRinging === "alt" ? "selected" : ""}>${esc(t("ringing-alt"))}</option>`, t("ringing-tip"))}
+          ${hoSelect("target-page", t("card-size"), pages, t("card-size"))}
+        </div>
+        <label class="ho-check" title="${esc(t("silhouette-tip"))}"><input id="target-silhouette" type="checkbox" ${targetSilhouette ? "checked" : ""} /> ${esc(t("silhouette"))}</label>
+        <div id="target-flags">${spec ? flagHtml(spec.flags) : ""}</div>
+        <p class="ho-hint">${spec ? esc(spec.subtitle || "") : ""} ${spec && spec.distance_note ? "· " + esc(spec.distance_note) : ""}</p>
+        <div id="target-face">${spec ? faceSvg(spec, { showSilhouette: true, ringing: "primary", label: spec.name }) : ""}</div>
+        <h3>${esc(t("target-edit-title"))}</h3>
+        <p class="ho-hint">${esc(t("target-edit-intro"))}</p>
+        <div id="target-editor">${targetEditorHtml(spec)}</div>
+        <div class="btnrow">
+          <button type="button" class="ho-btn primary" id="target-save" title="${esc(t("target-save-tip"))}">${esc(t("target-save"))}</button>
+          <button type="button" class="ho-btn" id="target-pdf" title="${esc(t("target-pdf-tip"))}">${esc(t("target-pdf"))}</button>
+        </div>
+        <p id="target-notice" class="ho-hint">${esc(targetNotice)}</p>
+        <h3>${esc(t("svg-title"))}</h3>
+        <p class="ho-hint">${esc(t("svg-intro"))}</p>
+        <div class="ho-field" title="${esc(t("svg-file-tip"))}"><div class="head"><label for="svg-file">${esc(t("svg-file"))}</label></div><input id="svg-file" type="file" accept=".svg,image/svg+xml" title="${esc(t("svg-file-tip"))}" /></div>
+        <div class="ho-fields">
+          <span title="${esc(t("svg-width-tip"))}">${qtyField("svg-width", t("svg-width"), "20 cm", units().small, "length")}</span>
+          <span title="${esc(t("svg-height-tip"))}">${qtyField("svg-height", t("svg-height"), "20 cm", units().small, "length")}</span>
+        </div>
+        <button type="button" class="ho-btn" id="svg-save" title="${esc(t("svg-save-tip"))}">${esc(t("svg-save"))}</button>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc((spec && spec.name) || t("nav-targets"))}</h2></header>
+        ${targetRingsTable(spec)}
+        <header><h2>${esc(t("open-items"))}</h2></header>
+        <p class="ho-hint">${esc(t("open-items-intro"))}</p>
+        <div id="open-items">${openItemsHtml()}</div>
+      </section>
+    </div>`;
+  return frame({ rail, main, body: "with-list", railLabel: t("nav-targets") });
 }
 
 let targetPick = "sjf-algfigur";
@@ -4782,7 +5028,7 @@ function openItemsHtml() {
     (item.flags || []).forEach((flag) => {
       if (!flag.detail || seen.has(flag.detail) || flag.code === "T1") return;
       seen.add(flag.detail);
-      rows.push(`<p class="badge badge-${esc(flag.kind)}">${esc(flag.code)} · ${esc(t(flag.detail))}</p>`);
+      rows.push(`<p><span class="ho-badge warn">${esc(flag.code)}</span> ${esc(t(flag.detail))}</p>`);
     });
   });
   return rows.join("");
@@ -4811,6 +5057,12 @@ function pointsText(points) {
 }
 
 function bindTargets() {
+  document.querySelectorAll("[data-target-list]").forEach((button) => button.addEventListener("click", () => {
+    const select = document.getElementById("target-pick");
+    if (!select) return;
+    select.value = button.dataset.targetList;
+    select.dispatchEvent(new Event("change"));
+  }));
   const pick = document.getElementById("target-pick");
   if (pick) pick.addEventListener("change", () => {
     targetPick = pick.value;
@@ -5010,20 +5262,15 @@ function compareFlags() {
 function compareHtml() {
   ensureCompare();
   const profiles = boot.equipment.profiles || [];
-  const picks = profiles.map((item) => `<label><input type="checkbox" class="compare-pick" value="${esc(item.id)}" ${compareIds.includes(item.id) ? "checked" : ""} /> ${esc(item.label)}</label>`).join("");
+  const picks = profiles.map((item) => `<label class="ho-check"><input type="checkbox" class="compare-pick" value="${esc(item.id)}" ${compareIds.includes(item.id) ? "checked" : ""} /> ${esc(item.label)}</label>`).join("");
   const flags = compareFlags();
-  const effect = (name, key) => `<label><input type="checkbox" data-compare-effect="${name}" ${flags[name] ? "checked" : ""} /> ${esc(t(key))}</label>`;
-  return `<section class="panel">
-    <h2>${esc(t("nav-compare"))}</h2>
-    <p class="hint">${esc(t("compare-intro"))}</p>
-    <div class="checks">${picks || `<p>${esc(t("compare-empty"))}</p>`}</div>
-    <div class="row">
-      ${qtyField("compare-range", t("range"), "", units().length, "length", compareForm.rangeSi)}
-      ${qtyField("compare-wind", t("wind-speed"), "", units().velocity, "velocity", compareForm.windSi)}
-      <label class="field">${esc(t("wind-direction"))}
-        <input id="compare-direction" value="${esc(compareForm.direction || "9oc")}" title="${esc(t("compare-wind-tip"))}" />
-      </label>
-    </div>
+  const effect = (name, key) => `<label class="ho-check"><input type="checkbox" data-compare-effect="${name}" ${flags[name] ? "checked" : ""} /> ${esc(t(key))}</label>`;
+  const rail = `<h2>${esc(t("nav-compare"))}</h2>
+    <p class="ho-hint">${esc(t("compare-intro"))}</p>
+    <div class="checks">${picks || `<p class="ho-hint">${esc(t("compare-empty"))}</p>`}</div>
+    ${qtyField("compare-range", t("range"), "", units().length, "length", compareForm.rangeSi, null, "compare-range")}
+    ${qtyField("compare-wind", t("wind-speed"), "", units().velocity, "velocity", compareForm.windSi, null, "compare-wind")}
+    ${windClockField(compareForm.direction || "9oc", { id: "compare-direction", stepper: "compare-direction", key: false })}
     <div class="checks">
       ${effect("incline", "effect-incline")}
       ${effect("spin_drift", "effect-spin")}
@@ -5031,10 +5278,9 @@ function compareHtml() {
       ${effect("cant", "effect-cant")}
       ${effect("aerodynamic_jump", "effect-jump")}
     </div>
-    <p class="hint">${esc(boot.spin_provenance || "")}</p>
-    <p class="hint">${esc(t("jump-note"))}</p>
-    <div id="compare-result"></div>
-  </section>`;
+    <p class="ho-hint">${esc(boot.spin_provenance || "")}</p>
+    <p class="ho-hint">${esc(t("jump-note"))}</p>`;
+  return frame({ rail, main: `<div id="compare-result"></div>`, railLabel: t("nav-compare") });
 }
 
 function bindCompare() {
@@ -5124,73 +5370,92 @@ async function runCompare() {
   }
 }
 
+function missingCell(value, kind) {
+  const text = value == null ? "" : String(value).trim();
+  if (text && text !== "—" && text !== "-") return esc(text);
+  const key = kind === "scope" || kind === "click" ? "missing-no-scope" : kind === "twist" ? "missing-no-twist" : "missing-not-set";
+  return `<span class="na">${esc(t(key))}</span>`;
+}
+
+function compareTable(rows, caption, pairs) {
+  const head = rows.map((row) => `<th>${esc(row.label)}</th>`).join("");
+  const body = pairs.map(([label, pick]) => `<tr><th class="text">${esc(label)}</th>${rows.map((row) => `<td>${pick(row)}</td>`).join("")}</tr>`).join("");
+  return `<section class="ho-card flush"><header><h2>${esc(caption)}</h2></header><div class="ho-table-wrap"><table class="ho-table"><thead><tr><th></th>${head}</tr></thead><tbody>${body}</tbody></table></div></section>`;
+}
+
 function compareResultHtml(result) {
   const rows = (result && result.rows) || [];
-  if (!rows.length) return `<p class="hint">${esc(t("compare-need"))}</p>`;
-  const head = (cells) => cells.map((cell) => `<th scope="col">${esc(cell)}</th>`).join("");
-  const descriptive = rows.map((row) => `<tr>
-    <th scope="row">${esc(row.label)}</th>
-    <td>${esc(row.rifle)}</td><td>${esc(row.barrel)}</td><td>${esc(row.twist)} ${esc(row.twist_hand)}</td>
-    <td>${esc(row.sight_height)}</td><td>${esc(row.weight)}</td><td>${esc(row.scope)}</td>
-    <td>${esc(row.focal_plane)}</td><td>${esc(row.click)}</td><td>${esc(row.bullet)}</td>
-    <td>${esc(row.drag)}</td><td>${esc(row.bc)}</td><td>${esc(row.bullet_weight)}</td>
-    <td>${esc(row.load)}</td><td>${esc(row.mv)}</td><td>${esc(row.zero)}</td><td>${esc(row.truing)}</td>
-  </tr>`).join("");
-  const ballistic = rows.map((row) => `<tr>
-    <th scope="row">${esc(row.label)}</th>
-    <td>${esc(row.drop)}</td>
-    <td>${esc(row.elevation.direction)} ${esc(row.elevation.primary)}</td>
-    <td>${esc(row.windage.direction)} ${esc(row.windage.primary)}</td>
-    <td>${esc(row.velocity)}</td><td>${esc(row.energy)}</td>
-    <td>${esc(Number(row.tof_s).toFixed(3))} s</td><td>${esc(Number(row.mach).toFixed(2))}</td>
-  </tr>`).join("");
+  if (!rows.length) return `<p class="ho-hint">${esc(t("compare-need"))}</p>`;
+  const hold = (node) => node ? `${esc(node.direction || "")} ${esc(node.primary || "")}`.trim() : esc(t("missing-not-set"));
+  const at = compareTable(rows, t("compare-at"), [
+    [t("drop"), (row) => missingCell(row.drop)],
+    [t("elevation"), (row) => hold(row.elevation)],
+    [t("windage"), (row) => hold(row.windage)],
+    [t("velocity"), (row) => missingCell(row.velocity)],
+    [t("energy"), (row) => missingCell(row.energy)],
+    [t("tof"), (row) => `${esc(Number(row.tof_s).toFixed(3))} s`],
+    [t("mach"), (row) => esc(Number(row.mach).toFixed(2))],
+  ]);
+  const gear = compareTable(rows, t("compare-equipment"), [
+    [t("equip-rifle"), (row) => missingCell(row.rifle)],
+    [t("barrel"), (row) => missingCell(row.barrel)],
+    [t("twist"), (row) => (row.twist ? esc(`${row.twist} ${row.twist_hand || ""}`.trim()) : missingCell("", "twist"))],
+    [t("sight-height"), (row) => missingCell(row.sight_height)],
+    [t("weight"), (row) => missingCell(row.weight)],
+    [t("equip-scope"), (row) => missingCell(row.scope, "scope")],
+    [t("focal-plane"), (row) => missingCell(row.focal_plane)],
+    [t("click"), (row) => missingCell(row.click, "click")],
+    [t("equip-bullet"), (row) => missingCell(row.bullet)],
+    [t("compare-drag"), (row) => missingCell(row.drag)],
+    [t("compare-bc"), (row) => missingCell(row.bc)],
+    [t("weight"), (row) => missingCell(row.bullet_weight)],
+    [t("equip-load"), (row) => missingCell(row.load)],
+    [t("mv"), (row) => missingCell(row.mv)],
+    [t("zero"), (row) => missingCell(row.zero)],
+    [t("compare-truing"), (row) => missingCell(row.truing)],
+  ]);
   const warnings = rows.flatMap((row) => (row.warnings || []).map((item) => `${row.label}: ${item}`));
-  const need = rows.length < 2 ? `<p class="hint">${esc(t("compare-need"))}</p>` : "";
+  const need = rows.length < 2 ? `<p class="ho-hint">${esc(t("compare-need"))}</p>` : "";
   const limit = compareError ? `<p class="error">${esc(compareError)}</p>` : "";
-  return `${limit}${need}
-    <div class="table-wrap"><table class="words"><caption>${esc(t("compare-descriptive"))}</caption>
-      <thead><tr><th scope="col">${esc(t("profile"))}</th>${head([t("equip-rifle"), t("barrel"), t("twist"), t("sight-height"), t("weight"), t("equip-scope"), t("focal-plane"), t("click"), t("equip-bullet"), t("compare-drag"), t("compare-bc"), t("weight"), t("equip-load"), t("mv"), t("zero"), t("compare-truing")])}</tr></thead>
-      <tbody>${descriptive}</tbody></table></div>
-    <div class="table-wrap"><table class="words"><caption>${esc(t("compare-ballistic"))}</caption>
-      <thead><tr><th scope="col">${esc(t("profile"))}</th>${head([t("drop"), t("elevation"), t("windage"), t("velocity"), t("energy"), t("tof"), t("mach")])}</tr></thead>
-      <tbody>${ballistic}</tbody></table></div>
-    ${warnings.length ? `<p class="hint">${esc(warnings.join(" "))}</p>` : ""}`;
+  return `${limit}${need}<div class="stack">${at}${gear}</div>${warnings.length ? `<p class="ho-hint">${esc(warnings.join(" "))}</p>` : ""}`;
 }
 
 function documentsHtml() {
   const docs = boot.equipment.documents || [];
   const current = docs.find((item) => item.id === docId) || {};
-  const list = docs.map((item) => `<button type="button" data-doc="${esc(item.id)}">${esc(item.title || item.label)}</button>`).join("") || `<p>${esc(t("documents-none"))}</p>`;
   const loads = (boot.equipment.loads || []).map((item) => `<option value="${esc(item.id)}" ${item.id === current.load_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
   const rifles = (boot.equipment.rifles || []).map((item) => `<option value="${esc(item.id)}" ${item.id === current.rifle_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
   const bullets = (boot.equipment.bullets || []).map((item) => `<option value="${esc(item.id)}" ${item.id === current.bullet_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
-  const attached = current.filename ? `<p class="meta">${esc(t("documents-attached"))}: ${esc(current.filename)}</p>` : "";
-  return `<div class="layout">
-    <section class="panel list"><button type="button" id="doc-new">${esc(t("new"))}</button>${list}</section>
-    <section class="panel">
-      <h2>${esc(t("nav-documents"))}</h2>
-      <p class="hint">${esc(t("documents-intro"))}</p>
-      <input type="hidden" id="doc-id" value="${esc(current.id || "")}" />
-      <div class="fields">
-        ${textInput("doc-title", t("documents-title"), current.title || "")}
-        ${textInput("doc-edition", t("documents-edition"), current.edition || "")}
-        ${textInput("doc-date", t("documents-date"), current.edition_date || "")}
-        <label class="field">${esc(t("documents-link"))}<input id="doc-link" value="${esc(current.link_url || "")}" title="${esc(t("documents-link-tip"))}" /></label>
-        <label class="field">${esc(t("documents-file"))}<input id="doc-file" type="file" accept="application/pdf,.pdf" title="${esc(t("documents-file-tip"))}" /></label>
-        ${attached}
-        <label class="field">${esc(t("equip-load"))}<select id="doc-load"><option value=""></option>${loads}</select></label>
-        <label class="field">${esc(t("equip-rifle"))}<select id="doc-rifle"><option value=""></option>${rifles}</select></label>
-        <label class="field">${esc(t("equip-bullet"))}<select id="doc-bullet"><option value=""></option>${bullets}</select></label>
-        ${textInput("doc-notes", t("log-notes"), current.notes || "")}
-      </div>
-      <div class="row">
-        <button type="button" id="doc-save">${esc(t("save"))}</button>
-        ${current.id ? `<button type="button" id="doc-open">${esc(t("documents-open"))}</button>` : ""}
-        ${current.id ? `<button type="button" id="doc-archive">${esc(t("archive"))}</button>` : ""}
-      </div>
-      <p id="doc-msg" class="meta">${esc(docNotice)}</p>
-    </section>
-  </div>`;
+  const attached = current.filename ? `<p class="ho-hint">${esc(t("documents-attached"))}: ${esc(current.filename)}</p>` : "";
+  const rail = `<h2>${esc(t("doc-add"))}</h2>
+    <p class="ho-hint">${esc(t("documents-intro"))}</p>
+    <input type="hidden" id="doc-id" value="${esc(current.id || "")}" />
+    ${textInput("doc-title", t("documents-title"), current.title || "")}
+    ${textInput("doc-edition", t("documents-edition"), current.edition || "")}
+    ${textInput("doc-date", t("documents-date"), current.edition_date || "")}
+    <div class="ho-field"><div class="head"><label for="doc-link">${esc(t("documents-link"))}</label></div><div class="ho-entry"><input id="doc-link" value="${esc(current.link_url || "")}" title="${esc(t("documents-link-tip"))}" autocomplete="off" /></div></div>
+    <div class="ho-field"><div class="head"><label for="doc-file">${esc(t("documents-file"))}</label></div><input id="doc-file" type="file" accept="application/pdf,.pdf" title="${esc(t("documents-file-tip"))}" /></div>
+    ${attached}
+    ${hoSelect("doc-load", t("equip-load"), `<option value=""></option>${loads}`)}
+    ${hoSelect("doc-rifle", t("equip-rifle"), `<option value=""></option>${rifles}`)}
+    ${hoSelect("doc-bullet", t("equip-bullet"), `<option value=""></option>${bullets}`)}
+    ${textInput("doc-notes", t("log-notes"), current.notes || "")}
+    <div class="btnrow">
+      <button type="button" class="ho-btn primary" id="doc-save">${esc(t("save"))}</button>
+      <button type="button" class="ho-btn ghost" id="doc-new">${esc(t("new"))}</button>
+      ${current.id ? `<button type="button" class="ho-btn" id="doc-open">${esc(t("documents-open"))}</button>` : ""}
+      ${current.id ? `<button type="button" class="ho-btn" id="doc-archive">${esc(t("archive"))}</button>` : ""}
+    </div>
+    <p id="doc-msg" class="meta">${esc(docNotice)}</p>`;
+  const rows = docs.map((item) => `<tr>
+    <td class="text"><button type="button" class="ho-btn ghost" data-doc="${esc(item.id)}">${esc(item.title || item.label)}</button></td>
+    <td class="text">${esc(item.edition || "")}</td>
+    <td>${esc(item.edition_date || "")}</td>
+  </tr>`).join("");
+  const main = `<section class="ho-card flush"><div class="ho-table-wrap"><table class="ho-table"><thead><tr>
+      <th class="text">${esc(t("documents-title"))}</th><th class="text">${esc(t("documents-edition"))}</th><th>${esc(t("documents-date"))}</th>
+    </tr></thead><tbody>${rows || `<tr><td class="text" colspan="3">${esc(t("documents-none"))}</td></tr>`}</tbody></table></div></section>`;
+  return frame({ rail, main, body: "with-list", railLabel: t("nav-documents") });
 }
 
 function bindDocuments() {
@@ -5412,28 +5677,41 @@ function bindArchive() {
 }
 
 function aboutHtml() {
-  return `<section class="panel">
-    <h2>${esc(t("nav-about"))}</h2>
-    <p class="hint">${esc(t("about-intro"))}</p>
-    <p>${esc(t("about-version"))} ${esc(boot.version || "")}</p>
-    <h2>${esc(t("about-mit-heading"))}</h2>
-    <p>${esc(t("about-mit"))}</p>
-    <pre class="licence">${esc(boot.licence || "")}</pre>
-    <h2>${esc(t("about-weather-heading"))}</h2>
-    <p>${esc(t("weather-attribution"))}</p>
-    <p class="hint">${esc(t("weather-noncommercial"))}</p>
-    <p>${esc(t("about-personal"))}</p>
-    <h2>${esc(t("about-drag-heading"))}</h2>
-    <p>${esc(t("about-drag"))}</p>
-    <h2>${esc(t("about-crates-heading"))}</h2>
-    <p>${esc(t("about-crates"))}</p>
-    <h2>${esc(t("about-limits-heading"))}</h2>
-    <p>${esc(t("about-limits"))}</p>
-    <p class="hint">${esc(boot.spin_provenance || "")}</p>
-    <p class="hint">${esc(boot.ejecta_convention || "")}</p>
-    <p class="hint">${esc(t("about-keys"))}</p>
-    <p class="hint">${esc(t("about-package"))}</p>
-  </section>`;
+  const main = `<div class="cols">
+      <section class="ho-card stack">
+        <header><h2>${esc(t("nav-about"))}</h2></header>
+        <p class="ho-hint">${esc(t("about-intro"))}</p>
+        <p class="big">${esc(boot.version || "")} <small>${esc(t("about-version"))}</small></p>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("about-mit-heading"))}</h2></header>
+        <p>${esc(t("about-mit"))}</p>
+        <pre class="licence">${esc(boot.licence || "")}</pre>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("about-weather-heading"))}</h2></header>
+        <p>${esc(t("weather-attribution"))}</p>
+        <p class="ho-hint">${esc(t("weather-noncommercial"))}</p>
+        <p>${esc(t("about-personal"))}</p>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("about-drag-heading"))}</h2></header>
+        <p>${esc(t("about-drag"))}</p>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("about-crates-heading"))}</h2></header>
+        <p>${esc(t("about-crates"))}</p>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("about-limits-heading"))}</h2></header>
+        <p>${esc(t("about-limits"))}</p>
+        <p class="ho-hint">${esc(boot.spin_provenance || "")}</p>
+        <p class="ho-hint">${esc(boot.ejecta_convention || "")}</p>
+        <p class="ho-hint">${esc(t("about-keys"))}</p>
+        <p class="ho-hint">${esc(t("about-package"))}</p>
+      </section>
+    </div>`;
+  return frame({ body: "no-rail", main });
 }
 
 function freshGroup() {
@@ -5566,20 +5844,18 @@ function groupLinksForLoad(loadId) {
 
 function groupsHtml() {
   const state = groupState();
-  return `<section class="groups">
-    <div id="group-results" class="group-results">${groupResultsInner()}</div>
-    <div class="row group-tools" role="toolbar" aria-label="${esc(t("group-mode"))}">${groupToolButtons()}</div>
-    <div class="group-stage">
-      <div class="group-canvas-wrap"><canvas id="group-canvas" aria-label="${esc(t("group-photo"))}"></canvas></div>
-      <div class="group-side">
-        <div class="tabs" role="tablist">${groupTabButton("calibrate")}${groupTabButton("holes")}${groupTabButton("context")}</div>
-        <div class="compact">${groupAlwaysHtml()}</div>
-        ${state.tab === "holes" ? groupHolesHtml() : state.tab === "context" ? groupContextHtml() : groupCalibrateHtml()}
-        <p id="group-error" class="error">${esc(state.error || "")}</p>
-        <p id="group-notice" class="meta">${esc(state.notice || "")}</p>
-      </div>
+  const rail = `<div class="ho-seg wrap" role="tablist" aria-label="${esc(t("group-mode"))}">${groupTabButton("calibrate")}${groupTabButton("holes")}${groupTabButton("context")}</div>
+    <div class="stack">${groupAlwaysHtml()}
+      ${state.tab === "holes" ? groupHolesHtml() : state.tab === "context" ? groupContextHtml() : groupCalibrateHtml()}
     </div>
-  </section>`;
+    <p id="group-error" class="error">${esc(state.error || "")}</p>
+    <p id="group-notice" class="meta">${esc(state.notice || "")}</p>`;
+  const main = `<div class="photo">
+      <div class="tools" role="toolbar" aria-label="${esc(t("group-mode"))}">${groupToolButtons()}</div>
+      <div class="group-canvas-wrap"><canvas id="group-canvas" aria-label="${esc(t("group-photo"))}"></canvas></div>
+      <div class="stack" id="group-results">${groupResultsInner()}</div>
+    </div>`;
+  return frame({ rail, main, body: "with-list", railLabel: t("nav-groups") });
 }
 
 function groupTabButton(id) {
@@ -5589,11 +5865,11 @@ function groupTabButton(id) {
 
 function groupToolButtons() {
   const state = groupState();
-  const tool = (id) => `<button type="button" data-group-tool="${id}" aria-pressed="${state.tool === id}">${esc(t("group-tool-" + id))}</button>`;
+  const tool = (id) => `<button type="button" class="ho-btn" data-group-tool="${id}" aria-pressed="${state.tool === id}">${esc(t("group-tool-" + id))}</button>`;
   return `${tool("corners")}${tool("aim")}${tool("hole")}${tool("move")}${tool("delete")}${tool("pan")}
-    <button type="button" id="group-zoom-in">${esc(t("group-zoom-in"))}</button>
-    <button type="button" id="group-zoom-out">${esc(t("group-zoom-out"))}</button>
-    <button type="button" id="group-zoom-fit">${esc(t("group-zoom-fit"))}</button>`;
+    <button type="button" class="ho-btn ghost" id="group-zoom-in">${esc(t("group-zoom-in"))}</button>
+    <button type="button" class="ho-btn ghost" id="group-zoom-out">${esc(t("group-zoom-out"))}</button>
+    <button type="button" class="ho-btn ghost" id="group-zoom-fit">${esc(t("group-zoom-fit"))}</button>`;
 }
 
 function groupAlwaysHtml() {
@@ -5723,22 +5999,26 @@ function groupTargetOptions(selected) {
 function groupResultsInner() {
   const analysis = groupState().analysis;
   const stats = analysis && analysis.stats;
-  if (!stats) return `<p>${esc(groupBlocked())}</p>`;
+  if (!stats) return `<p class="ho-hint">${esc(groupBlocked())}</p>`;
   const small = units().small;
   const linear = (mm) => `${formatLocal(Number(mm) / 1000, "length", small)} ${small}`;
-  const angle = (mrad, moa) => (Number.isFinite(Number(mrad)) ? `${Number(mrad).toFixed(2)} mrad · ${Number(moa).toFixed(2)} MOA` : "—");
+  const angle = (mrad, moa) => (Number.isFinite(Number(mrad)) ? `${Number(mrad).toFixed(2)} mrad · ${Number(moa).toFixed(2)} MOA` : t("missing-not-set"));
   const score = scoreText(analysis.score);
-  const warnings = (analysis.warnings || []).map((code) => t("group-warn-" + code)).join(" · ");
+  const warnings = (analysis.warnings || []).map((code) => t("group-warn-" + code)).filter((item) => item).join(" · ");
   const notes = analysis.score && analysis.score.notes ? analysis.score.notes.map((code) => t("group-" + code)).join(" · ") : "";
-  return `<span><strong>${esc(t("group-shots"))}</strong> ${esc(String(analysis.shot_count || stats.n))}</span>
-    <span><strong>${esc(t("group-es"))}</strong> ${esc(linear(stats.reported_extreme_spread_mm))} · ${esc(angle(stats.es_mrad, stats.es_moa))}</span>
-    <span><strong>${esc(t("group-mr"))}</strong> ${esc(linear(stats.reported_mean_radius_mm))}</span>
-    <span><strong>${esc(t("group-offset"))}</strong> ${esc(stats.vertical)} ${esc(linear(stats.reported_offset_y_mm))} ${esc(angle(stats.offset_y_mrad, stats.offset_y_moa))} · ${esc(stats.horizontal)} ${esc(linear(stats.reported_offset_x_mm))} ${esc(angle(stats.offset_x_mrad, stats.offset_x_moa))}</span>
-    <span><strong>${esc(t("group-score"))}</strong> ${esc(score)}</span>
-    ${stats.cep_mm == null ? "" : `<span><strong>${esc(t("group-cep"))}</strong> ${esc(linear(stats.cep_mm))}</span>`}
-    <span><strong>${esc(t("group-sd"))}</strong> ${esc(linear(stats.radial_sd_mm))}</span>
-    ${warnings ? `<p class="group-warn">${esc(warnings)}</p>` : ""}
-    ${notes ? `<p class="group-warn">${esc(notes)}</p>` : ""}`;
+  const kv = (label, value) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd><span class="ho-unit"></span>`;
+  return `<p class="big">${esc(stats.horizontal || "")} <small>${esc(linear(stats.reported_offset_x_mm))} · ${esc(angle(stats.offset_x_mrad, stats.offset_x_moa))}</small></p>
+    <p class="big">${esc(stats.vertical || "")} <small>${esc(linear(stats.reported_offset_y_mm))} · ${esc(angle(stats.offset_y_mrad, stats.offset_y_moa))}</small></p>
+    <dl class="ho-kv">
+      ${kv(t("group-shots"), String(analysis.shot_count || stats.n))}
+      ${kv(t("group-es"), `${linear(stats.reported_extreme_spread_mm)} · ${angle(stats.es_mrad, stats.es_moa)}`)}
+      ${kv(t("group-mr"), linear(stats.reported_mean_radius_mm))}
+      ${kv(t("group-score"), score)}
+      ${stats.cep_mm == null ? "" : kv(t("group-cep"), linear(stats.cep_mm))}
+      ${kv(t("group-sd"), linear(stats.radial_sd_mm))}
+    </dl>
+    ${warnings ? `<p class="ho-hint">${esc(warnings)}</p>` : ""}
+    ${notes ? `<p class="ho-hint">${esc(notes)}</p>` : ""}`;
 }
 
 function scoreText(score) {
