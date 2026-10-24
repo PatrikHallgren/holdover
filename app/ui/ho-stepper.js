@@ -45,6 +45,10 @@ HO_STEP_RULES.mag_max = HO_STEP_RULES.magnification;
 HO_STEP_RULES.calibrated_mag = HO_STEP_RULES.magnification;
 HO_STEP_RULES["reticle-mag"] = HO_STEP_RULES.magnification;
 HO_STEP_RULES["reticle-cal"] = HO_STEP_RULES.magnification;
+HO_STEP_RULES["pbr-zero"] = HO_STEP_RULES.range;
+HO_STEP_RULES.from = HO_STEP_RULES.range;
+HO_STEP_RULES.to = HO_STEP_RULES.range;
+HO_STEP_RULES.step = HO_STEP_RULES.range;
 
 function parsePercent(text) {
   const raw = String(text ?? "").trim().replace("−", "-").replace(",", ".");

@@ -151,3 +151,11 @@ The checklist is `docs/M8-DESKTOP.md`. Group geometry, statistics, and scoring l
 - Import accepts JPEG and PNG. HEIC is recognised and refused with a sentence; this build does not decode it. The stored blob is a PNG with EXIF orientation already applied, named by SHA-256 beside the database. GPS is removed from the file. Latitude and longitude are kept on the group only when Keep the photograph's location was checked at import. The bundle accepts PDF, PNG, and JPEG attachments. A missing photograph uses the same refusal as a missing PDF, and the sentence covers both.
 - The desktop page keeps the shot count, extreme spread, mean radius, offset, and score in a strip. Calibration, holes, and context sit in tabs. Marks are placed and corrected on the photograph, with zoom. Automatic hole finding is a suggestion. A synthetic card with known centres is `tests/fixtures/synthetic-group.png`, and `holdover-cli group-check` checks the detection against a 0.5 mm position tolerance and a 1% tolerance on extreme spread, mean radius, and offset.
 - The workspace version, the window title, and `packaging/PKGBUILD` are 1.2.0. No tag and no release.
+
+## Redesign PR2
+
+The checklist is `docs/REDESIGN-PR2.md`. PR1 restyled Solve. PR2 restyles the other screens with the same cards, steppers, and status bar. Behaviour and the solver stay as they were.
+
+- The on-screen range card is a preview. The file you print is still the Rust PDF. T2–T6 and the US targets stay unmeasured. The moose outline stays dashed and is not scored.
+- Settings can edit the range step and the wind step. They are stored on the existing settings row. Empty text is refused. There is no language control and no second text-size control in this round. Larger text stays the one checkbox.
+- The workspace version, the window title, and `packaging/PKGBUILD` are 1.3.0. No tag and no release.

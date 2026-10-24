@@ -336,6 +336,30 @@ impl Store {
         if let Some(paper) = body.get("paper").and_then(|value| value.as_str()) {
             self.remember_paper(paper)?;
         }
+        if let Some(step) = body.get("range_step").and_then(|value| value.as_str()) {
+            let step = step.trim();
+            if step.is_empty() {
+                return Err("range step is empty".into());
+            }
+            self.conn
+                .execute(
+                    "UPDATE settings SET range_step = ?1 WHERE id = 1",
+                    params![step],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+        if let Some(step) = body.get("wind_step").and_then(|value| value.as_str()) {
+            let step = step.trim();
+            if step.is_empty() {
+                return Err("wind step is empty".into());
+            }
+            self.conn
+                .execute(
+                    "UPDATE settings SET wind_step = ?1 WHERE id = 1",
+                    params![step],
+                )
+                .map_err(|err| err.to_string())?;
+        }
         if body.get("weather_place").is_some()
             || body.get("weather_latitude").is_some()
             || body.get("weather_longitude").is_some()

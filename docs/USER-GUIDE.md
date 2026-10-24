@@ -2,7 +2,7 @@
 
 Holdover is a personal, non-commercial ballistic calculator and equipment notebook for the Omarchy 4 desktop. Predictions come from the model and the numbers you type. Confirm them with live fire. You are responsible for safe and lawful shooting.
 
-The window is English. Version 1.2.0 is prepared in this tree. No tag is created here. The 1.0.0 tag commands stay in [`M6-DESKTOP.md`](M6-DESKTOP.md). The sync checklist is [`M7-DESKTOP.md`](M7-DESKTOP.md). The group-photograph checklist is [`M8-DESKTOP.md`](M8-DESKTOP.md).
+The window is English. Version 1.3.0 is prepared in this tree. No tag is created here. The 1.0.0 tag commands stay in [`M6-DESKTOP.md`](M6-DESKTOP.md). The sync checklist is [`M7-DESKTOP.md`](M7-DESKTOP.md). The group-photograph checklist is [`M8-DESKTOP.md`](M8-DESKTOP.md). The B dashboard checklist for the pages after Solve is [`REDESIGN-PR2.md`](REDESIGN-PR2.md).
 
 ## Install
 
@@ -112,15 +112,15 @@ A newer bundle, a file that is not a Holdover bundle, and a damaged or cut-off f
 
 ### About
 
-About is in the footer, on Settings, and in the Ctrl+K list. It shows version 1.2.0, the MIT licence (Copyright (c) 2026 Patrik Hallgren), the Open-Meteo CC BY 4.0 attribution, the personal non-commercial note, the JBM drag-table source, the direct crate licences (including zip 2.6.1, image 0.25.10, and kamadak-exif 0.6.1), and the known limitations below. py-ballisticcalc 3.1.1 is a CI oracle under LGPL-3.0 and is not installed with the app. The window has no npm packages. WebKitGTK and GTK come from the system.
+About is in the status bar, on Settings, and in the Ctrl+K list. It shows version 1.3.0, the MIT licence (Copyright (c) 2026 Patrik Hallgren), the Open-Meteo CC BY 4.0 attribution, the personal non-commercial note, the JBM drag-table source, the direct crate licences (including zip 2.6.1, image 0.25.10, and kamadak-exif 0.6.1), and the known limitations below. py-ballisticcalc 3.1.1 is a CI oracle under LGPL-3.0 and is not installed with the app. The window has no npm packages. WebKitGTK and GTK come from the system.
 
 ## Keyboard, type, and themes
 
-Tab order starts at Skip to content, then the screen buttons, the unit presets, the page, and About in the footer. The focused control draws a ring in the theme focus colour. Buttons and fields have a visible label or a tooltip. Ctrl+K opens the screen list and focuses the first button. Escape closes that list and the units popover. Ctrl+U cycles Metric, US, and Custom. Letter shortcuts on Solve stay quiet while a field is focused.
+Tab order starts at Skip to content, then the screen buttons, the unit presets, the page, and About in the status bar. The focused control draws a ring in the theme focus colour. Buttons and fields have a visible label or a tooltip. Ctrl+K opens the command palette and focuses the search field. Escape closes that list and the units popover. Ctrl+U cycles Metric, US, and Custom. Letter shortcuts on Solve stay quiet while a field is focused.
 
 Type size follows the Omarchy text-size knob (`text-scaling-factor`). Settings, Larger text, adds a step on top. `HOLDOVER_TEXT_SCALE` overrides the knob when you set it. Drawings and text use the theme colour variables. Secondary text, warnings, errors, and the focus colour are lifted when a theme would leave them below the usual contrast floors (4.5:1 for text, 3:1 for the focus ring) on both the background and the surface.
 
-Field mode (F11, or Field in the Ctrl+K list) hides the header and the footer so the hold can fill the window. Ctrl+K still opens About.
+Field mode (F11, or Field in the Ctrl+K list) hides the header, the rail, and the status bar so the hold can fill the window. Ctrl+K still opens the command palette.
 
 ## Printing
 
