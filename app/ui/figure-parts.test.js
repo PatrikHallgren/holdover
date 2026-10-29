@@ -11,13 +11,13 @@ const app = fs.readFileSync(path.join(here, "app.js"), "utf8");
 
 function loadFigures(source) {
   const start = source.indexOf("function figureParts(");
-  const end = source.indexOf("\nfunction dirGlyph", start);
+  const end = source.indexOf("\nfunction readoutHtml", start);
   assert.ok(start >= 0 && end > start, "figureParts is in app.js");
   const body = source.slice(start, end);
-  return new Function(`${body}\nreturn { figureParts, figureShown };`)();
+  return new Function(`${body}\nreturn { figureParts, figureShown, figureSign };`)();
 }
 
-const { figureParts, figureShown } = loadFigures(app);
+const { figureParts, figureShown, figureSign } = loadFigures(app);
 
 test("hold figures keep every digit at 10 and above", () => {
   assert.deepEqual(figureParts({ primary: "17" }), { sign: "", num: "17", unit: "" });
@@ -45,6 +45,15 @@ test("the big figure rounds and keeps a click count whole", () => {
   assert.equal(figureShown({ primary: "12.36 cm/100 m" }).num, "12.4");
   assert.equal(figureShown({ primary: "-17.5 mrad" }).num, "17.50");
   assert.equal(figureParts({ primary: "-54" }).sign, "-");
+});
+
+test("a directed hold does not repeat the sign on the big figure", () => {
+  assert.equal(figureSign({ primary: "-1", direction: "LEFT" }), "");
+  assert.equal(figureSign({ primary: "−1", direction: "LEFT" }), "");
+  assert.equal(figureSign({ primary: "-54", direction: "DOWN" }), "");
+  assert.equal(figureSign({ primary: "-1" }), "-");
+  assert.equal(figureSign({ primary: "−8.25 mrad" }), "−");
+  assert.equal(figureSign({ primary: "+12.35 MOA" }), "");
 });
 
 test("a missing hold stays a dash and is not parsed as a number", () => {

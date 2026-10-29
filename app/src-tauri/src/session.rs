@@ -807,7 +807,7 @@ fn wind_brackets(body: &Value) -> Result<Vec<(String, f64)>, String> {
     let raw = body
         .get("brackets")
         .and_then(|v| v.as_str())
-        .unwrap_or("2 mps, 4 mps, 6 mps");
+        .unwrap_or("2 m/s, 4 m/s, 6 m/s");
     let unit = body
         .get("bracket_unit")
         .and_then(|v| v.as_str())

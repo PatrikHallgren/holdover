@@ -49,7 +49,7 @@ let cardPageTouched = false;
 let pbrSpan = "zone";
 let pbrWindow = null;
 let cardConditions = "";
-let cardBrackets = "2 mps, 4 mps, 6 mps";
+let cardBrackets = "2 m/s, 4 m/s, 6 m/s";
 let chartKinds = { drop: true, wind: true, velocity: false, energy: false, tof: false, mach: false };
 let chartPane = "trajectory";
 let reticlePane = "view";
@@ -649,7 +649,7 @@ function solveShell() {
     <div class="ho-row ho-lead">
       <div class="ho-field">
         <div class="head"><label for="target_direction">${esc(t("lead-direction"))}</label></div>
-        <div class="ho-entry"><input id="target_direction" value="${esc(moving.direction || "3 o'clock")}" autocomplete="off" spellcheck="false" /></div>
+        <div class="ho-entry"><input id="target_direction" value="${esc(clockPhrase(moving.direction || "3"))}" autocomplete="off" spellcheck="false" /></div>
         <p class="ho-hint">${esc(t("lead-clock"))}</p>
       </div>
       <div class="ho-field">
@@ -1042,10 +1042,16 @@ function dirGlyph(direction) {
   return { UP: "▲", DOWN: "▼", LEFT: "◀", RIGHT: "▶" }[direction] || "";
 }
 
+function figureSign(hold) {
+  const sign = figureParts(hold).sign;
+  // A direction word already carries the sign. Clicks mode stores a signed
+  // count, so "-1" next to LEFT would read as a second minus.
+  return (hold && hold.direction) ? "" : (sign === "+" ? "" : sign);
+}
+
 function readoutHtml(hold) {
   const figure = figureShown(hold);
-  const sign = figureParts(hold).sign;
-  const shownSign = sign === "+" ? "" : sign;
+  const shownSign = figureSign(hold);
   const glyph = dirGlyph(hold && hold.direction);
   const exact = exactAngular(hold);
   return `<div class="top"><span class="ho-dir">${glyph ? `${glyph} ` : ""}${esc((hold && hold.direction) || "—")}</span><span class="ho-exact">${esc(exact)}</span></div>
@@ -1356,7 +1362,7 @@ function cardHtml() {
     ${qtyField("step", t("card-step"), "50 m", units().length, "length", 50, null, "step")}
     <div class="ho-field"><div class="head"><label for="brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="brackets" value="${esc(cardBrackets)}" autocomplete="off" /></div></div>
     ${hoSelect("card-page", t("card-size"), pages)}
-    <div class="ho-field"><div class="head"><label for="conditions">${esc(t("card-conditions"))}</label></div><div class="ho-entry"><input id="conditions" value="${esc(cardConditions)}" placeholder="-10 C, 30 C" autocomplete="off" /></div></div>
+    <div class="ho-field"><div class="head"><label for="conditions">${esc(t("card-conditions"))}</label></div><div class="ho-entry"><input id="conditions" value="${esc(cardConditions)}" placeholder="-10 °C, 30 °C" autocomplete="off" /></div></div>
     <label class="ho-check"><input type="checkbox" id="card-pin" ${s.card_pinned ? "checked" : ""} /> ${esc(t("card-pin"))}</label>
     <div class="btnrow">
       <button type="button" class="ho-btn primary" id="card-build">${esc(t("apply"))}</button>
@@ -1490,7 +1496,7 @@ function chartHtml() {
         <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length", null, null, "impact-range")}</span>
         <span title="${esc(t("impact-mv-tip"))}">${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}</span>
         <span title="${esc(t("impact-error-tip"))}">${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}</span>
-        <div class="ho-field" title="${esc(t("impact-wind-tip"))}"><div class="head"><label for="impact-brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" autocomplete="off" /></div></div>
+        <div class="ho-field" title="${esc(t("impact-wind-tip"))}"><div class="head"><label for="impact-brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="impact-brackets" value="2 m/s, 4 m/s" title="${esc(t("impact-wind-tip"))}" autocomplete="off" /></div></div>
         <span title="${esc(t("impact-zone-tip"))}">${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}</span>
         ${hoSelect("impact-group", t("group-saved"), `<option value="">${esc(t("group-blank"))}</option>${groups}`, t("group-impact"))}
       </div>
@@ -5006,7 +5012,7 @@ function holdMarks(scene, px) {
 
 function overlayDot(at, color, label) {
   return `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="6" fill="${color}" />
-    <text fill="var(--text)" x="${(at[0] + 10).toFixed(1)}" y="${(at[1] - 8).toFixed(1)}">${esc(label)}</text>`;
+    <text fill="var(--text)" font-size="12" text-anchor="middle" x="${at[0].toFixed(1)}" y="${(at[1] + 20).toFixed(1)}">${esc(label)}</text>`;
 }
 
 function gridLine(at, c, size, vertical) {
@@ -5073,14 +5079,15 @@ function targetMarks(spec, to, ringing, showSilhouette) {
     }).join(" ") + " Z";
     body += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.75" ${dash} />`;
   });
-  (spec.rings || []).forEach((ring) => {
+  (spec.rings || []).forEach((ring, index) => {
     const radius = Number(ring.diameter_cm) / 2;
-    const edge = ringing === "alt" ? to(radius, 0) : to(radius * Math.SQRT1_2, radius * Math.SQRT1_2);
+    const turn = ringing === "alt" ? 0 : (-Math.PI / 3) - index * 0.55;
+    const edge = to(Math.cos(turn) * radius, Math.sin(turn) * radius);
     const centre = to(0, 0);
-    const r = Math.abs(edge[0] - centre[0]);
+    const r = Math.hypot(edge[0] - centre[0], edge[1] - centre[1]);
     const label = (ringing === "alt" && ring.label_alt) || ring.label_primary || "";
     body += `<circle cx="${centre[0].toFixed(1)}" cy="${centre[1].toFixed(1)}" r="${r.toFixed(1)}" fill="none" stroke="var(--text)" stroke-width="1.5" />`;
-    if (label) body += `<text fill="var(--text)" x="${(edge[0] + 4).toFixed(1)}" y="${(edge[1] - 4).toFixed(1)}">${esc(label)}</text>`;
+    if (label) body += `<text fill="var(--text)" font-size="12" x="${(edge[0] + 6).toFixed(1)}" y="${(edge[1] + 4).toFixed(1)}">${esc(label)}</text>`;
   });
   return body;
 }
