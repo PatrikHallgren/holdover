@@ -188,7 +188,7 @@ pub fn range_card(store: &Store, body: &Value) -> Result<Value, String> {
         "footer": "Predicted values; confirm with live fire.",
         "effects": body.get("effects").cloned().unwrap_or(json!({})),
         "truing": meta.truing_label,
-        "date": crate::store::now_iso(),
+        "date": edition_label(body),
         "page": {
             "id": page.id,
             "name": page.name,
@@ -386,9 +386,9 @@ pub fn chart(store: &Store, body: &Value) -> Result<Value, String> {
             "axis": axis_json(&chart_axis(wind_lo, wind_hi, 5, true), &hold_label),
             "zero": "zero",
         },
-        "velocity": {
-            "unit": units.velocity,
-            "axis": axis_json(&chart_axis(velocity_lo, velocity_hi, 5, false), &units.velocity),
+            "velocity": {
+            "unit": pretty_unit(&units.velocity),
+            "axis": axis_json(&chart_axis(velocity_lo, velocity_hi, 5, false), &pretty_unit(&units.velocity)),
         },
         "energy": {
             "unit": units.energy,
@@ -457,7 +457,7 @@ pub fn compare(store: &Store, body: &Value) -> Result<Value, String> {
             "sight_height": qty_line(&bundle["rifle"], "sight_height", &units.small),
             "weight": qty_line(&bundle["rifle"], "weight", &units.mass),
             "scope": text_of(&bundle["scope"], "label"),
-            "focal_plane": text_of(&bundle["scope"], "focal_plane"),
+            "focal_plane": pretty_phrase(&text_of(&bundle["scope"], "focal_plane")),
             "click": qty_line(&bundle["scope"], "click", &units.angle),
             "bullet": text_of(bullet, "label"),
             "drag": text_of(bullet, "drag_model"),
@@ -467,14 +467,15 @@ pub fn compare(store: &Store, body: &Value) -> Result<Value, String> {
             "mv": qty_line(&bundle["load"], "mv", &units.velocity),
             "zero": meta.zero_summary,
             "truing": meta.truing_label,
-            "drop": format!("{} {}", shown(point.drop_m.abs(), &units.small), units.small),
+            "drop": format!("{} {}", shown(point.drop_m.abs(), &units.small), pretty_unit(&units.small)),
             "drop_m": point.drop_m,
             "elevation": hold_json(&point.elevation, angular),
             "windage": hold_json(&point.windage, angular),
-            "velocity": format!("{} {}", shown(point.velocity_mps, &units.velocity), units.velocity),
-            "energy": format!("{} {}", shown(point.energy_j, &units.energy), units.energy),
+            "velocity": format!("{} {}", shown(point.velocity_mps, &units.velocity), pretty_unit(&units.velocity)),
+            "energy": format!("{} {}", shown(point.energy_j, &units.energy), pretty_unit(&units.energy)),
             "tof_s": point.tof_s,
             "mach": point.mach,
+            "sg": point.sg,
             "warnings": solution.warnings.iter().map(warning_text).collect::<Vec<_>>(),
         }));
     }
@@ -496,6 +497,14 @@ fn text_of(value: &Value, key: &str) -> String {
 }
 
 fn qty_line(value: &Value, name: &str, unit: &str) -> String {
+    if name == "click" {
+        if let Some(text) = value.get("click_text").and_then(|v| v.as_str()) {
+            let text = text.trim();
+            if !text.is_empty() {
+                return pretty_phrase(text);
+            }
+        }
+    }
     let si = value
         .get(format!("{name}_si"))
         .and_then(|v| v.as_f64())
@@ -509,7 +518,11 @@ fn qty_line(value: &Value, name: &str, unit: &str) -> String {
                 .and_then(|v| v.as_f64())
         });
     if let Some(si) = si {
-        return format!("{} {unit}", shown(si, unit));
+        let label = pretty_unit(unit);
+        if mass_unit(unit) {
+            return format!("{:.2} {label}", shown_value(si, unit));
+        }
+        return format!("{} {label}", shown(si, unit));
     }
     value
         .get(format!("{name}_text"))
@@ -705,9 +718,9 @@ fn build_shot(store: &Store, body: &Value) -> Result<(Shot, Meta), String> {
     let zero_summary = format!(
         "{} {} · {} {} · {} · {}%",
         shown(shot.zero_range_m.unwrap_or(0.0), &units.length),
-        units.length,
+        pretty_unit(&units.length),
         shown(zero_atmo.temperature_c, &units.temperature),
-        units.temperature,
+        pretty_unit(&units.temperature),
         pressure_kind_label(zero_atmo.pressure_kind),
         format_number(zero_atmo.humidity * 100.0)
     );
@@ -794,7 +807,7 @@ fn wind_brackets(body: &Value) -> Result<Vec<(String, f64)>, String> {
     let raw = body
         .get("brackets")
         .and_then(|v| v.as_str())
-        .unwrap_or("2 mps, 4 mps, 6 mps");
+        .unwrap_or("2 m/s, 4 m/s, 6 m/s");
     let unit = body
         .get("bracket_unit")
         .and_then(|v| v.as_str())
@@ -807,7 +820,7 @@ fn wind_brackets(body: &Value) -> Result<Vec<(String, f64)>, String> {
         }
         let speed =
             parse_quantity(part, Dimension::Velocity, Some(unit)).map_err(|err| err.to_string())?;
-        out.push((part.to_string(), speed));
+        out.push((pretty_phrase(part), speed));
     }
     if out.len() > 6 {
         return Err("use at most six wind brackets".into());
@@ -1092,20 +1105,21 @@ fn card_csv(
     angular: &str,
     length_unit: &str,
 ) -> String {
-    let mut header = format!("Range ({length_unit}),Elevation ({angular})");
+    let length_label = pretty_unit(length_unit);
+    let angular_label = pretty_unit(angular);
+    let mut header = format!("Range ({length_label}),Elevation ({angular_label})");
     for (label, _) in brackets {
-        header.push_str(&format!(",Wind {label} ({angular})"));
+        header.push_str(&format!(",Wind {} ({angular_label})", pretty_phrase(label)));
     }
     header.push('\n');
     for row in rows {
         let range = row["range_display"].as_str().unwrap_or("");
-        let elevation = row["elevation"]["primary"].as_str().unwrap_or("");
+        let elevation = card_number(&row["elevation"], angular);
         header.push_str(&format!("{range},{elevation}"));
         if let Some(winds) = row.get("winds").and_then(|value| value.as_array()) {
             for wind in winds {
-                let text = wind["windage"]["primary"].as_str().unwrap_or("");
                 header.push(',');
-                header.push_str(text);
+                header.push_str(&card_number(&wind["windage"], angular));
             }
         }
         header.push('\n');
@@ -2220,6 +2234,76 @@ fn shown(si: f64, unit: &str) -> String {
     holdover_core::format_quantity(si, unit).unwrap_or_else(|_| format_number(si))
 }
 
+fn pretty_unit(unit: &str) -> String {
+    match unit {
+        "mps" => "m/s".into(),
+        "C" => "°C".into(),
+        "F" => "°F".into(),
+        other => other.to_string(),
+    }
+}
+
+fn mass_unit(unit: &str) -> bool {
+    matches!(unit, "g" | "gr" | "kg" | "lb" | "oz")
+}
+
+fn pretty_phrase(text: &str) -> String {
+    text.split_whitespace()
+        .map(pretty_token)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn pretty_token(word: &str) -> String {
+    let end = word.trim_end_matches([',', ';', '.']);
+    let punct = &word[end.len()..];
+    let body = match end {
+        "mps" => "m/s",
+        "C" => "°C",
+        "F" => "°F",
+        "ffp" => "FFP",
+        "sfp" => "SFP",
+        other => other,
+    };
+    format!("{body}{punct}")
+}
+
+fn edition_label(body: &Value) -> String {
+    if let Some(text) = body
+        .get("edition_date")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+    {
+        if !text.is_empty() && text.len() <= 40 && !text.chars().any(|ch| ch == '\n' || ch == '\r')
+        {
+            return text.to_string();
+        }
+    }
+    crate::store::now_iso().chars().take(10).collect()
+}
+
+fn card_number(hold: &Value, angular: &str) -> String {
+    let key = match angular.to_ascii_lowercase().as_str() {
+        "moa" => "moa",
+        "iphy" => "iphy",
+        "cm@100m" | "cm/100m" => "cm_per_100m",
+        "clicks" => "clicks",
+        _ => "mrad",
+    };
+    if key == "clicks" {
+        return hold
+            .get("clicks")
+            .and_then(|value| value.as_i64())
+            .map(|count| count.abs().to_string())
+            .unwrap_or_else(|| "—".into());
+    }
+    let digits = if key == "cm_per_100m" { 1 } else { 2 };
+    match hold.get(key).and_then(|value| value.as_f64()) {
+        Some(number) => format!("{:.*}", digits, number.abs()),
+        None => "—".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2845,5 +2929,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("MOA"));
+        let click = us["rows"][0]["click"].as_str().unwrap();
+        assert!(
+            click.contains("mrad"),
+            "click stays in the scope's unit, got {click}"
+        );
     }
 }

@@ -366,11 +366,19 @@ fn finish_b_tokens(tokens: &mut Tokens, colors: &BTreeMap<String, String>) {
         .unwrap_or_else(|| mix_hex(&tokens.background, shade, 0.18));
     tokens.rail = hex_or(colors, "rail", &rail_fallback);
     let green = hex_or(colors, "ok", &color(colors, "green", "#9ece6a"));
-    let backgrounds = [tokens.background.as_str(), tokens.surface.as_str()];
+    let page = [tokens.background.as_str(), tokens.surface.as_str()];
     let toward = tokens.text.clone();
-    tokens.ok = lift_contrast(&green, &backgrounds, 4.5, &toward);
-    tokens.accent_text = lift_contrast(&tokens.accent, &backgrounds, 4.5, &toward);
-    tokens.control_border = lift_contrast(&tokens.border, &backgrounds, 3.0, &toward);
+    // Primary buttons and warning badges are drawn on the raised fill as well
+    // as on the page and the card. Control edges stay on the page and the card.
+    let with_raised = [
+        tokens.background.as_str(),
+        tokens.surface.as_str(),
+        tokens.raised.as_str(),
+    ];
+    tokens.ok = lift_contrast(&green, &page, 4.5, &toward);
+    tokens.accent_text = lift_contrast(&tokens.accent, &with_raised, 4.5, &toward);
+    tokens.warning = lift_contrast(&tokens.warning, &with_raised, 4.5, &toward);
+    tokens.control_border = lift_contrast(&tokens.border, &page, 3.0, &toward);
 }
 
 fn is_hex(value: &str) -> bool {
@@ -818,16 +826,26 @@ bright_foreground = "#c0caf5"
                     "{mode} secondary on {background}"
                 );
                 assert!(
-                    contrast_ratio(&palette.tokens.warning, background) >= 4.5,
-                    "{mode} warning on {background}"
-                );
-                assert!(
                     contrast_ratio(&palette.tokens.error, background) >= 4.5,
                     "{mode} error on {background}"
                 );
                 assert!(
                     contrast_ratio(&palette.tokens.focus, background) >= 3.0,
                     "{mode} focus on {background}"
+                );
+            }
+            for background in [
+                &palette.tokens.background,
+                &palette.tokens.surface,
+                &palette.tokens.raised,
+            ] {
+                assert!(
+                    contrast_ratio(&palette.tokens.warning, background) >= 4.5,
+                    "{mode} warning on {background}"
+                );
+                assert!(
+                    contrast_ratio(&palette.tokens.accent_text, background) >= 4.5,
+                    "{mode} accent text on {background}"
                 );
             }
         }
@@ -913,13 +931,24 @@ bright_foreground = "#c0caf5"
         assert_eq!(light.raised, "#d8dae1");
         assert_eq!(light.rail, "#e3e4e8");
         assert_eq!(light.ok, "#476f50");
-        assert_eq!(light.accent_text, "#2c5fcb");
+        assert_eq!(light.accent_text, "#355baf");
         assert_eq!(light.control_border, "#7c7f92");
         for tokens in [&night, &light] {
             for background in [&tokens.background, &tokens.surface] {
-                assert!(contrast_ratio(&tokens.accent_text, background) >= 4.5);
                 assert!(contrast_ratio(&tokens.ok, background) >= 4.5);
                 assert!(contrast_ratio(&tokens.control_border, background) >= 3.0);
+            }
+            for background in [&tokens.background, &tokens.surface, &tokens.raised] {
+                assert!(
+                    contrast_ratio(&tokens.accent_text, background) >= 4.5,
+                    "accent text {} on {background}",
+                    tokens.accent_text
+                );
+                assert!(
+                    contrast_ratio(&tokens.warning, background) >= 4.5,
+                    "warning {} on {background}",
+                    tokens.warning
+                );
             }
         }
     }

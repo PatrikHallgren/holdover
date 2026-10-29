@@ -22,6 +22,7 @@ let paletteOpen = false;
 let unitsOpen = false;
 let equipKind = "rifle";
 let selectedId = "";
+let equipDraft = false;
 let restoreDoc = null;
 let restorePreview = null;
 let syncTab = "export";
@@ -45,10 +46,10 @@ let equipNotice = "";
 let moving = { preset: "", speedText: "", speedUnit: "", direction: "3oc", reaction: "0", open: false };
 let cardPageId = "a4";
 let cardPageTouched = false;
-let pbrSpan = "full";
+let pbrSpan = "zone";
 let pbrWindow = null;
 let cardConditions = "";
-let cardBrackets = "2 mps, 4 mps, 6 mps";
+let cardBrackets = "2 m/s, 4 m/s, 6 m/s";
 let chartKinds = { drop: true, wind: true, velocity: false, energy: false, tof: false, mach: false };
 let chartPane = "trajectory";
 let reticlePane = "view";
@@ -237,28 +238,28 @@ function navKey(id) {
 
 function topBar() {
   const pages = ["solve", "card", "charts", "reticle", "targets", "groups", "pbr", "truing", "equipment", "compare", "documents", "sync", "settings"];
-  return `<a class="ho-skip" href="#main">${esc(t("skip"))}</a>
+  return `<a class="ho-skip" href="#inputs">${esc(t("skip"))}</a>
     <header class="ho-top">
       <span class="brand">${esc(t("app-name"))}</span>
       <nav class="ho-nav" aria-label="${esc(t("nav-label"))}">${pages.map(navButton).join("")}</nav>
       <button type="button" class="ho-btn ho-screens" aria-haspopup="dialog" title="${esc(t("screens"))}">${esc(t(navKey(page)))} ▾</button>
-      <div class="ho-seg preset" role="group" aria-label="${esc(t("preset-label"))}">
+      <div class="ho-seg preset" role="radiogroup" aria-label="${esc(t("preset-label"))}">
         ${presetButton("metric")}${presetButton("us")}${presetButton("custom")}
       </div>
       <button type="button" class="ho-btn ghost" id="units-open" aria-expanded="${unitsOpen}" title="${esc(t("units-button"))}">${esc(t("units-button"))}</button>
     </header>`;
 }
 
-function keyBit(keys, label) {
-  return `<span>${keys.map((key) => `<kbd>${esc(key)}</kbd>`).join("")} ${esc(label)}</span>`;
+function keyBit(keys, label, extra) {
+  return `<span${extra ? ` class="extra"` : ""}>${keys.map((key) => `<kbd>${esc(key)}</kbd>`).join("")} ${esc(label)}</span>`;
 }
 
 function globalKeys() {
   return [
     keyBit(["Ctrl", "K"], t("status-commands")),
-    keyBit(["Ctrl", "U"], t("status-preset")),
-    keyBit(["Ctrl", "P"], t("status-profile")),
-    keyBit(["F11"], t("status-field")),
+    keyBit(["Ctrl", "U"], t("status-preset"), true),
+    keyBit(["Ctrl", "P"], t("status-profile"), true),
+    keyBit(["F11"], t("status-field"), true),
   ].join("");
 }
 
@@ -283,12 +284,40 @@ function statusFooter(keys) {
   </footer>`;
 }
 
+function emptyCta(messageKey) {
+  return `<p class="ho-hint">${esc(t(messageKey))}</p><p><button type="button" class="ho-btn primary" data-go="equipment">${esc(t("empty-open-equipment"))}</button></p>`;
+}
+
+function localDate(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso || "");
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function editionDate() {
+  return new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function prettyPhrase(text) {
+  return String(text || "")
+    .replace(/\bmps\b/g, "m/s")
+    .replace(/(^|\s)C\b/g, "$1°C")
+    .replace(/(^|\s)F\b/g, "$1°F");
+}
+
+function fixedDisplay(text, digits) {
+  const number = Number(String(text ?? "").replace(",", "."));
+  if (!Number.isFinite(number)) return text == null || text === "" ? "—" : String(text);
+  return Math.abs(number).toFixed(digits);
+}
+
 function frame(opts) {
   const bodyClass = opts.body ? ` ${opts.body}` : "";
   const rail = opts.rail
-    ? `<aside class="ho-rail" aria-label="${esc(opts.railLabel || t("inputs"))}">${opts.rail}</aside>`
+    ? `<aside class="ho-rail" id="inputs" tabindex="-1" aria-label="${esc(opts.railLabel || t("inputs"))}">${opts.rail}</aside>`
     : "";
-  return `<div class="ho-shell">${topBar()}<div class="ho-body${bodyClass}">${rail}<main class="ho-main" id="main" tabindex="-1">${opts.main}</main></div>${statusFooter(opts.keys || pageKeys())}</div>`;
+  const mainId = opts.rail ? "main" : "inputs";
+  return `<div class="ho-shell">${topBar()}<div class="ho-body${bodyClass}">${rail}<main class="ho-main" id="${mainId}" tabindex="-1">${opts.main}</main></div>${statusFooter(opts.keys || pageKeys())}</div>`;
 }
 
 function overlays() {
@@ -353,8 +382,7 @@ function pageHtml() {
 }
 
 function weatherBlock() {
-  return `<p class="hint">${esc(t("weather-intro"))}</p>
-    <p id="air-badge" class="badge-fresh"></p>
+  return `<p id="air-badge" class="badge-fresh"></p>
     <p id="air-detail" class="meta"></p>
     <div class="row">
       <button type="button" id="weather-fetch" title="${esc(t("weather-fetch-tip"))}" ${weatherBusy ? "disabled" : ""}>${esc(t("weather-fetch"))}</button>
@@ -363,7 +391,11 @@ function weatherBlock() {
     <p id="weather-status" class="${weatherKind && weatherKind !== "place" ? "weather-error" : "meta"}">${esc(weatherMessage)}</p>
     ${weatherOffer ? weatherResultHtml(weatherOffer) : ""}
     <p class="hint">${esc(t("weather-attribution"))}</p>
-    <p class="hint">${esc(t("weather-noncommercial"))}</p>`;
+    <details class="ho-details">
+      <summary>${esc(t("weather-about"))}</summary>
+      <p class="hint">${esc(t("weather-intro"))}</p>
+      <p class="hint">${esc(t("weather-noncommercial"))}</p>
+    </details>`;
 }
 
 function weatherResultHtml(offer) {
@@ -579,8 +611,8 @@ function bindWeather() {
 }
 
 function presetButton(id) {
-  const preset = boot.settings.preset;
-  return `<button type="button" data-preset="${id}" aria-pressed="${preset === id}">${esc(t("preset-" + id))}</button>`;
+  const on = boot.settings.preset === id;
+  return `<button type="button" role="radio" data-preset="${id}" aria-checked="${on}" tabindex="${on ? "0" : "-1"}">${esc(t("preset-" + id))}</button>`;
 }
 
 function solveTabButton(id, label) {
@@ -614,16 +646,15 @@ function solveShell() {
       </div>
       ${qtyField("target_speed", t("target-speed"), moving.speedText, moving.speedUnit || units().velocity, "velocity", null, null, "target_speed")}
     </div>
-    <div class="ho-row">
+    <div class="ho-row ho-lead">
       <div class="ho-field">
         <div class="head"><label for="target_direction">${esc(t("lead-direction"))}</label></div>
-        <div class="ho-entry"><input id="target_direction" value="${esc(moving.direction || "3oc")}" autocomplete="off" spellcheck="false" /></div>
+        <div class="ho-entry"><input id="target_direction" value="${esc(clockPhrase(moving.direction || "3"))}" autocomplete="off" spellcheck="false" /></div>
         <p class="ho-hint">${esc(t("lead-clock"))}</p>
       </div>
       <div class="ho-field">
         <div class="head"><label for="reaction_s">${esc(t("lead-reaction"))}</label></div>
-        <div class="ho-entry"><input id="reaction_s" class="num" value="${esc(moving.reaction || "0")}" inputmode="decimal" autocomplete="off" spellcheck="false" /></div>
-        <p class="ho-hint">${esc(t("lead-reaction-note"))}</p>
+        <div class="ho-entry"><input id="reaction_s" class="num" value="${esc(moving.reaction || "0")}" inputmode="decimal" autocomplete="off" spellcheck="false" /><span class="ho-chip">s</span></div>
       </div>
     </div>
     <div class="ho-row">
@@ -662,11 +693,11 @@ function solveShell() {
   return `<div class="ho-shell">
     ${topBar()}
     <div class="ho-body">
-      <aside class="ho-rail" aria-label="${esc(t("shot"))}">
+      <aside class="ho-rail" id="inputs" tabindex="-1" aria-label="${esc(t("shot"))}">
         <div class="ho-summary">
           <div class="head">
             <select id="profile" aria-label="${esc(t("profile"))}">${options || `<option value="">${esc(t("no-profile"))}</option>`}</select>
-            <span><kbd>Ctrl</kbd> <kbd>P</kbd></span>
+            <span class="ho-keys"><kbd>Ctrl</kbd> <kbd>P</kbd></span>
           </div>
           <dl class="ho-kv mini" id="profile-facts">${profileFacts(active)}</dl>
         </div>
@@ -685,7 +716,7 @@ function solveShell() {
             <div class="bar">
               <span class="ho-cap">${esc(t("hold-unit"))} <kbd>U</kbd></span>
               <div class="ho-seg small" role="radiogroup" aria-label="${esc(t("hold-unit"))}">
-                ${ANGULAR.map((item) => `<button type="button" data-angular="${esc(item)}" aria-pressed="${angular === item}">${esc(t(angularKey(item)))}</button>`).join("")}
+                ${ANGULAR.map((item) => `<button type="button" role="radio" data-angular="${esc(item)}" aria-checked="${angular === item}" tabindex="${angular === item ? "0" : "-1"}">${esc(t(angularKey(item)))}</button>`).join("")}
               </div>
             </div>
             <dl class="ho-ctx" id="hold-ctx"></dl>
@@ -752,10 +783,11 @@ function profileFacts(profile) {
   const scope = (boot.equipment.scopes || []).find((item) => item.id === profile.scope_id);
   const truing = (lastSolve && lastSolve.truing) || t("truing-none");
   const warn = !lastSolve || !lastSolve.truing;
+  const truingHtml = warn ? `<span class="ho-badge warn">${esc(String(truing))}</span>` : esc(String(truing));
   return `<dt>${esc(t("zero-range"))}</dt><dd>${esc(profile.zero_range_display || "")}</dd><span class="ho-unit">${esc(shownUnit(profile.zero_range_unit || ""))}</span>
     <dt>${esc(t("zero-air"))}</dt><dd>${esc(temp)}</dd><span class="ho-unit"></span>
     <dt>${esc(t("click"))}</dt><dd>${esc(scope && scope.click_display || "")}</dd><span class="ho-unit">${esc(shownUnit(scope && scope.click_unit || ""))}</span>
-    <dt>${esc(t("truing"))}</dt><dd id="truing-line" class="${warn ? "ho-warn" : ""}">${esc(String(truing))}</dd><span class="ho-unit"></span>`;
+    <dt>${esc(t("truing"))}</dt><dd id="truing-line">${truingHtml}</dd><span class="ho-unit"></span>`;
 }
 
 function windClockField(value, opts) {
@@ -768,13 +800,14 @@ function windClockField(value, opts) {
     `<button type="button" role="radio" data-hour="${item}" aria-checked="${item === hour}" title="${esc(tf("clock-hour", { hour: item }))}">${item}</button>`).join("");
   const hint = tf("hint-clock", { rest: t("wind-clock-hint") });
   const key = options.key === false ? "" : `<kbd>D</kbd>`;
+  const minusLabel = tf("step-minus", { field: label, step: t("one-hour") });
+  const plusLabel = tf("step-plus", { field: label, step: t("one-hour") });
   return `<div class="ho-field" data-stepper="${esc(stepper)}">
     <div class="head"><label for="${id}">${esc(label)}</label>${key}</div>
     <div class="ho-stepper">
-      <button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(tf("step-minus", { field: label, step: t("one-hour") }))}">−</button>
-      <input id="${id}" value="${esc(value)}" title="${esc(t("wind-clock-hint"))}" role="spinbutton" autocomplete="off" spellcheck="false" />
-      <span class="ho-chip" title="${esc(t("wind-clock-hint"))}">${esc(t("clock"))}</span>
-      <button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(tf("step-plus", { field: label, step: t("one-hour") }))}">+</button>
+      <button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(minusLabel)}" title="${esc(minusLabel)}">−</button>
+      <input id="${id}" value="${esc(clockPhrase(value))}" title="${esc(t("wind-clock-hint"))}" role="spinbutton" autocomplete="off" spellcheck="false" />
+      <button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(plusLabel)}" title="${esc(plusLabel)}">+</button>
     </div>
     <div class="ho-clock" role="radiogroup" aria-label="${esc(t("wind-clock-hint"))}">${buttons}</div>
     <p class="ho-hint" data-base="${esc(hint)}">${esc(hint)}</p>
@@ -786,6 +819,19 @@ function clockHour(value) {
   let hour = match ? Number(match[1]) : 12;
   hour = ((hour % 12) + 12) % 12;
   return hour === 0 ? 12 : hour;
+}
+
+function clockPhrase(value) {
+  const text = String(value || "").trim();
+  if (/deg/i.test(text)) return text;
+  return tf("clock-hour", { hour: clockHour(text) });
+}
+
+function clockOk(text) {
+  const clock = /^\s*\d{1,2}\s*(?:oc|o['’]?clock)?\s*$/i;
+  const degrees = /deg/i;
+  const value = String(text || "");
+  return clock.test(value) || degrees.test(value);
 }
 
 function check(name, fallback) {
@@ -824,11 +870,11 @@ function airFields(air, prefix, stepped) {
       <option value="sea-level" ${air && air.pressure_kind === "sea-level" ? "selected" : ""}>${esc(t("pressure-sea"))}</option>
     </select>`;
   if (!stepped) {
-    return `<div class="ho-row">
+    return `<div class="ho-row ho-grid">
       ${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display)}
       ${qtyField(prefix + "pressure", t("pressure"), pressure.text, pressure.unit, "pressure", pressure.si, pressure.display)}
     </div>
-    <div class="ho-row">
+    <div class="ho-row ho-grid">
       <div class="ho-field">
         <div class="head"><label for="${prefix}pressure_kind">${esc(t("kind"))}</label></div>
         <div class="ho-entry">${kind}</div>
@@ -841,11 +887,11 @@ function airFields(air, prefix, stepped) {
       ${qtyField(prefix + "altitude", t("altitude"), altitude.text, altitude.unit, "length", altitude.si, altitude.display)}
     </div>`;
   }
-  return `<div class="ho-row">
+  return `<div class="ho-row ho-grid">
       ${qtyField(prefix + "temperature", t("temperature"), temperature.text, temperature.unit, "temperature", temperature.si, temperature.display, "temperature")}
       ${qtyField(prefix + "pressure", t("pressure"), pressure.text, pressure.unit, "pressure", pressure.si, pressure.display, "pressure")}
     </div>
-    <div class="ho-row">
+    <div class="ho-row ho-grid">
       <div class="ho-field">
         <div class="head"><label for="${prefix}pressure_kind">${esc(t("kind"))}</label></div>
         <div class="ho-entry">${kind}</div>
@@ -878,7 +924,8 @@ function qtyField(id, label, text, unit, dim, si, display, step) {
   const shown = display !== undefined && display !== null && String(display) !== ""
     ? String(display)
     : (hasSi ? formatLocal(numeric, dim, unit) : raw);
-  const input = `<input id="${id}" data-dim="${dim}" data-unit="${esc(unit)}" data-text="${esc(raw)}" data-si="${hasSi ? esc(String(numeric)) : ""}" data-dirty="0" value="${esc(shown)}" autocomplete="off" spellcheck="false" />`;
+  const value = unit ? stripTrailingUnit(shown, unit) : shown;
+  const input = `<input id="${id}" data-dim="${dim}" data-unit="${esc(unit)}" data-text="${esc(raw)}" data-si="${hasSi ? esc(String(numeric)) : ""}" data-dirty="0" value="${esc(value)}" autocomplete="off" spellcheck="false" />`;
   return hoQty(id, label, unit, dim, step, input);
 }
 
@@ -895,6 +942,16 @@ function hoQty(id, label, unit, dim, step, input) {
     <div class="${step ? "ho-stepper" : "ho-entry"}">${minus}${boxed}${chip}${plus}</div>
     <p class="ho-hint" id="${id}-preview" data-base="${esc(hint)}">${esc(hint)}</p>
   </div>`;
+}
+
+function stripTrailingUnit(text, unit) {
+  const raw = String(text || "").trim();
+  const parts = raw.split(/\s+/);
+  if (parts.length < 2) return raw;
+  const tail = parts[parts.length - 1];
+  const aliases = new Set([String(unit || ""), shownUnit(unit), "mps", "m/s", "C", "°C", "F", "°F", "deg", "°"].filter(Boolean));
+  if (!aliases.has(tail)) return raw;
+  return parts.slice(0, -1).join(" ");
 }
 
 function stepSettings() {
@@ -960,21 +1017,45 @@ function exactAngular(hold) {
 
 function figureParts(hold) {
   const primary = (hold && hold.primary) || "—";
-  const match = String(primary).match(/^([+-−]?)(\d+(?:[.,]\d+)?)\s*(.*)$/);
-  if (!match) return { num: primary, unit: "" };
-  return { num: match[2], unit: match[3] };
+  // The hyphen is escaped. An unescaped "-" between "+" and "−" is a range
+  // that includes the digits, so the optional sign group ate the first digit.
+  const match = String(primary).match(/^([+\-\u2212]?)(\d+(?:[.,]\d+)?)\s*(.*)$/);
+  if (!match) return { sign: "", num: primary, unit: "" };
+  return { sign: match[1] || "", num: match[2], unit: match[3] || "" };
+}
+
+function figureDigits(unit) {
+  const text = String(unit || "").toLowerCase();
+  if (!text || text === "clicks") return 0;
+  if (text.includes("cm/100") || text.includes("cm@100")) return 1;
+  return 2;
+}
+
+function figureShown(hold) {
+  const parts = figureParts(hold);
+  const number = Number(String(parts.num).replace(",", "."));
+  if (!Number.isFinite(number)) return { num: parts.num, unit: parts.unit };
+  return { num: Math.abs(number).toFixed(figureDigits(parts.unit)), unit: parts.unit };
 }
 
 function dirGlyph(direction) {
   return { UP: "▲", DOWN: "▼", LEFT: "◀", RIGHT: "▶" }[direction] || "";
 }
 
+function figureSign(hold) {
+  const sign = figureParts(hold).sign;
+  // A direction word already carries the sign. Clicks mode stores a signed
+  // count, so "-1" next to LEFT would read as a second minus.
+  return (hold && hold.direction) ? "" : (sign === "+" ? "" : sign);
+}
+
 function readoutHtml(hold) {
-  const figure = figureParts(hold);
+  const figure = figureShown(hold);
+  const shownSign = figureSign(hold);
   const glyph = dirGlyph(hold && hold.direction);
   const exact = exactAngular(hold);
   return `<div class="top"><span class="ho-dir">${glyph ? `${glyph} ` : ""}${esc((hold && hold.direction) || "—")}</span><span class="ho-exact">${esc(exact)}</span></div>
-    <div class="ho-fig">${esc(figure.num)}${figure.unit ? `<span class="u">${esc(figure.unit)}</span>` : ""}</div>
+    <div class="ho-fig">${esc(shownSign)}${esc(figure.num)}${figure.unit ? `<span class="u">${esc(figure.unit)}</span>` : ""}</div>
     <div class="ho-clicks">${holdClicks(hold)}</div>`;
 }
 
@@ -994,13 +1075,13 @@ function trajectoryHtml(solve) {
   if (!solve) return kv(esc(t("trajectory")), "—", "");
   const sg = Number(solve.sg);
   return [
-    kv(esc(t("velocity")), groupDigits(solve.velocity_display), shownUnit(solve.velocity_unit)),
+    kv(esc(t("velocity")), groupDigits(solve.velocity_display, 0), shownUnit(solve.velocity_unit)),
     kv(esc(t("mach")), Number.isFinite(Number(solve.mach)) ? Number(solve.mach).toFixed(2) : "—", ""),
-    kv(esc(t("energy")), groupDigits(solve.energy_display), shownUnit(solve.energy_unit)),
+    kv(esc(t("energy")), groupDigits(solve.energy_display, 0), shownUnit(solve.energy_unit)),
     kv(esc(t("tof")), Number.isFinite(Number(solve.tof_s)) ? Number(solve.tof_s).toFixed(3) : "—", "s"),
-    kv(esc(t("drop")), groupDigits(solve.drop_display), shownUnit(solve.drop_unit)),
+    kv(esc(t("drop")), groupDigits(solve.drop_display, 1), shownUnit(solve.drop_unit)),
     kv(`${esc(t("stability"))} ${sgBadge(sg)}`, Number.isFinite(sg) ? sg.toFixed(2) : t("no-sg"), ""),
-    kv(esc(t("density-altitude")), groupDigits(solve.density_altitude_display), shownUnit(solve.density_altitude_unit)),
+    kv(esc(t("density-altitude")), groupDigits(solve.density_altitude_display, 0), shownUnit(solve.density_altitude_unit)),
   ].join("");
 }
 
@@ -1012,7 +1093,7 @@ function clicksCell(hold) {
 }
 
 function primaryNumber(hold) {
-  return figureParts(hold).num || "—";
+  return figureShown(hold).num || "—";
 }
 
 function sensHeading(hold) {
@@ -1071,8 +1152,8 @@ function contextHtml() {
   const rangeText = range ? `${range.value} ${shownUnit(range.dataset.unit)}` : "";
   const windParsed = wind ? parseLocal(wind.value, "velocity", wind.dataset.unit) : null;
   const windText = windParsed
-    ? `${wind.value} ${shownUnit(wind.dataset.unit)} @ ${hour}`
-    : (lastGood.wind ? `${lastGood.wind} @ ${hour}` : "");
+    ? `${wind.value} ${shownUnit(wind.dataset.unit)} @ ${dir ? clockPhrase(dir.value) : hour}`
+    : (lastGood.wind ? `${lastGood.wind} @ ${dir ? clockPhrase(dir.value) : hour}` : "");
   const angleText = angle ? `${angle.value}${shownUnit(angle.dataset.unit) === "deg" ? "°" : " " + shownUnit(angle.dataset.unit)}` : "";
   const air = (boot.settings.current_air && boot.settings.current_air.provenance && boot.settings.current_air.provenance.source === "fetched")
     ? t("weather-fetched")
@@ -1138,12 +1219,13 @@ function paintSolve() {
   const truing = document.getElementById("truing-line");
   if (truing && lastSolve) {
     const text = lastSolve.truing || t("truing-none");
-    truing.textContent = text;
-    truing.classList.toggle("ho-warn", !lastSolve.truing);
+    truing.innerHTML = lastSolve.truing ? esc(String(text)) : `<span class="ho-badge warn">${esc(String(text))}</span>`;
   }
   document.querySelectorAll("[data-angular]").forEach((button) => {
     const angular = (boot.settings && boot.settings.angular) || "mrad";
-    button.setAttribute("aria-pressed", button.dataset.angular === angular ? "true" : "false");
+    const on = button.dataset.angular === angular;
+    button.setAttribute("aria-checked", on ? "true" : "false");
+    button.tabIndex = on ? 0 : -1;
   });
 }
 
@@ -1155,7 +1237,11 @@ function kindKey(input) {
 function invalidQuantity(input) {
   const sample = (String(input.value).match(/[+-]?\d+(?:[.,]\d+)?/) || [""])[0];
   if (!sample) return t("invalid-number");
-  const suffix = (input.dataset.kind === "percent") ? "%" : ((input.dataset.dim === "velocity") ? "mps" : (input.dataset.unit || ""));
+  let suffix = "";
+  if (input.dataset.kind === "percent") suffix = " %";
+  else if (input.dataset.unit) suffix = ` ${shownUnit(input.dataset.unit)}`;
+  else if (input.dataset.dim === "velocity") suffix = " m/s";
+  else if (input.dataset.dim === "temperature") suffix = " °C";
   return tf("invalid-quantity", { kind: t(kindKey(input)), sample, suffix });
 }
 
@@ -1201,9 +1287,9 @@ function fieldIsInvalid(input) {
     const percent = (match[2] || Math.abs(value) > 1) ? value : value * 100;
     return percent < 0 || percent > 100;
   }
-  if (field && field.dataset.stepper === "wind_direction") {
+  if (field && (field.dataset.stepper === "wind_direction" || field.dataset.stepper === "compare-direction")) {
     if (!text) return true;
-    return !/^\s*\d{1,2}\s*(oc)?\s*$/i.test(text) && !/deg/i.test(text);
+    return !clockOk(text);
   }
   if (!input.dataset.dim) return false;
   if (!text) return input.id !== "target_speed";
@@ -1276,7 +1362,7 @@ function cardHtml() {
     ${qtyField("step", t("card-step"), "50 m", units().length, "length", 50, null, "step")}
     <div class="ho-field"><div class="head"><label for="brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="brackets" value="${esc(cardBrackets)}" autocomplete="off" /></div></div>
     ${hoSelect("card-page", t("card-size"), pages)}
-    <div class="ho-field"><div class="head"><label for="conditions">${esc(t("card-conditions"))}</label></div><div class="ho-entry"><input id="conditions" value="${esc(cardConditions)}" placeholder="-10 C, 30 C" autocomplete="off" /></div></div>
+    <div class="ho-field"><div class="head"><label for="conditions">${esc(t("card-conditions"))}</label></div><div class="ho-entry"><input id="conditions" value="${esc(cardConditions)}" placeholder="-10 °C, 30 °C" autocomplete="off" /></div></div>
     <label class="ho-check"><input type="checkbox" id="card-pin" ${s.card_pinned ? "checked" : ""} /> ${esc(t("card-pin"))}</label>
     <div class="btnrow">
       <button type="button" class="ho-btn primary" id="card-build">${esc(t("apply"))}</button>
@@ -1290,7 +1376,7 @@ function cardHtml() {
     <p class="ho-hint">${esc(t("page-pin-note"))} ${esc(t("card-paper-note"))}</p>
     <p class="ho-hint">${esc(t("card-print-note"))}</p>
     <p class="ho-hint" id="card-pdf-status"></p>`;
-  const main = `<div id="card-body">${card && card.rows ? cardTable(card) : `<p class="ho-hint">${esc(t("card-empty"))}</p>`}</div>`;
+  const main = `<div id="card-body">${card && card.rows ? cardTable(card) : emptyCta("card-empty")}</div>`;
   return frame({ rail, main, railLabel: t("nav-card") });
 }
 
@@ -1301,23 +1387,40 @@ function clickNote(hold) {
   return `<small>${esc(String(count))}</small>`;
 }
 
+function cardHoldCell(hold, headerDir) {
+  if (!hold) return "—";
+  const shown = figureShown(hold);
+  const dir = hold.direction && hold.direction !== "—" && hold.direction !== headerDir ? `${hold.direction} ` : "";
+  return `${esc(dir)}${esc(shown.num)}${clickNote(hold)}`;
+}
+
 function cardTable(data) {
   const current = Number(boot.settings && boot.settings.last_range_si);
-  const heads = (data.brackets || []).map((label, index) =>
-    `<th class="group-start">${esc(label)}${index === 0 ? `<small>${esc(t("card-wind-note"))}</small>` : ""}</th>`).join("");
-  const conditionHeads = (data.conditions || []).map((label) => `<th class="group-start">${esc(label)}</th>`).join("");
+  const elevDir = data.rows[0] && data.rows[0].elevation && data.rows[0].elevation.direction;
+  const elevUnit = figureShown(data.rows[0] && data.rows[0].elevation).unit || shownUnit(data.angular);
+  const heads = (data.brackets || []).map((label, index) => {
+    const sample = data.rows[0] && data.rows[0].winds && data.rows[0].winds[index] && data.rows[0].winds[index].windage;
+    const dir = sample && sample.direction && sample.direction !== "—" ? sample.direction : "";
+    const note = index === 0 ? `<small>${esc(t("card-wind-note"))}</small>` : "";
+    return `<th class="group-start">${esc(`${dir} ${prettyPhrase(label)}`.trim())}${note}</th>`;
+  }).join("");
+  const conditionHeads = (data.conditions || []).map((label) => `<th class="group-start">${esc(prettyPhrase(label))}</th>`).join("");
   const rows = data.rows.map((row) => {
     const on = Number.isFinite(current) && Number.isFinite(Number(row.range_m)) && Math.abs(Number(row.range_m) - current) < 0.51;
     return `<tr class="${on ? "current" : ""}">
-      <td>${esc(row.range_display)} ${esc(data.length_unit)}${on ? ` <span class="ho-badge accent">${esc(t("card-current"))}</span>` : ""}</td>
-      <td>${esc(row.elevation.direction)} ${esc(row.elevation.primary)} ${clickNote(row.elevation)}</td>
-      <td>${esc(row.drop_display)}</td>
-      <td>${esc(row.velocity_display)}</td>
-      <td>${esc(row.energy_display)}</td>
+      <td>${esc(fixedDisplay(row.range_display, 0))} ${esc(shownUnit(data.length_unit))}${on ? ` <span class="ho-badge accent">${esc(t("card-current"))}</span>` : ""}</td>
+      <td>${cardHoldCell(row.elevation, elevDir)}</td>
+      <td>${esc(fixedDisplay(row.drop_display, 2))}</td>
+      <td>${esc(fixedDisplay(row.velocity_display, 2))}</td>
+      <td>${esc(fixedDisplay(row.energy_display, 2))}</td>
       <td>${Number(row.tof_s).toFixed(3)}</td>
       <td>${Number(row.mach).toFixed(2)}</td>
-      ${(row.winds || []).map((wind) => `<td class="group-start">${esc(wind.windage.direction)} ${esc(wind.windage.primary)} ${clickNote(wind.windage)}</td>`).join("")}
-      ${(row.conditions || []).map((item) => `<td class="group-start">${esc(item.elevation.direction)} ${esc(item.elevation.primary)} ${clickNote(item.elevation)}</td>`).join("")}
+      ${(row.winds || []).map((wind, index) => {
+        const sample = data.rows[0] && data.rows[0].winds && data.rows[0].winds[index] && data.rows[0].winds[index].windage;
+        const dir = sample && sample.direction;
+        return `<td class="group-start">${cardHoldCell(wind.windage, dir)}</td>`;
+      }).join("")}
+      ${(row.conditions || []).map((item) => `<td class="group-start">${cardHoldCell(item.elevation, item.elevation && item.elevation.direction)}</td>`).join("")}
     </tr>`;
   }).join("");
   const barMm = Number(data.scale_bar_mm);
@@ -1329,7 +1432,7 @@ function cardTable(data) {
   return `<section class="ho-card flush">
       <header><h2>${esc(data.profile_label || t("nav-card"))}</h2><span class="meta">${esc(t("card-preview-only"))}</span></header>
       <div class="ho-table-wrap"><table class="ho-table zebra"><thead><tr>
-        <th>${esc(t("range"))}</th><th>${esc(t("cards-elevation"))}</th><th>${esc(t("drop"))}</th>
+        <th>${esc(t("range"))}</th><th>${esc(`${elevDir && elevDir !== "—" ? elevDir : ""} ${elevUnit}`.trim())}</th><th>${esc(t("drop"))}<small>${esc(t("drop-bore"))}</small></th>
         <th>${esc(t("velocity"))}</th><th>${esc(t("energy"))}</th><th>${esc(t("tof"))}</th><th>${esc(t("mach"))}</th>
         ${heads}${conditionHeads}
       </tr></thead><tbody>${rows}</tbody></table></div>
@@ -1338,9 +1441,9 @@ function cardTable(data) {
       <section class="ho-card">
         <header><h2>${esc(t("card-conditions-title"))}</h2></header>
         <dl class="ho-kv">
-          <dt>${esc(t("zero"))}</dt><dd>${esc(data.zero_summary || t("missing-not-set"))}</dd><span class="ho-unit"></span>
+          <dt>${esc(t("zero"))}</dt><dd>${esc(prettyPhrase(data.zero_summary || t("missing-not-set")))}</dd><span class="ho-unit"></span>
           <dt>${esc(t("truing"))}</dt><dd>${esc(data.truing || t("truing-none"))}</dd><span class="ho-unit"></span>
-          <dt>${esc(t("documents-date"))}</dt><dd>${esc(data.date || "")}</dd><span class="ho-unit"></span>
+          <dt>${esc(t("documents-date"))}</dt><dd>${esc(localDate(data.date))}</dd><span class="ho-unit"></span>
         </dl>
         <p class="ho-hint">${esc(t("from-zero"))}. ${esc(t("crosswind"))}.</p>
       </section>
@@ -1393,7 +1496,7 @@ function chartHtml() {
         <span title="${esc(t("impact-range-tip"))}">${qtyField("impact-range", t("range"), boot.settings.last_range || "300 m", units().length, "length", null, null, "impact-range")}</span>
         <span title="${esc(t("impact-mv-tip"))}">${qtyField("mv_sd", t("impact-mv-sd"), "0 mps", units().velocity, "velocity")}</span>
         <span title="${esc(t("impact-error-tip"))}">${qtyField("range_error", t("impact-range-error"), "1 m", units().length, "length", 1)}</span>
-        <div class="ho-field" title="${esc(t("impact-wind-tip"))}"><div class="head"><label for="impact-brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="impact-brackets" value="2 mps, 4 mps" title="${esc(t("impact-wind-tip"))}" autocomplete="off" /></div></div>
+        <div class="ho-field" title="${esc(t("impact-wind-tip"))}"><div class="head"><label for="impact-brackets">${esc(t("card-winds"))}</label></div><div class="ho-entry"><input id="impact-brackets" value="2 m/s, 4 m/s" title="${esc(t("impact-wind-tip"))}" autocomplete="off" /></div></div>
         <span title="${esc(t("impact-zone-tip"))}">${qtyField("impact-zone", t("pbr-zone"), "20 cm", units().small, "length")}</span>
         ${hoSelect("impact-group", t("group-saved"), `<option value="">${esc(t("group-blank"))}</option>${groups}`, t("group-impact"))}
       </div>
@@ -1460,20 +1563,24 @@ function equipForm() {
   if (equipKind === "chrono") return chronoHtml();
   if (equipKind === "recoil") return recoilHtml();
   if (equipKind === "log") return logForm();
-  const record = currentRecord() || {};
+  let record = currentRecord();
+  if (!record && !equipDraft) {
+    return `<p class="ho-hint">${esc(t("equip-pick"))}</p>`;
+  }
+  record = record || {};
   const id = record.id ? `<input type="hidden" id="record-id" value="${esc(record.id)}" />` : `<input type="hidden" id="record-id" value="" />`;
   let fields = "";
   if (equipKind === "rifle") {
     fields = textInput("label", t("label"), record.label) + textInput("make_model", t("make-model"), record.make_model)
       + recordField(record, "barrel_length", t("barrel"), "length", units().small)
       + textInput("twist", t("twist"), record.twist_text)
-      + `<label class="field">${esc(t("twist"))}<select id="twist_hand"><option value="right" ${record.twist_hand !== "left" ? "selected" : ""}>RH</option><option value="left" ${record.twist_hand === "left" ? "selected" : ""}>LH</option></select></label>`
+      + hoSelect("twist_hand", t("twist-hand"), `<option value="right" ${record.twist_hand !== "left" ? "selected" : ""}>RH</option><option value="left" ${record.twist_hand === "left" ? "selected" : ""}>LH</option>`)
       + recordField(record, "sight_height", t("sight-height"), "length", units().small)
       + recordField(record, "weight", t("weight"), "mass", units().mass)
       + textInput("serial", t("serial"), record.serial) + `<p class="hint">${esc(t("serial-note"))}</p>`;
   } else if (equipKind === "scope") {
     fields = textInput("label", t("label"), record.label) + textInput("make_model", t("make-model"), record.make_model)
-      + `<label class="field">${esc(t("focal-plane"))}<select id="focal_plane"><option value="ffp" ${record.focal_plane !== "sfp" ? "selected" : ""}>${esc(t("ffp"))}</option><option value="sfp" ${record.focal_plane === "sfp" ? "selected" : ""}>${esc(t("sfp"))}</option></select></label>`
+      + hoSelect("focal_plane", t("focal-plane"), `<option value="ffp" ${record.focal_plane !== "sfp" ? "selected" : ""}>${esc(t("ffp"))}</option><option value="sfp" ${record.focal_plane === "sfp" ? "selected" : ""}>${esc(t("sfp"))}</option>`)
       + `<p class="hint">${esc(t("sfp-note"))}</p>`
       + numberInput("mag_min", t("magnification") + " min", record.mag_min)
       + numberInput("mag_max", t("magnification") + " max", record.mag_max)
@@ -1491,9 +1598,9 @@ function equipForm() {
       + recordField(record, "diameter", t("diameter"), "length", units().small)
       + recordField(record, "weight", t("weight"), "mass", units().mass)
       + recordField(record, "length", t("length"), "length", units().small)
-      + `<label class="field">${esc(t("drag-model"))}<select id="drag_model">${["G1", "G7", "G2", "G5", "G6", "G8"].map((model) => `<option ${record.drag_model === model ? "selected" : ""}>${model}</option>`).join("")}</select></label>`
+      + hoSelect("drag_model", t("drag-model"), ["G1", "G7", "G2", "G5", "G6", "G8"].map((model) => `<option ${record.drag_model === model ? "selected" : ""}>${model}</option>`).join(""))
       + numberInput("bc", t("bc"), bands[0] ? bands[0].bc : "")
-      + `<label class="field">${esc(t("bc-reference"))}<select id="bc_reference"><option ${record.bc_reference !== "Army" ? "selected" : ""}>ICAO</option><option ${record.bc_reference === "Army" ? "selected" : ""}>Army</option></select></label>`
+      + hoSelect("bc_reference", t("bc-reference"), `<option ${record.bc_reference !== "Army" ? "selected" : ""}>ICAO</option><option ${record.bc_reference === "Army" ? "selected" : ""}>Army</option>`)
       + numberInput("bc2", t("bc-second"), second.bc ?? "")
       + qtyField("bc2_min", t("bc-min"), second.min_text || "", "mps", "velocity")
       + `<p class="hint">${esc(t("bc-hint"))} ${esc(t("band-hint"))}</p>`
@@ -1501,14 +1608,14 @@ function equipForm() {
   } else if (equipKind === "load") {
     const bullets = boot.equipment.bullets.map((item) => `<option value="${esc(item.id)}" ${item.id === record.bullet_id ? "selected" : ""}>${esc(item.label)}</option>`).join("");
     fields = textInput("label", t("label"), record.label)
-      + `<label class="field">${esc(t("bullet-link"))}<select id="bullet_id">${bullets}</select></label>`
+      + hoSelect("bullet_id", t("bullet-link"), bullets)
       + recordField(record, "mv", t("mv"), "velocity", units().velocity)
       + recordField(record, "mv_temperature", t("mv-temperature"), "temperature", units().temperature)
       + recordField(record, "sensitivity", t("powder-sensitivity"), "velocity", units().velocity)
       + `<p class="hint">${esc(t("powder-hint"))}</p>`
       + textInput("source_note", t("source-note"), record.source_note);
   } else {
-    const select = (id, label, list, current) => `<label class="field">${esc(label)}<select id="${id}">${list.map((item) => `<option value="${esc(item.id)}" ${item.id === current ? "selected" : ""}>${esc(item.label)}</option>`).join("")}</select></label>`;
+    const select = (id, label, list, current) => hoSelect(id, label, list.map((item) => `<option value="${esc(item.id)}" ${item.id === current ? "selected" : ""}>${esc(item.label)}</option>`).join(""));
     const air = record.zero_air || {};
     fields = textInput("label", t("label"), record.label)
       + select("rifle_id", t("rifle-link"), boot.equipment.rifles, record.rifle_id)
@@ -1559,7 +1666,10 @@ function settingsHtml() {
       <section class="ho-card stack">
         <header><h2>${esc(t("settings-appearance"))}</h2></header>
         <div class="ho-seg" role="radiogroup" aria-label="${esc(t("settings-appearance"))}">
-          ${["follow", "light", "dark"].map((mode) => `<button type="button" data-appearance="${mode}" aria-checked="${s.appearance === mode}">${esc(t("settings-" + mode))}</button>`).join("")}
+          ${["follow", "light", "dark"].map((mode) => {
+            const on = s.appearance === mode;
+            return `<button type="button" role="radio" data-appearance="${mode}" aria-checked="${on}" tabindex="${on ? "0" : "-1"}">${esc(t("settings-" + mode))}</button>`;
+          }).join("")}
         </div>
         <p class="ho-hint">${esc(t("follow-note"))}</p>
         <label class="ho-check"><input type="checkbox" id="large-text" ${s.large_text ? "checked" : ""} /> ${esc(t("settings-large"))}</label>
@@ -1618,7 +1728,10 @@ function settingsHtml() {
 }
 
 function onboardHtml() {
-  const choice = (id, title, detail) => `<button type="button" class="ho-choice" data-onboard="${id}" aria-checked="false"><b>${esc(t(title))}</b><span>${esc(t(detail))}</span></button>`;
+  const choice = (id, title, detail) => {
+    const on = id === "metric";
+    return `<button type="button" class="ho-choice" role="radio" data-onboard="${id}" aria-checked="${on}" tabindex="${on ? "0" : "-1"}"><b>${esc(t(title))}</b><span>${esc(t(detail))}</span></button>`;
+  };
   return `<a class="ho-skip" href="#onboard-title">${esc(t("skip"))}</a>
     <div class="ho-shell" inert>
       <header class="ho-top"><span class="brand">${esc(t("app-name"))}</span></header>
@@ -1629,12 +1742,14 @@ function onboardHtml() {
       <div class="ho-dialog">
         <header><h2 id="onboard-title">${esc(t("onboard-title"))}</h2></header>
         <div class="body">
-          ${choice("metric", "onboard-metric", "onboard-metric-detail")}
-          ${choice("us", "onboard-us", "onboard-us-detail")}
-          ${choice("custom", "onboard-custom", "onboard-custom-detail")}
-          <div class="ho-seg" role="radiogroup" aria-label="${esc(t("onboard-example"))}">
-            <button type="button" data-example="yes" aria-checked="true">${esc(t("onboard-example-yes"))}</button>
-            <button type="button" data-example="no" aria-checked="false">${esc(t("onboard-example-no"))}</button>
+          <div role="radiogroup" aria-label="${esc(t("onboard-title"))}">
+            ${choice("metric", "onboard-metric", "onboard-metric-detail")}
+            ${choice("us", "onboard-us", "onboard-us-detail")}
+            ${choice("custom", "onboard-custom", "onboard-custom-detail")}
+          </div>
+          <div class="ho-seg wrap" role="radiogroup" aria-label="${esc(t("onboard-example"))}">
+            <button type="button" role="radio" data-example="yes" aria-checked="true" tabindex="0">${esc(t("onboard-example-yes"))}</button>
+            <button type="button" role="radio" data-example="no" aria-checked="false" tabindex="-1">${esc(t("onboard-example-no"))}</button>
           </div>
           <input type="checkbox" id="example" class="hidden" checked />
           <div id="onboard-custom" class="hidden">${unitsPopover(false)}</div>
@@ -1642,13 +1757,13 @@ function onboardHtml() {
           <p class="ho-hint">${esc(boot.disclaimer)}</p>
           <p class="ho-hint" id="onboard-custom-note"></p>
         </div>
-        <footer><button type="button" class="ho-btn primary" id="onboard-accept" disabled>${esc(t("onboard-accept"))}</button></footer>
+        <footer><button type="button" class="ho-btn primary" id="onboard-accept">${esc(t("onboard-accept"))}</button></footer>
       </div>
     </div>`;
 }
 
 function bindOnboard() {
-  let preset = "";
+  let preset = "metric";
   document.querySelectorAll("[data-example]").forEach((button) => {
     button.addEventListener("click", () => {
       document.getElementById("example").checked = button.dataset.example === "yes";
@@ -1676,6 +1791,34 @@ function bindOnboard() {
     }
     boot = await call("complete_onboarding", { body });
     render();
+  });
+  bindRoving("[data-onboard], [data-example]");
+  const first = document.querySelector("[data-onboard][aria-checked=true]");
+  if (first) first.focus();
+}
+
+function bindRoving(selector) {
+  const groups = new Map();
+  document.querySelectorAll(selector).forEach((button) => {
+    const group = button.closest("[role=radiogroup]") || button.parentElement;
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group).push(button);
+  });
+  groups.forEach((buttons) => {
+    const current = Math.max(0, buttons.findIndex((button) => button.getAttribute("aria-checked") === "true"));
+    buttons.forEach((button, index) => {
+      button.setAttribute("role", "radio");
+      button.tabIndex = index === current ? 0 : -1;
+      button.addEventListener("keydown", (event) => {
+        if (!["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) return;
+        event.preventDefault();
+        const delta = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
+        const next = buttons[(index + delta + buttons.length) % buttons.length];
+        buttons.forEach((item) => { item.tabIndex = item === next ? 0 : -1; });
+        next.focus();
+        next.click();
+      });
+    });
   });
 }
 
@@ -1712,6 +1855,7 @@ function bindShell() {
       render();
     });
   }
+  bindRoving("[data-preset], [data-angular], [data-appearance], [data-example], [data-onboard]");
 }
 
 function bindPage() {
@@ -1941,6 +2085,7 @@ function bindCard() {
   if (conditions) conditions.addEventListener("input", () => { cardConditions = conditions.value; });
   const brackets = document.getElementById("brackets");
   if (brackets) brackets.addEventListener("input", () => { cardBrackets = brackets.value; });
+  if (!card && boot.settings.active_profile_id) buildCard();
 }
 
 function cardFormBody() {
@@ -1952,6 +2097,7 @@ function cardFormBody() {
   body.pinned_metric = document.getElementById("card-pin").checked;
   body.page = document.getElementById("card-page").value;
   body.conditions = document.getElementById("conditions").value;
+  body.edition_date = editionDate();
   cardPageId = body.page;
   cardPageTouched = true;
   cardConditions = body.conditions;
@@ -1967,7 +2113,7 @@ async function buildCard() {
     applyCardPage(card);
     host.innerHTML = cardTable(card);
   } catch (error) {
-    host.innerHTML = `<p class="error">${esc(error)}</p>`;
+    host.innerHTML = `<p class="ho-hint">${esc(t("card-error"))}</p><details><summary>${esc(t("card-error-detail"))}</summary><p class="error">${esc(error)}</p></details>`;
   }
 }
 
@@ -2090,12 +2236,12 @@ async function buildChart() {
   const host = document.getElementById("chart-body");
   if (!ids.length) {
     chartData = null;
-    host.innerHTML = `<p>${esc(t("chart-empty"))}</p>`;
+    host.innerHTML = (boot.equipment.profiles || []).length ? `<p class="ho-hint">${esc(t("chart-empty"))}</p>` : emptyCta("chart-empty");
     return;
   }
   try {
     chartData = await call("chart", { body });
-    chartCursor = null;
+    chartCursor = 0;
     chartPaintWidth = 0;
     host.dataset.limit = checked.length > 6 ? "1" : "";
     paintCharts();
@@ -2124,8 +2270,12 @@ function paintCharts(force) {
 }
 
 function legendItems() {
-  return (chartData.series || []).map((item, index) =>
+  const series = (chartData.series || []).map((item, index) =>
     `<span><i class="swatch" style="border-color:var(--chart-${index % 6})"></i>${esc(item.label)}</span>`).join("");
+  const shade = chartData && chartData.transonic != null && chartData.transonic !== ""
+    ? `<span><i class="swatch transonic-swatch" title="${esc(t("chart-transonic"))}"></i>${esc(t("chart-transonic"))}</span>`
+    : "";
+  return series + shade;
 }
 
 function xLabelStride(count, plotW) {
@@ -2309,15 +2459,15 @@ function writeReadouts() {
         const point = item.points[chartCursor];
         return `<td>${point ? esc(pick(point)) : ""}</td>`;
       }).join("")}</tr>`;
-      table.innerHTML = sample ? `<p class="ho-cap">${esc(t("chart-at"))} ${esc(signed(sample.range))} ${esc(chartData.x.unit)}</p>
+      table.innerHTML = sample ? `<p class="ho-cap">${esc(t("chart-at"))} ${esc(fixedDisplay(sample.range, 0))} ${esc(shownUnit(chartData.x.unit))}</p>
         <div class="ho-table-wrap"><table class="ho-table"><thead><tr><th></th>${head}</tr></thead><tbody>
-          ${row(t("drop"), (point) => `${signed(point.path)} ${chartData.drop.unit}`)}
-          ${row(t("elevation"), (point) => `${signed(point.elevation)} ${chartData.drop.hold_unit || ""}`)}
-          ${row(t("windage"), (point) => `${signed(point.windage)} ${chartData.wind.unit || ""}`)}
-          ${row(t("velocity"), (point) => `${signed(point.velocity)} ${chartData.velocity.unit || ""}`)}
-          ${row(t("energy"), (point) => `${signed(point.energy)} ${chartData.energy.unit || ""}`)}
-          ${row(t("tof"), (point) => signed(point.tof))}
-          ${row(t("mach"), (point) => signed(point.mach))}
+          ${row(t("drop"), (point) => directed(point.path, "UP", "DOWN", chartData.drop.unit))}
+          ${row(t("elevation"), (point) => directed(point.elevation, "UP", "DOWN", chartData.drop.hold_unit))}
+          ${row(t("windage"), (point) => directed(point.windage, "RIGHT", "LEFT", chartData.wind.unit))}
+          ${row(t("velocity"), (point) => `${fixedDisplay(point.velocity, 0)} ${shownUnit(chartData.velocity.unit)}`)}
+          ${row(t("energy"), (point) => `${fixedDisplay(point.energy, 0)} ${shownUnit(chartData.energy.unit)}`)}
+          ${row(t("tof"), (point) => `${fixedDisplay(point.tof, 3)} s`)}
+          ${row(t("mach"), (point) => fixedDisplay(point.mach, 2))}
         </tbody></table></div>` : "";
     }
   }
@@ -2335,15 +2485,25 @@ function writeReadouts() {
       const point = item.points[chartCursor];
       if (!point) return "";
       if (kind === "drop") {
-        return `${item.label}: ${signed(point.path)} ${chartData.drop.unit} · ${signed(point.elevation)} ${chartData.drop.hold_unit}`;
+        return `${item.label}: ${directed(point.path, "UP", "DOWN", chartData.drop.unit)} · ${directed(point.elevation, "UP", "DOWN", chartData.drop.hold_unit)}`;
       }
       if (kind === "wind") {
-        return `${item.label}: ${signed(point.windage)} ${chartData.wind.unit} · ${signed(point.wind_linear)} ${chartData.wind.linear_unit}`;
+        return `${item.label}: ${directed(point.windage, "RIGHT", "LEFT", chartData.wind.unit)} · ${directed(point.wind_linear, "RIGHT", "LEFT", chartData.wind.linear_unit)}`;
       }
-      return `${item.label}: ${signed(point[yKey])} ${spec.unit || ""}`;
+      const unit = kind === "tof" ? "s" : shownUnit(spec.unit);
+      return `${item.label}: ${fixedDisplay(point[yKey], kind === "mach" ? 2 : kind === "tof" ? 3 : 0)} ${unit}`.trim();
     }).filter(Boolean);
-    node.textContent = `${signed(range)} ${chartData.x.unit} — ${parts.join("  ·  ")}`;
+    node.textContent = `${fixedDisplay(range, 0)} ${shownUnit(chartData.x.unit)} — ${parts.join("  ·  ")}`;
   });
+}
+
+function directed(value, positive, negative, unit) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const digits = Math.abs(number) >= 100 ? 1 : 2;
+  const text = Math.abs(number).toFixed(digits);
+  const word = Math.abs(number) < 1e-9 ? "" : (number > 0 ? positive : negative);
+  return `${word} ${text} ${shownUnit(unit)}`.trim();
 }
 
 function signed(value) {
@@ -2358,14 +2518,16 @@ function bindEquipment() {
   document.querySelectorAll("[data-kind]").forEach((button) => button.addEventListener("click", () => {
     equipKind = button.dataset.kind;
     selectedId = "";
+    equipDraft = false;
     render();
   }));
   document.querySelectorAll("[data-pick]").forEach((button) => button.addEventListener("click", () => {
     selectedId = button.dataset.pick;
+    equipDraft = false;
     render();
   }));
   const newer = document.getElementById("equip-new");
-  if (newer) newer.addEventListener("click", () => { selectedId = ""; render(); });
+  if (newer) newer.addEventListener("click", () => { selectedId = ""; equipDraft = true; render(); });
   const save = document.getElementById("equip-save");
   if (save) save.addEventListener("click", saveEquipment);
   const remove = document.getElementById("equip-delete");
@@ -2405,6 +2567,7 @@ async function deleteEquipment() {
   try {
     await call("delete_record", { kind: equipKind === "groups" ? "group" : equipKind, id: selectedId });
     selectedId = "";
+    equipDraft = false;
     boot = await call("bootstrap");
     render();
   } catch (error) {
@@ -3160,10 +3323,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (typing || page !== "solve" || !boot || !boot.settings.onboarded) return;
   const key = event.key.toLowerCase();
-  if (key === "r") focusId("range");
-  else if (key === "w") focusId("wind_speed");
-  else if (key === "d") focusId("wind_direction");
-  else if (key === "a") focusId("inclination");
+  if (key === "r") { event.preventDefault(); focusId("range"); }
+  else if (key === "w") { event.preventDefault(); focusId("wind_speed"); }
+  else if (key === "d") { event.preventDefault(); focusId("wind_direction"); }
+  else if (key === "a") { event.preventDefault(); focusId("inclination"); }
   else if (key === "u") cycleAngular();
   else if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); stepRange(event.key === "ArrowUp" ? 1 : -1, event); }
   else if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); stepClock(event.key === "ArrowRight" ? 1 : -1); }
@@ -3173,7 +3336,9 @@ document.addEventListener("keydown", (event) => {
 
 function focusId(id) {
   const node = document.getElementById(id);
-  if (node) node.focus();
+  if (!node) return;
+  node.focus();
+  if (typeof node.select === "function") node.select();
 }
 
 async function setAngular(angular) {
@@ -3218,7 +3383,7 @@ function stepClock(sign) {
   let hour = match ? Number(match[1]) : 12;
   hour = (hour + sign + 12) % 12;
   if (hour === 0) hour = 12;
-  input.value = `${hour}oc`;
+  input.value = clockPhrase(String(hour));
   syncWindClock(hour);
   scheduleSolve(0);
 }
@@ -3523,9 +3688,9 @@ function pbrView(data) {
     : `<button type="button" id="pbr-apply">${esc(t("pbr-apply"))}</button>`);
   const inside = data.starts_inside ? `<p class="hint">${esc(t("pbr-starts-inside"))}</p>` : "";
   const above = data.exits_above ? `<p class="hint">${esc(t("pbr-exits-above"))}</p>` : "";
-  const unit = data.length_unit || "";
-  const kv = (label, value) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd><span class="ho-unit">${esc(unit)}</span>`;
-  const ordinate = `${data.ordinate_display} ${unit} ${t("pbr-at")} ${data.ordinate_range_display} ${unit}`;
+  const unit = shownUnit(data.length_unit || "");
+  const small = shownUnit(data.small_unit || "");
+  const kv = (label, value) => `<dt>${esc(label)}</dt><dd>${esc(fixedDisplay(value, 2))}</dd><span class="ho-unit">${esc(unit)}</span>`;
   return `<div class="grid2">
     <section class="ho-card">
       <div id="pbr-chart"></div>
@@ -3537,22 +3702,28 @@ function pbrView(data) {
         ${kv(t("pbr-near-zero-label"), data.near_zero_display)}
         ${kv(t("pbr-far-zero-label"), data.far_zero_display)}
         ${kv(t("pbr-end-label"), data.far_display)}
-        <dt>${esc(t("pbr-ordinate"))}</dt><dd>${esc(ordinate)}</dd><span class="ho-unit"></span>
+        <dt>${esc(t("pbr-ordinate"))}</dt><dd>${esc(fixedDisplay(data.ordinate_display, 2))}</dd><span class="ho-unit">${esc(small)}</span>
+        <dt>${esc(t("pbr-at"))}</dt><dd>${esc(fixedDisplay(data.ordinate_range_display, 2))}</dd><span class="ho-unit">${esc(unit)}</span>
       </dl>
       ${confirm}
       <ul class="ho-notes">
         <li class="info">${esc(t(data.mode === "fixed" ? "pbr-fixed-note" : "pbr-note"))}</li>
-        <li class="info">${esc(t("pbr-start-help"))}</li>
-        ${inside ? `<li class="warn">${esc(t("pbr-starts-inside"))}</li>` : ""}
-        <li class="info">${esc(t("pbr-near-zero-help"))}</li>
-        <li class="info">${esc(t("pbr-far-zero-help"))}</li>
-        <li class="info">${esc(t("pbr-end-help"))}</li>
-        ${above ? `<li class="warn">${esc(t("pbr-exits-above"))}</li>` : ""}
-        <li class="info">${esc(t("pbr-ordinate-help"))}</li>
         <li class="info">${esc(t("pbr-band"))}</li>
-        <li class="info">${esc(t("pbr-still-air"))}</li>
-        <li class="info">${esc(t("pbr-zoom-hint"))}</li>
+        ${inside ? `<li class="warn">${esc(t("pbr-starts-inside"))}</li>` : ""}
+        ${above ? `<li class="warn">${esc(t("pbr-exits-above"))}</li>` : ""}
       </ul>
+      <details>
+        <summary>${esc(t("pbr-more"))}</summary>
+        <ul class="ho-notes">
+          <li class="info">${esc(t("pbr-start-help"))}</li>
+          <li class="info">${esc(t("pbr-near-zero-help"))}</li>
+          <li class="info">${esc(t("pbr-far-zero-help"))}</li>
+          <li class="info">${esc(t("pbr-end-help"))}</li>
+          <li class="info">${esc(t("pbr-ordinate-help"))}</li>
+          <li class="info">${esc(t("pbr-still-air"))}</li>
+          <li class="info">${esc(t("pbr-zoom-hint"))}</li>
+        </ul>
+      </details>
     </section>
   </div>`;
 }
@@ -3560,6 +3731,7 @@ function pbrView(data) {
 function pbrSpanButtons(data) {
   const unit = (data.x && data.x.unit) || data.length_unit || "m";
   const choices = [
+    ["zone", t("pbr-span-zone")],
     ["300", pbrRangeLabel(300, unit)],
     ["800", pbrRangeLabel(800, unit)],
     ["full", t("pbr-span-full")],
@@ -3588,6 +3760,18 @@ function pbrExtent(data) {
 
 function pbrPresetWindow(data) {
   const extent = pbrExtent(data);
+  if (pbrSpan === "zone") {
+    const unit = (data.x && data.x.unit) || data.length_unit || "m";
+    const factor = toSi(1, "length", unit) || 1;
+    const near = Number(data.near_m);
+    const far = Number(data.far_m);
+    if (Number.isFinite(near) && Number.isFinite(far) && far > near) {
+      const pad = (far - near) * 0.08;
+      const min = Math.max(0, near - pad) / factor;
+      const max = (far + pad) / factor;
+      return { min: Math.max(extent.min, min), max: Math.min(extent.max, Math.max(min + 1, max)) };
+    }
+  }
   if (pbrSpan !== "300" && pbrSpan !== "800") return extent;
   const unit = (data.x && data.x.unit) || "m";
   const shown = Number(pbrSpan) / (toSi(1, "length", unit) || 1);
@@ -3736,7 +3920,7 @@ function paintPbrChart() {
     marks += `<line class="grid" y1="${padT}" y2="${height - padB}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" />`;
     marks += `<text class="tick" fill="var(--text-secondary)" x="${x.toFixed(1)}" y="${height - 10}" text-anchor="middle">${esc(xAxis.labels[index])}</text>`;
   });
-  const band = (value) => `<line class="band" x1="${padL}" x2="${width - padR}" y1="${yOf(value).toFixed(1)}" y2="${yOf(value).toFixed(1)}" />`;
+  const band = (value) => `<line class="band zone" x1="${padL}" x2="${width - padR}" y1="${yOf(value).toFixed(1)}" y2="${yOf(value).toFixed(1)}" />`;
   const drawn = visible.length ? visible : samples;
   const d = drawn.map((sample, index) => `${index ? "L" : "M"}${xOf(sample.range).toFixed(1)},${yOf(sample.path).toFixed(1)}`).join(" ");
   host.innerHTML = `<p class="legend"><span><i class="swatch"></i>${esc(t("path"))}</span><span>${esc(t("pbr-band"))}</span><span>${esc(t("chart-los"))}</span></p>
@@ -3856,6 +4040,11 @@ function bindPbr() {
   const build = document.getElementById("pbr-build");
   if (build) build.addEventListener("click", runPbr);
   bindPbrActions();
+  if (!pbrResult && boot.settings.active_profile_id) runPbr();
+  else if (!boot.settings.active_profile_id) {
+    const host = document.getElementById("pbr-body");
+    if (host && !pbrResult) host.innerHTML = emptyCta("pbr-note");
+  }
 }
 
 function bindPbrActions() {
@@ -3942,9 +4131,7 @@ function truingHtml() {
 function truingFields() {
   if (truingKind === "drag") {
     return `<label class="field wide" title="${esc(t("truing-lines-tip"))}">${esc(t("truing-lines"))}<textarea id="truing-lines" rows="5" title="${esc(t("truing-lines-tip"))}">${esc(truingForm.lines)}</textarea></label>
-      <p class="hint">${esc(t("truing-lines-hint"))}</p>
       <label title="${esc(t("truing-piecewise-tip"))}"><input type="checkbox" id="truing-piecewise" ${truingForm.piecewise ? "checked" : ""} /> ${esc(t("truing-piecewise"))}</label>
-      <p class="hint">${esc(t("truing-piecewise-tip"))}</p>
       <p class="hint">${esc(t("truing-drag-guidance"))}</p>`;
   }
   if (truingKind === "tracking") {
@@ -3952,8 +4139,6 @@ function truingFields() {
         <span title="${esc(t("truing-advertised-tip"))}">${qtyField("advertised", t("truing-advertised"), truingForm.advertised, "mrad", "angle")}</span>
         <span title="${esc(t("truing-observed-tip"))}">${qtyField("observed", t("truing-observed"), truingForm.observed, "mrad", "angle")}</span>
       </div>
-      <p class="hint">${esc(t("truing-advertised-tip"))}</p>
-      <p class="hint">${esc(t("truing-observed-tip"))}</p>
       <p class="hint">${esc(t("truing-tracking-guidance"))}</p>`;
   }
   return `<div class="cluster">
@@ -3964,10 +4149,6 @@ function truingFields() {
       <label class="field" title="${esc(t("truing-shots-tip"))}">${esc(t("truing-shots"))}<input id="truing-shots" value="${esc(truingForm.shots)}" title="${esc(t("truing-shots-tip"))}" /></label>
       <label class="field" title="${esc(t("truing-group-tip"))}">${esc(t("truing-group"))}<input id="truing-group" value="${esc(truingForm.group)}" title="${esc(t("truing-group-tip"))}" /></label>
     </div>
-    <p class="hint">${esc(t("truing-range-tip"))}</p>
-    <p class="hint">${esc(t("truing-elev-tip"))}</p>
-    <p class="hint">${esc(t("truing-shots-tip"))}</p>
-    <p class="hint">${esc(t("truing-group-tip"))}</p>
     <p class="hint">${esc(t("truing-mv-guidance"))}</p>`;
 }
 
@@ -3976,7 +4157,7 @@ function snapshotBits(snap) {
   if (snap.label) return String(snap.label);
   const bits = [];
   if (snap.mv_mps != null && snap.mv_mps !== "") bits.push(`MV ${Number(snap.mv_mps).toFixed(1)} m/s`);
-  if (snap.tracking_factor != null && snap.tracking_factor !== "") bits.push(String(snap.tracking_factor));
+  if (snap.tracking_factor != null && snap.tracking_factor !== "") bits.push(Number(snap.tracking_factor).toFixed(3));
   return bits.join(" · ") || t("truing-none");
 }
 
@@ -4284,6 +4465,23 @@ function libraryTarget(id) {
   return ((boot.targets && boot.targets.library) || []).find((item) => item.id === id) || null;
 }
 
+function pathStyle(path) {
+  if (!path.placeholder) return { dash: "", stroke: "var(--text)" };
+  if (path.role === "silhouette") return { dash: 'stroke-dasharray="2 7"', stroke: "var(--text-secondary)" };
+  if (path.role === "hit_area") return { dash: 'stroke-dasharray="10 4"', stroke: "var(--warning)" };
+  return { dash: 'stroke-dasharray="4 3"', stroke: "var(--accent-text)" };
+}
+
+function targetLegend(spec) {
+  const roles = new Set((spec.paths || []).filter((path) => path.placeholder).map((path) => path.role));
+  const items = [];
+  if (roles.has("hit_area")) items.push(`<span><i class="swatch dash-hit"></i>${esc(t("legend-hit"))}</span>`);
+  if (roles.has("silhouette")) items.push(`<span><i class="swatch dash-sil"></i>${esc(t("legend-silhouette"))}</span>`);
+  if ([...roles].some((role) => role !== "hit_area" && role !== "silhouette")) items.push(`<span><i class="swatch dash-other"></i>${esc(t("legend-outline"))}</span>`);
+  if (!items.length) return "";
+  return `<p class="legend">${items.join("")}</p>`;
+}
+
 function flagHtml(flags) {
   return (flags || []).map((flag) => {
     const kind = t("badge-" + (flag.kind || "placeholder"));
@@ -4359,8 +4557,9 @@ function faceSvg(spec, opts) {
   paths.forEach((path) => {
     const points = path.points || [];
     if (!points.length) return;
-    const dashed = path.placeholder ? 'stroke-dasharray="8 5"' : "";
-    const stroke = path.placeholder ? "var(--warning)" : ink;
+    const style = pathStyle(path);
+    const dashed = style.dash;
+    const stroke = style.stroke;
     if (path.closed === false) {
       let d = "";
       for (let i = 0; i + 1 < points.length; i += 2) {
@@ -4421,11 +4620,12 @@ function faceSvg(spec, opts) {
   const bar0 = px(-barCm / 2, 0);
   const bar1 = px(barCm / 2, 0);
   const step = half > 80 ? 20 : half > 40 ? 10 : 5;
+  const axisY = size - pad + 6;
   let ticks = "";
   for (let cm = Math.ceil(-half / step) * step; cm <= half; cm += step) {
     const [x] = px(cm, 0);
-    ticks += `<line stroke="${axis}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(cy - 6).toFixed(1)}" y2="${(cy + 6).toFixed(1)}" />
-      <text fill="${ink}" x="${x.toFixed(1)}" y="${(cy + 24).toFixed(1)}" text-anchor="middle">${esc(lengthLabelFromCm(cm))}</text>`;
+    ticks += `<line stroke="${axis}" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${(axisY - 8).toFixed(1)}" y2="${axisY.toFixed(1)}" />
+      <text fill="${ink}" x="${x.toFixed(1)}" y="${(axisY + 16).toFixed(1)}" text-anchor="middle">${esc(lengthLabelFromCm(cm))}</text>`;
   }
   return `<svg class="target-face" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(options.label || spec.name || t("nav-targets"))}">
     <rect width="${size}" height="${size}" fill="var(--background)" />
@@ -4770,11 +4970,15 @@ function reticleSvg(scene) {
   const stepPx = stepTrue * Number(scene.px_per_mrad);
   let grid = "";
   if (stepPx >= 12 && stepPx < size) {
-    for (let at = c; at < size; at += stepPx) {
-      grid += gridLine(at, c, size, true) + gridLine(size - (at - c), c, size, true);
+    for (let at = c + stepPx; at < size; at += stepPx) {
+      const mirror = 2 * c - at;
+      grid += gridLine(at, c, size, true);
+      if (mirror > 0 && Math.abs(mirror - at) > 0.5) grid += gridLine(mirror, c, size, true);
     }
-    for (let at = c; at < size; at += stepPx) {
-      grid += gridLine(at, c, size, false) + gridLine(size - (at - c), c, size, false);
+    for (let at = c + stepPx; at < size; at += stepPx) {
+      const mirror = 2 * c - at;
+      grid += gridLine(at, c, size, false);
+      if (mirror > 0 && Math.abs(mirror - at) > 0.5) grid += gridLine(mirror, c, size, false);
     }
   }
   let marks = "";
@@ -4788,7 +4992,7 @@ function reticleSvg(scene) {
   }
   const centre = `<line stroke="var(--accent)" stroke-width="1.5" x1="${(c - 12).toFixed(1)}" x2="${(c + 12).toFixed(1)}" y1="${c}" y2="${c}" />
     <line stroke="var(--accent)" stroke-width="1.5" y1="${(c - 12).toFixed(1)}" y2="${(c + 12).toFixed(1)}" x1="${c}" x2="${c}" />
-    <text fill="var(--text)" x="${(c + 14).toFixed(1)}" y="${(c - 8).toFixed(1)}">${esc(t(reticleState.showHold ? "reticle-hold-point" : "reticle-centre"))}</text>`;
+    <text fill="var(--text)" x="16" y="28">${esc(t(reticleState.showHold ? "reticle-hold-point" : "reticle-centre"))}</text>`;
   const overlays = holdMarks(scene, px);
   return `<svg class="reticle" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(t("reticle-title"))}">
     <rect width="${size}" height="${size}" fill="var(--background)" />
@@ -4808,7 +5012,7 @@ function holdMarks(scene, px) {
 
 function overlayDot(at, color, label) {
   return `<circle cx="${at[0].toFixed(1)}" cy="${at[1].toFixed(1)}" r="6" fill="${color}" />
-    <text fill="var(--text)" x="${(at[0] + 10).toFixed(1)}" y="${(at[1] - 8).toFixed(1)}">${esc(label)}</text>`;
+    <text fill="var(--text)" font-size="12" text-anchor="middle" x="${at[0].toFixed(1)}" y="${(at[1] + 20).toFixed(1)}">${esc(label)}</text>`;
 }
 
 function gridLine(at, c, size, vertical) {
@@ -4875,14 +5079,15 @@ function targetMarks(spec, to, ringing, showSilhouette) {
     }).join(" ") + " Z";
     body += `<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.75" ${dash} />`;
   });
-  (spec.rings || []).forEach((ring) => {
+  (spec.rings || []).forEach((ring, index) => {
     const radius = Number(ring.diameter_cm) / 2;
-    const edge = ringing === "alt" ? to(radius, 0) : to(radius * Math.SQRT1_2, radius * Math.SQRT1_2);
+    const turn = ringing === "alt" ? 0 : (-Math.PI / 3) - index * 0.55;
+    const edge = to(Math.cos(turn) * radius, Math.sin(turn) * radius);
     const centre = to(0, 0);
-    const r = Math.abs(edge[0] - centre[0]);
+    const r = Math.hypot(edge[0] - centre[0], edge[1] - centre[1]);
     const label = (ringing === "alt" && ring.label_alt) || ring.label_primary || "";
     body += `<circle cx="${centre[0].toFixed(1)}" cy="${centre[1].toFixed(1)}" r="${r.toFixed(1)}" fill="none" stroke="var(--text)" stroke-width="1.5" />`;
-    if (label) body += `<text fill="var(--text)" x="${(edge[0] + 4).toFixed(1)}" y="${(edge[1] - 4).toFixed(1)}">${esc(label)}</text>`;
+    if (label) body += `<text fill="var(--text)" font-size="12" x="${(edge[0] + 6).toFixed(1)}" y="${(edge[1] + 4).toFixed(1)}">${esc(label)}</text>`;
   });
   return body;
 }
@@ -4979,6 +5184,7 @@ function targetsHtml() {
         <div id="target-flags">${spec ? flagHtml(spec.flags) : ""}</div>
         <p class="ho-hint">${spec ? esc(spec.subtitle || "") : ""} ${spec && spec.distance_note ? "· " + esc(spec.distance_note) : ""}</p>
         <div id="target-face">${spec ? faceSvg(spec, { showSilhouette: true, ringing: "primary", label: spec.name }) : ""}</div>
+        ${spec ? targetLegend(spec) : ""}
         <h3>${esc(t("target-edit-title"))}</h3>
         <p class="ho-hint">${esc(t("target-edit-intro"))}</p>
         <div id="target-editor">${targetEditorHtml(spec)}</div>
@@ -5022,16 +5228,10 @@ function currentTarget() {
 }
 
 function openItemsHtml() {
-  const seen = new Set();
-  const rows = [];
-  ((boot.targets && boot.targets.library) || []).forEach((item) => {
-    (item.flags || []).forEach((flag) => {
-      if (!flag.detail || seen.has(flag.detail) || flag.code === "T1") return;
-      seen.add(flag.detail);
-      rows.push(`<p><span class="ho-badge warn">${esc(flag.code)}</span> ${esc(t(flag.detail))}</p>`);
-    });
-  });
-  return rows.join("");
+  const spec = currentTarget();
+  const flags = ((spec && spec.flags) || []).filter((flag) => flag.code !== "T1");
+  if (!flags.length) return `<p class="ho-hint">${esc(t("open-items-none"))}</p>`;
+  return flagHtml(flags);
 }
 
 function targetEditorHtml(spec) {
@@ -5230,6 +5430,12 @@ async function saveSvgTarget() {
 }
 
 document.addEventListener("click", (event) => {
+  const go = event.target.closest && event.target.closest("[data-go]");
+  if (go) {
+    page = go.dataset.go;
+    render();
+    return;
+  }
   const button = event.target.closest && event.target.closest("#impact-svg, #impact-png");
   if (!button) return;
   if (button.id === "impact-svg") {
@@ -5357,7 +5563,8 @@ async function runCompare() {
   const node = document.getElementById("compare-result");
   if (!node) return;
   if (!compareIds.length) {
-    node.innerHTML = `<p class="hint">${esc(t("compare-need"))}</p>`;
+    const none = !(boot.equipment.profiles || []).length;
+    node.innerHTML = none ? emptyCta("compare-empty") : `<p class="ho-hint">${esc(t("compare-need"))}</p>`;
     return;
   }
   try {
@@ -5370,49 +5577,88 @@ async function runCompare() {
   }
 }
 
-function missingCell(value, kind) {
+function missingText(value, kind) {
   const text = value == null ? "" : String(value).trim();
-  if (text && text !== "—" && text !== "-") return esc(text);
-  const key = kind === "scope" || kind === "click" ? "missing-no-scope" : kind === "twist" ? "missing-no-twist" : "missing-not-set";
-  return `<span class="na">${esc(t(key))}</span>`;
+  if (text && text !== "—" && text !== "-" && text !== "–") return null;
+  if (kind === "scope" || kind === "click") return t("missing-no-scope");
+  if (kind === "twist") return t("missing-no-twist");
+  return t("missing-not-set");
+}
+
+function splitMeasure(value, digits) {
+  const missing = missingText(value);
+  if (missing) return { num: missing, unit: "" };
+  const pretty = prettyPhrase(String(value).trim());
+  const match = pretty.match(/^(.*\d)\s+([^\d].*)$/);
+  if (!match) return { num: pretty, unit: "" };
+  const number = Number(match[1].replace(",", "."));
+  const num = digits != null && Number.isFinite(number) ? number.toFixed(digits) : match[1];
+  return { num, unit: match[2] };
+}
+
+function compareCell(parts) {
+  return `<td>${esc(parts.num)}</td><td class="unit">${esc(parts.unit)}</td>`;
 }
 
 function compareTable(rows, caption, pairs) {
-  const head = rows.map((row) => `<th>${esc(row.label)}</th>`).join("");
-  const body = pairs.map(([label, pick]) => `<tr><th class="text">${esc(label)}</th>${rows.map((row) => `<td>${pick(row)}</td>`).join("")}</tr>`).join("");
-  return `<section class="ho-card flush"><header><h2>${esc(caption)}</h2></header><div class="ho-table-wrap"><table class="ho-table"><thead><tr><th></th>${head}</tr></thead><tbody>${body}</tbody></table></div></section>`;
+  const head = rows.map((row) => `<th colspan="2">${esc(row.label)}</th>`).join("");
+  const body = pairs.map(([label, pick]) => `<tr><th class="text">${esc(label)}</th>${rows.map((row) => compareCell(pick(row))).join("")}</tr>`).join("");
+  return `<section class="ho-card flush"><header><h2>${esc(caption)}</h2></header><div class="ho-table-wrap"><table class="ho-table ho-compare"><thead><tr><th></th>${head}</tr></thead><tbody>${body}</tbody></table></div></section>`;
+}
+
+function holdMeasure(node) {
+  if (!node || missingText(node.primary)) return { num: t("missing-not-set"), unit: "" };
+  const shown = figureShown(node);
+  const dir = node.direction && node.direction !== "—" ? `${node.direction} ` : "";
+  return { num: `${dir}${shown.num}`.trim(), unit: shown.unit };
+}
+
+function clickCount(node) {
+  if (!node || node.clicks == null || node.clicks === "") return null;
+  const count = Math.abs(Number(node.clicks));
+  return Number.isFinite(count) ? String(count) : null;
 }
 
 function compareResultHtml(result) {
   const rows = (result && result.rows) || [];
   if (!rows.length) return `<p class="ho-hint">${esc(t("compare-need"))}</p>`;
-  const hold = (node) => node ? `${esc(node.direction || "")} ${esc(node.primary || "")}`.trim() : esc(t("missing-not-set"));
+  const text = (value, kind) => {
+    const missing = missingText(value, kind);
+    return missing ? { num: missing, unit: "" } : { num: prettyPhrase(String(value)), unit: "" };
+  };
   const at = compareTable(rows, t("compare-at"), [
-    [t("drop"), (row) => missingCell(row.drop)],
-    [t("elevation"), (row) => hold(row.elevation)],
-    [t("windage"), (row) => hold(row.windage)],
-    [t("velocity"), (row) => missingCell(row.velocity)],
-    [t("energy"), (row) => missingCell(row.energy)],
-    [t("tof"), (row) => `${esc(Number(row.tof_s).toFixed(3))} s`],
-    [t("mach"), (row) => esc(Number(row.mach).toFixed(2))],
+    [t("drop"), (row) => splitMeasure(row.drop, 2)],
+    [t("elevation"), (row) => holdMeasure(row.elevation)],
+    [t("windage"), (row) => holdMeasure(row.windage)],
+    [t("clicks-heading"), (row) => {
+      const elev = clickCount(row.elevation);
+      const wind = clickCount(row.windage);
+      if (elev == null && wind == null) return { num: missingText("", "click"), unit: "" };
+      return { num: `${elev == null ? t("missing-not-set") : elev} / ${wind == null ? t("missing-not-set") : wind}`, unit: "" };
+    }],
+    [t("velocity"), (row) => splitMeasure(row.velocity, 0)],
+    [t("energy"), (row) => splitMeasure(row.energy, 0)],
+    [t("tof"), (row) => ({ num: Number(row.tof_s).toFixed(3), unit: "s" })],
+    [t("mach"), (row) => ({ num: Number(row.mach).toFixed(2), unit: "" })],
+    [t("stability"), (row) => (row.sg == null || row.sg === "" ? { num: t("missing-not-set"), unit: "" } : { num: Number(row.sg).toFixed(2), unit: "" })],
   ]);
   const gear = compareTable(rows, t("compare-equipment"), [
-    [t("equip-rifle"), (row) => missingCell(row.rifle)],
-    [t("barrel"), (row) => missingCell(row.barrel)],
-    [t("twist"), (row) => (row.twist ? esc(`${row.twist} ${row.twist_hand || ""}`.trim()) : missingCell("", "twist"))],
-    [t("sight-height"), (row) => missingCell(row.sight_height)],
-    [t("weight"), (row) => missingCell(row.weight)],
-    [t("equip-scope"), (row) => missingCell(row.scope, "scope")],
-    [t("focal-plane"), (row) => missingCell(row.focal_plane)],
-    [t("click"), (row) => missingCell(row.click, "click")],
-    [t("equip-bullet"), (row) => missingCell(row.bullet)],
-    [t("compare-drag"), (row) => missingCell(row.drag)],
-    [t("compare-bc"), (row) => missingCell(row.bc)],
-    [t("weight"), (row) => missingCell(row.bullet_weight)],
-    [t("equip-load"), (row) => missingCell(row.load)],
-    [t("mv"), (row) => missingCell(row.mv)],
-    [t("zero"), (row) => missingCell(row.zero)],
-    [t("compare-truing"), (row) => missingCell(row.truing)],
+    [t("equip-rifle"), (row) => text(row.rifle)],
+    [t("barrel"), (row) => splitMeasure(row.barrel, 1)],
+    [t("twist"), (row) => (missingText(row.twist, "twist") ? { num: t("missing-no-twist"), unit: "" } : { num: prettyPhrase(row.twist), unit: row.twist_hand || "" })],
+    [t("sight-height"), (row) => splitMeasure(row.sight_height, 2)],
+    [t("rifle-weight"), (row) => splitMeasure(row.weight, 2)],
+    [t("equip-scope"), (row) => text(row.scope, "scope")],
+    [t("focal-plane"), (row) => text(row.focal_plane)],
+    [t("click"), (row) => (missingText(row.click, "click") ? { num: t("missing-no-scope"), unit: "" } : splitMeasure(row.click))],
+    [t("equip-bullet"), (row) => text(row.bullet)],
+    [t("compare-drag"), (row) => text(row.drag)],
+    [t("compare-bc"), (row) => text(row.bc)],
+    [t("bullet-weight"), (row) => splitMeasure(row.bullet_weight, 2)],
+    [t("equip-load"), (row) => text(row.load)],
+    [t("mv"), (row) => splitMeasure(row.mv, 1)],
+    [t("zero"), (row) => text(prettyPhrase(row.zero || ""))],
+    [t("compare-truing"), (row) => text(row.truing)],
   ]);
   const warnings = rows.flatMap((row) => (row.warnings || []).map((item) => `${row.label}: ${item}`));
   const need = rows.length < 2 ? `<p class="ho-hint">${esc(t("compare-need"))}</p>` : "";
@@ -5865,11 +6111,13 @@ function groupTabButton(id) {
 
 function groupToolButtons() {
   const state = groupState();
-  const tool = (id) => `<button type="button" class="ho-btn" data-group-tool="${id}" aria-pressed="${state.tool === id}">${esc(t("group-tool-" + id))}</button>`;
+  const locked = !state.photo;
+  const dis = locked ? " disabled" : "";
+  const tool = (id) => `<button type="button" class="ho-btn" data-group-tool="${id}" aria-pressed="${state.tool === id}"${dis} title="${esc(t("group-tool-" + id))}">${esc(t("group-tool-" + id))}</button>`;
   return `${tool("corners")}${tool("aim")}${tool("hole")}${tool("move")}${tool("delete")}${tool("pan")}
-    <button type="button" class="ho-btn ghost" id="group-zoom-in">${esc(t("group-zoom-in"))}</button>
-    <button type="button" class="ho-btn ghost" id="group-zoom-out">${esc(t("group-zoom-out"))}</button>
-    <button type="button" class="ho-btn ghost" id="group-zoom-fit">${esc(t("group-zoom-fit"))}</button>`;
+    <button type="button" class="ho-btn ghost" id="group-zoom-in"${dis} title="${esc(t("group-zoom-in"))}">${esc(t("group-zoom-in"))}</button>
+    <button type="button" class="ho-btn ghost" id="group-zoom-out"${dis} title="${esc(t("group-zoom-out"))}">${esc(t("group-zoom-out"))}</button>
+    <button type="button" class="ho-btn ghost" id="group-zoom-fit"${dis} title="${esc(t("group-zoom-fit"))}">${esc(t("group-zoom-fit"))}</button>`;
 }
 
 function groupAlwaysHtml() {
@@ -6007,8 +6255,9 @@ function groupResultsInner() {
   const warnings = (analysis.warnings || []).map((code) => t("group-warn-" + code)).filter((item) => item).join(" · ");
   const notes = analysis.score && analysis.score.notes ? analysis.score.notes.map((code) => t("group-" + code)).join(" · ") : "";
   const kv = (label, value) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd><span class="ho-unit"></span>`;
-  return `<p class="big">${esc(stats.horizontal || "")} <small>${esc(linear(stats.reported_offset_x_mm))} · ${esc(angle(stats.offset_x_mrad, stats.offset_x_moa))}</small></p>
-    <p class="big">${esc(stats.vertical || "")} <small>${esc(linear(stats.reported_offset_y_mm))} · ${esc(angle(stats.offset_y_mrad, stats.offset_y_moa))}</small></p>
+  return `<h3>${esc(t("group-offset"))}</h3>
+    <p class="big">${esc(stats.horizontal || t("missing-not-set"))} <small>${esc(linear(stats.reported_offset_x_mm))} · ${esc(angle(stats.offset_x_mrad, stats.offset_x_moa))}</small></p>
+    <p class="big">${esc(stats.vertical || t("missing-not-set"))} <small>${esc(linear(stats.reported_offset_y_mm))} · ${esc(angle(stats.offset_y_mrad, stats.offset_y_moa))}</small></p>
     <dl class="ho-kv">
       ${kv(t("group-shots"), String(analysis.shot_count || stats.n))}
       ${kv(t("group-es"), `${linear(stats.reported_extreme_spread_mm)} · ${angle(stats.es_mrad, stats.es_moa)}`)}
