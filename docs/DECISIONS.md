@@ -165,3 +165,16 @@ The checklist is `docs/REDESIGN-PR2.md`. PR1 restyled Solve. PR2 restyles the ot
 The checklist is `docs/REDESIGN-FIX-1.3.1.md`. It corrects the Solve hold figure and the review items from PR1 and PR2. The solver physics is unchanged. There is no language control and no second text-size control.
 
 - The workspace version, the window title, and `packaging/PKGBUILD` are 1.3.1. No tag and no release.
+
+## Milestone 9
+
+The checklist is `docs/M9-ANDROID.md`. The phone is the same Tauri 2 crate as the desktop. `holdover-core` still does the ballistics and the group analysis. Schema `user_version` stays 1. The `.holdover` bundle is unchanged.
+
+- The companion is Android only, `arm64-v8a`, `minSdk` 26, `compileSdk` and `targetSdk` 36, for the OnePlus 13 (CPH2655) on Android 16. iOS is out of scope. There is no language control, no `sv.ftl`, and no new text-size control.
+- Solve, the range card, profiles, Field (air, chronograph string, observed correction), group photographs, and Sync are the phone surface. The B dashboard is the layout at phone width. Units still switch on every page. Metric speeds stay m/s. Swedish targets stay first. T2–T6 and the US targets stay unmeasured.
+- Sensors are opt-in. A barometer reading is station pressure. GPS supplies a location fix and altitude. The compass and rotation vector supply azimuth, inclination, and cant, labelled Measured (phone). Nothing is read until Measure with this phone is pressed.
+- A group photograph, taken or imported, goes through `import_group_photo` and `analyze_group`. Those commands call `holdover-core`, the same path as the desktop, so the same photograph produces the same statistics.
+- The release keystore stays out of git. `versionCode` is `major * 1000000 + minor * 1000 + patch` (1.4.0 is 1004000). An in-place update needs that number to rise and the same signing key. CI signs with the public test key `packaging/android/ci-test.keystore`, which cannot replace a phone install signed with the release key.
+- The workspace version, the window title, and `packaging/PKGBUILD` are 1.4.0. No tag and no release.
+- The theme thread asks the phone for night mode as soon as the activity starts. `FindClass` on that Rust thread uses the boot class loader, so `se.hallgren.holdover.PhoneBridge` throws `ClassNotFoundException` and Android kills the process even though the class is in the dex. The lookup goes through the context class loader. `packaging/android/check-phone-bridge.sh` checks the built APK.
+- Android 15 draws edge-to-edge at targetSdk 35 and above. The WebView is padded by the status bar, the display cutout, and the navigation bar, in both orientations. Keyboard badges and the stepper's Shift/Ctrl hint are omitted on Android. `versionCode` for this 1.4.0 sideload is 1004001.

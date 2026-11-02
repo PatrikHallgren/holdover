@@ -1,10 +1,10 @@
 # Holdover
 
-Holdover is a personal, non-commercial, local-first ballistic calculator for the Omarchy 4 ("Quattro", 4.0.x) Linux desktop. An Android companion is planned later and is not in this milestone. Nothing here phones home, and nothing here is a substitute for live fire.
+Holdover is a personal, non-commercial, local-first ballistic calculator for the Omarchy 4 ("Quattro", 4.0.x) Linux desktop, with an Android companion that sideloads as an APK. Nothing here phones home, and nothing here is a substitute for live fire.
 
 > All values are predictions from a mathematical model and your inputs. Confirm with live fire before relying on them. You are responsible for safe and lawful shooting.
 
-The product plan is [`docs/PLAN.md`](docs/PLAN.md). This tree prepares 1.3.1: the redesign fixes after the B dashboard. Check the window with [`docs/REDESIGN-FIX-1.3.1.md`](docs/REDESIGN-FIX-1.3.1.md). The 1.3.0 page checklist is [`docs/REDESIGN-PR2.md`](docs/REDESIGN-PR2.md). The guide is [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md). Milestone 8 prepared 1.2.0: shot-group photo analysis ([`docs/M8-DESKTOP.md`](docs/M8-DESKTOP.md)). Milestone 7 prepared 1.1.0: a `.holdover` bundle with a merge preview ([`docs/M7-DESKTOP.md`](docs/M7-DESKTOP.md)). Milestone 6 prepared 1.0.0: compare, documents, the load log, archive, the Arch package, and About ([`docs/M6-DESKTOP.md`](docs/M6-DESKTOP.md)). Earlier checklists are [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md), [`docs/M3-DESKTOP.md`](docs/M3-DESKTOP.md), [`docs/M4-DESKTOP.md`](docs/M4-DESKTOP.md), and [`docs/M5-DESKTOP.md`](docs/M5-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+The product plan is [`docs/PLAN.md`](docs/PLAN.md). This tree prepares 1.4.0: the Android companion. The phone checklist is [`docs/M9-ANDROID.md`](docs/M9-ANDROID.md). The desktop redesign fixes are [`docs/REDESIGN-FIX-1.3.1.md`](docs/REDESIGN-FIX-1.3.1.md). The 1.3.0 page checklist is [`docs/REDESIGN-PR2.md`](docs/REDESIGN-PR2.md). The guide is [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md). Milestone 8 prepared 1.2.0: shot-group photo analysis ([`docs/M8-DESKTOP.md`](docs/M8-DESKTOP.md)). Milestone 7 prepared 1.1.0: a `.holdover` bundle with a merge preview ([`docs/M7-DESKTOP.md`](docs/M7-DESKTOP.md)). Milestone 6 prepared 1.0.0: compare, documents, the load log, archive, the Arch package, and About ([`docs/M6-DESKTOP.md`](docs/M6-DESKTOP.md)). Earlier checklists are [`docs/M2-DESKTOP.md`](docs/M2-DESKTOP.md), [`docs/M3-DESKTOP.md`](docs/M3-DESKTOP.md), [`docs/M4-DESKTOP.md`](docs/M4-DESKTOP.md), and [`docs/M5-DESKTOP.md`](docs/M5-DESKTOP.md). The Milestone 0 spike is [`docs/M0-SPIKE.md`](docs/M0-SPIKE.md). The Tauri decision is [`docs/M1-DESKTOP.md`](docs/M1-DESKTOP.md). Choices the plan left open are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 
 ## Layout
 
@@ -14,8 +14,8 @@ The product plan is [`docs/PLAN.md`](docs/PLAN.md). This tree prepares 1.3.1: th
 | `crates/holdover-cli` | `holdover-cli`. Same JSON the later export will use. |
 | `crates/holdover-theme` | Omarchy 4 template and `colors.toml` adapter. |
 | `share/holdover` | `holdover.json.tpl` and the optional theme-set hook. |
-| `packaging/` | `PKGBUILD`, desktop entry, and icon. |
-| `app/` | Tauri 2 window. Solve, range card, charts, equipment, compare, documents, sync, settings, About. |
+| `packaging/` | `PKGBUILD`, desktop entry, icon, and the Android SDK and keystore scripts. |
+| `app/` | Tauri 2 window for the desktop and the Android companion. |
 | `locales/en.ftl` | English strings. The only shipped locale. |
 | `docs/references/vectors.md` | Documented reference vectors. |
 | `docs/schema/holdover.schema.json` | Draft library schema, including sync fields. |

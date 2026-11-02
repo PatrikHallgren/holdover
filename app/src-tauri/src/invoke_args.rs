@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn the_window_uses_camel_case_command_arguments() {
-        let rust = include_str!("main.rs");
+        let rust = include_str!("lib.rs");
         let commands = command_params(rust).unwrap();
         assert_eq!(
             commands.get("preview_bundle").map(Vec::as_slice),

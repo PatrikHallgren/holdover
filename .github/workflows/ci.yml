@@ -42,3 +42,47 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build the Arch package
         run: docker run --rm -v "$PWD":/src -w /src archlinux:base-devel bash /src/packaging/ci-makepkg.sh
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: aarch64-linux-android
+      - name: Android SDK, NDK, and tauri-cli
+        run: |
+          bash packaging/android/setup-sdk.sh
+          bash packaging/android/install-tauri-cli.sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          if [ -x /usr/local/cargo/bin/cargo-tauri ]; then
+            echo "/usr/local/cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: arm64 release APK
+        env:
+          HOLDOVER_ANDROID_CI: "1"
+        run: bash packaging/android/build-apk.sh
+      - name: The APK is arm64-v8a and targets API 36
+        run: |
+          apk="$(find app/src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -n 1)"
+          test -n "$apk"
+          unzip -l "$apk" | grep -q 'lib/arm64-v8a/'
+          if unzip -l "$apk" | grep -E 'lib/(x86|armeabi-v7a)/'; then
+            echo "the APK contains an ABI other than arm64-v8a" >&2
+            exit 1
+          fi
+          badging="$(find "$ANDROID_HOME/build-tools" -name aapt | head -n 1)"
+          "$badging" dump badging "$apk" | tee /tmp/holdover-badging.txt
+          grep -q "targetSdkVersion:'36'" /tmp/holdover-badging.txt
+          grep -q "native-code: 'arm64-v8a'" /tmp/holdover-badging.txt
+          grep -q "versionName='1.4.0'" /tmp/holdover-badging.txt
+          bash packaging/android/check-phone-bridge.sh "$apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: holdover-android-arm64
+          path: app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

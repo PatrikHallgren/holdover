@@ -1,0 +1,728 @@
+//! Holdover's Tauri 2 window. The solver stays in `holdover-core`.
+//!
+//! This is the Milestone 2 solve screen: profiles, a separate zero atmosphere,
+//! current conditions, and the hold. SQLite lives in this crate because the
+//! core library does no I/O.
+
+mod bundle;
+mod group;
+#[cfg(test)]
+mod invoke_args;
+mod library;
+mod phone;
+mod photo;
+mod session;
+mod store;
+mod strings;
+mod weather;
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "android"))]
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[cfg(not(target_os = "android"))]
+use holdover_theme::text_scale_factor;
+use holdover_theme::{bundled_palette, Palette, ThemeFollower, ThemePaths};
+use serde_json::{json, Value};
+use store::Store;
+use tauri::Emitter;
+use tauri::Manager;
+
+struct AppState {
+    store: Mutex<Store>,
+    db_path: PathBuf,
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            bootstrap,
+            set_preferences,
+            complete_onboarding,
+            save_rifle,
+            save_scope,
+            save_bullet,
+            save_load,
+            save_profile,
+            delete_record,
+            set_active_profile,
+            solve,
+            range_card,
+            card_pdf,
+            chart,
+            export_library,
+            export_library_csv,
+            import_library,
+            export_bundle,
+            preview_bundle,
+            import_bundle,
+            fetch_weather,
+            apply_weather,
+            point_blank,
+            apply_zero,
+            truing,
+            chrono_session,
+            recoil_calc,
+            impact,
+            reticle_scene,
+            reticle_save,
+            target_save,
+            target_pdf,
+            compare,
+            save_document,
+            open_document,
+            save_load_log,
+            restore_record,
+            restore_history,
+            import_group_photo,
+            analyze_group,
+            save_group,
+            detect_holes,
+            group_photo,
+            phone_sensors,
+            phone_prepare,
+            share_file
+        ])
+        .setup(|app| {
+            let path = database_path(app.handle()).map_err(boot_error)?;
+            let store = Store::open(&path).map_err(boot_error)?;
+            app.manage(AppState {
+                store: Mutex::new(store),
+                db_path: path,
+            });
+            let handle = app.handle().clone();
+            std::thread::spawn(move || theme_loop(handle));
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("Holdover window failed to start");
+}
+
+fn boot_error(message: String) -> Box<dyn std::error::Error> {
+    Box::new(std::io::Error::other(message))
+}
+
+fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("HOLDOVER_DB") {
+        return Ok(PathBuf::from(path));
+    }
+    #[cfg(target_os = "android")]
+    {
+        let dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+        fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        return Ok(dir.join("holdover.db"));
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        let base = std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            format!("{home}/.local/share")
+        });
+        Ok(PathBuf::from(base).join("holdover/holdover.db"))
+    }
+}
+
+fn with_store<T>(
+    state: tauri::State<'_, AppState>,
+    f: impl FnOnce(&Store) -> Result<T, String>,
+) -> Result<T, String> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| "the library is busy".to_string())?;
+    f(&store)
+}
+
+#[tauri::command]
+fn bootstrap(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    with_store(state, |store| {
+        let mut value = store.bootstrap()?;
+        value["platform"] = json!(if cfg!(target_os = "android") {
+            "android"
+        } else {
+            "desktop"
+        });
+        #[cfg(all(target_os = "android", target_arch = "aarch64"))]
+        {
+            value["android_abi"] = json!("arm64-v8a");
+        }
+        Ok(value)
+    })
+}
+
+#[tauri::command]
+async fn phone_sensors(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let raw = tauri::async_runtime::spawn_blocking(phone::read_sensors)
+        .await
+        .map_err(|err| err.to_string())??;
+    if raw.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return Ok(raw);
+    }
+    with_store(state, |store| Ok(phone::present(&raw, &store.units()?)))
+}
+
+#[tauri::command]
+fn phone_prepare(kind: String) -> Result<Value, String> {
+    phone::prepare(&kind)
+}
+
+#[tauri::command]
+fn share_file(path: String, mime: String) -> Result<Value, String> {
+    phone::share_file(&path, &mime)
+}
+
+#[tauri::command]
+fn set_preferences(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        store.set_preferences(&body)?;
+        store.bootstrap()
+    })
+}
+
+#[tauri::command]
+fn complete_onboarding(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        store.complete_onboarding(&body)?;
+        store.bootstrap()
+    })
+}
+
+#[tauri::command]
+fn save_rifle(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_rifle(&body))
+}
+
+#[tauri::command]
+fn save_scope(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_scope(&body))
+}
+
+#[tauri::command]
+fn save_bullet(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_bullet(&body))
+}
+
+#[tauri::command]
+fn save_load(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_load(&body))
+}
+
+#[tauri::command]
+fn save_profile(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_profile(&body))
+}
+
+#[tauri::command]
+fn delete_record(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    id: String,
+) -> Result<(), String> {
+    with_store(state, |store| store.delete_record(&kind, &id))
+}
+
+#[tauri::command]
+fn set_active_profile(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    with_store(state, |store| store.set_active(&id))
+}
+
+#[tauri::command]
+fn solve(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::solve(store, &body))
+}
+
+#[tauri::command]
+fn range_card(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::range_card(store, &body))
+}
+
+/// Write the range card as a PDF at the physical page size and open it.
+#[tauri::command]
+fn card_pdf(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = session::card_pdf_bytes(store, &body)?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("holdover-range-card-{stamp}.pdf"));
+        fs::write(&path, &bytes).map_err(|err| err.to_string())?;
+        let opened = open_pdf(&path);
+        Ok(json!({
+            "path": path,
+            "opened": opened,
+            "pdf_base64": base64_encode(&bytes),
+        }))
+    })
+}
+
+fn open_pdf(path: &Path) -> bool {
+    open_external(&path.display().to_string())
+}
+
+fn open_external(target: &str) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        let mime = if target.ends_with(".pdf") {
+            "application/pdf"
+        } else {
+            "application/octet-stream"
+        };
+        return phone::open_target(target, mime).is_ok();
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        Command::new("xdg-open")
+            .arg(target)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        let packed = ((bytes[index] as u32) << 16)
+            | ((bytes[index + 1] as u32) << 8)
+            | bytes[index + 2] as u32;
+        out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 6) & 63) as usize] as char);
+        out.push(TABLE[(packed & 63) as usize] as char);
+        index += 3;
+    }
+    let rest = bytes.len() - index;
+    if rest == 1 {
+        let packed = (bytes[index] as u32) << 16;
+        out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rest == 2 {
+        let packed = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
+        out.push(TABLE[((packed >> 18) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 12) & 63) as usize] as char);
+        out.push(TABLE[((packed >> 6) & 63) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+#[tauri::command]
+fn chart(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::chart(store, &body))
+}
+
+#[tauri::command]
+fn compare(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::compare(store, &body))
+}
+
+#[tauri::command]
+fn save_document(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_document(&body))
+}
+
+#[tauri::command]
+fn open_document(state: tauri::State<'_, AppState>, id: String) -> Result<Value, String> {
+    with_store(state, |store| {
+        let target = store.document_target(&id)?;
+        let path = target["path"].as_str().unwrap_or("").to_string();
+        let opened = open_external(&path);
+        Ok(json!({
+            "kind": target["kind"],
+            "path": path,
+            "opened": opened,
+        }))
+    })
+}
+
+#[tauri::command]
+fn save_load_log(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_load_log(&body))
+}
+
+#[tauri::command]
+fn import_group_photo(
+    state: tauri::State<'_, AppState>,
+    bytes_base64: String,
+    keep_location: bool,
+    filename: String,
+) -> Result<Value, String> {
+    let bytes = store::decode_base64(&bytes_base64)?;
+    with_store(state, |store| {
+        store.import_group_photo(&bytes, &filename, keep_location)
+    })
+}
+
+#[tauri::command]
+fn analyze_group(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.analyze_group(&body))
+}
+
+#[tauri::command]
+fn save_group(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_group(&body))
+}
+
+#[tauri::command]
+fn detect_holes(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.detect_group_holes(&body))
+}
+
+#[tauri::command]
+fn group_photo(state: tauri::State<'_, AppState>, hash: String) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = store.group_photo_bytes(&hash)?;
+        Ok(json!({
+            "base64": base64_encode(&bytes),
+            "media": "image/png",
+        }))
+    })
+}
+
+#[tauri::command]
+fn restore_record(
+    state: tauri::State<'_, AppState>,
+    kind: String,
+    id: String,
+) -> Result<Value, String> {
+    with_store(state, |store| store.restore_record(&kind, &id))
+}
+
+#[tauri::command]
+fn restore_history(state: tauri::State<'_, AppState>, id: String) -> Result<Value, String> {
+    with_store(state, |store| store.restore_history(&id))
+}
+
+#[tauri::command]
+fn export_library(
+    state: tauri::State<'_, AppState>,
+    include_location: Option<bool>,
+) -> Result<Value, String> {
+    let dir = backup_dir(&state)?;
+    with_store(state, |store| {
+        let doc = if include_location.unwrap_or(false) {
+            store.export_library_with(true)?
+        } else {
+            store.export_library()?
+        };
+        let path = dir.join(format!(
+            "holdover-{}.json",
+            store::now_iso().replace(':', "")
+        ));
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&doc).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| err.to_string())?;
+        Ok(json!({ "path": path, "document": doc }))
+    })
+}
+
+#[tauri::command]
+fn export_library_csv(
+    state: tauri::State<'_, AppState>,
+    include_location: Option<bool>,
+) -> Result<Value, String> {
+    let dir = backup_dir(&state)?;
+    with_store(state, |store| {
+        let csv = store.export_library_csv(include_location.unwrap_or(false))?;
+        let path = dir.join(format!(
+            "holdover-{}.csv",
+            store::now_iso().replace(':', "")
+        ));
+        fs::write(&path, &csv).map_err(|err| err.to_string())?;
+        Ok(json!({ "path": path, "csv": csv }))
+    })
+}
+
+/// Open-Meteo lookup. The webview stays responsive: this command does not run
+/// on the UI thread, and the request gives up after a few seconds.
+#[tauri::command]
+async fn fetch_weather(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let (latitude, longitude, temperature, pressure, length, velocity) = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| "the library is busy".to_string())?;
+        let place = store.weather_place()?;
+        let units = store.units()?;
+        (
+            place.latitude,
+            place.longitude,
+            units.temperature,
+            units.pressure,
+            units.length,
+            units.velocity,
+        )
+    };
+    let (Some(latitude), Some(longitude)) = (latitude, longitude) else {
+        return Ok(weather::place_missing());
+    };
+    let fetched = tauri::async_runtime::spawn_blocking(move || {
+        weather::fetch(
+            latitude,
+            longitude,
+            weather::FETCH_TIMEOUT,
+            weather::FORECAST_URL,
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    Ok(match fetched {
+        Ok(value) => value.presented(weather::PresentUnits {
+            temperature: &temperature,
+            pressure: &pressure,
+            length: &length,
+            velocity: &velocity,
+        }),
+        Err(err) => err.body(),
+    })
+}
+
+#[tauri::command]
+fn apply_weather(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        store.apply_weather(&body)?;
+        store.bootstrap()
+    })
+}
+
+#[tauri::command]
+fn point_blank(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::point_blank(store, &body))
+}
+
+#[tauri::command]
+fn apply_zero(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::apply_zero(store, &body))
+}
+
+#[tauri::command]
+fn truing(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::truing(store, &body))
+}
+
+#[tauri::command]
+fn chrono_session(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::chrono_session(store, &body))
+}
+
+#[tauri::command]
+fn recoil_calc(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::recoil_calc(store, &body))
+}
+
+#[tauri::command]
+fn impact(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::impact(store, &body))
+}
+
+#[tauri::command]
+fn reticle_scene(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| session::reticle_scene(store, &body))
+}
+
+#[tauri::command]
+fn reticle_save(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_reticle(&body))
+}
+
+#[tauri::command]
+fn target_save(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| store.save_target_record(&body))
+}
+
+/// Write a target sheet as a PDF. The scale bar is true paper size. The figure is 1:1 or 1:N.
+#[tauri::command]
+fn target_pdf(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    with_store(state, |store| {
+        let printed = session::target_pdf_bytes(store, &body)?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("holdover-target-{stamp}.pdf"));
+        fs::write(&path, &printed.pdf).map_err(|err| err.to_string())?;
+        let opened = open_pdf(&path);
+        Ok(json!({
+            "path": path,
+            "opened": opened,
+            "pdf_base64": base64_encode(&printed.pdf),
+            "scale_denominator": printed.scale_denominator,
+            "scale_bar_mm": printed.scale_bar_mm,
+        }))
+    })
+}
+
+#[tauri::command]
+fn export_bundle(
+    state: tauri::State<'_, AppState>,
+    include_location: Option<bool>,
+) -> Result<Value, String> {
+    let dir = backup_dir(&state)?;
+    with_store(state, |store| {
+        let bytes = store.export_bundle_bytes(include_location.unwrap_or(false))?;
+        let path = dir.join(format!(
+            "holdover-{}.holdover",
+            store::now_iso().replace(':', "")
+        ));
+        fs::write(&path, &bytes).map_err(|err| err.to_string())?;
+        store.anchor_bundle_bases()?;
+        Ok(json!({ "path": path }))
+    })
+}
+
+#[tauri::command]
+fn preview_bundle(
+    state: tauri::State<'_, AppState>,
+    bytes_base64: String,
+) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = bundle::decode_bundle_bytes(&bytes_base64)?;
+        store.import_bundle_bytes(&bytes, &BTreeMap::new(), false, None)
+    })
+}
+
+#[tauri::command]
+fn import_bundle(
+    state: tauri::State<'_, AppState>,
+    bytes_base64: String,
+    resolutions: Option<Value>,
+) -> Result<Value, String> {
+    with_store(state, |store| {
+        let bytes = bundle::decode_bundle_bytes(&bytes_base64)?;
+        let chosen = bundle::resolutions_from_value(&resolutions.unwrap_or_else(|| json!({})))?;
+        store.import_bundle_bytes(&bytes, &chosen, true, None)
+    })
+}
+
+#[tauri::command]
+fn import_library(
+    state: tauri::State<'_, AppState>,
+    document: Value,
+    commit: bool,
+    policy: Option<String>,
+) -> Result<Value, String> {
+    with_store(state, |store| {
+        let policy = policy.unwrap_or_else(|| "replace".into());
+        if let Some(csv) = document.get("csv").and_then(|value| value.as_str()) {
+            store.import_text(csv, commit, &policy)
+        } else if policy == "replace" {
+            store.import_library(&document, commit)
+        } else {
+            store.import_prepared(&document, commit, &policy, None)
+        }
+    })
+}
+
+fn backup_dir(state: &AppState) -> Result<PathBuf, String> {
+    let dir = state
+        .db_path
+        .parent()
+        .unwrap_or(Path::new("/tmp"))
+        .join("backups");
+    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    Ok(dir)
+}
+
+fn theme_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("HOLDOVER_THEME_DIR") {
+        return PathBuf::from(dir);
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join(".local/state/omarchy/current")
+}
+
+fn status_path() -> PathBuf {
+    if let Ok(path) = std::env::var("HOLDOVER_PALETTE_STATUS") {
+        return PathBuf::from(path);
+    }
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(runtime).join("holdover/palette.json")
+}
+
+fn theme_loop(handle: tauri::AppHandle) {
+    #[cfg_attr(target_os = "android", allow(unused_mut, unused_variables))]
+    let mut follower = ThemeFollower::new();
+    #[cfg_attr(target_os = "android", allow(unused_variables))]
+    let paths = ThemePaths::new(theme_dir());
+    loop {
+        let appearance = if let Some(state) = handle.try_state::<AppState>() {
+            match state.store.lock() {
+                Ok(store) => store.appearance().unwrap_or_else(|_| "follow".into()),
+                Err(_) => "follow".into(),
+            }
+        } else {
+            "follow".into()
+        };
+        let palette = if appearance == "light" || appearance == "dark" {
+            bundled_palette(&appearance)
+        } else if let Some(mode) = phone::system_mode() {
+            bundled_palette(mode)
+        } else {
+            follower.reload(&paths)
+        };
+        let body = palette_body(&palette);
+        let _ = write_status(&body);
+        if handle.emit("theme", &body).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+fn text_scale() -> f64 {
+    #[cfg(target_os = "android")]
+    {
+        1.0
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        text_scale_factor()
+    }
+}
+
+fn palette_body(palette: &Palette) -> Value {
+    let tokens = &palette.tokens;
+    json!({
+        "mode": tokens.mode,
+        "background": tokens.background,
+        "surface": tokens.surface,
+        "text": tokens.text,
+        "text_secondary": tokens.text_secondary,
+        "border": tokens.border,
+        "accent": tokens.accent,
+        "focus": tokens.focus,
+        "warning": tokens.warning,
+        "error": tokens.error,
+        "chart": tokens.chart,
+        "raised": tokens.raised,
+        "rail": tokens.rail,
+        "ok": tokens.ok,
+        "accent_text": tokens.accent_text,
+        "control_border": tokens.control_border,
+        "source": format!("{:?}", palette.source),
+        "text_scale": text_scale(),
+    })
+}
+
+fn write_status(body: &Value) -> std::io::Result<()> {
+    let path = status_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(body).unwrap_or_default())
+}

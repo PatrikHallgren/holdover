@@ -44,6 +44,9 @@ fn main() {
             "save_group",
             "detect_holes",
             "group_photo",
+            "phone_sensors",
+            "phone_prepare",
+            "share_file",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }
