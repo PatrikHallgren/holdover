@@ -17,6 +17,13 @@ let lastSolve = null;
 let stale = false;
 let solveError = "";
 let fieldMode = false;
+let phoneAim = {};
+let captureNote = "";
+let captureError = false;
+let captureChrono = null;
+let captureShots = "";
+let captureTemperature = "15";
+let captureSavePlace = false;
 let solveTab = "air";
 let paletteOpen = false;
 let unitsOpen = false;
@@ -202,6 +209,7 @@ function applyTheme() {
   document.body.classList.toggle("large-text", !!(boot && boot.settings.large_text));
   document.body.classList.toggle("reduced", !!(boot && boot.settings.reduced_motion));
   document.body.classList.toggle("field", fieldMode);
+  document.body.classList.toggle("platform-android", !!(boot && boot.platform === "android"));
 }
 
 async function refresh() {
@@ -232,12 +240,12 @@ function render() {
 }
 
 function navKey(id) {
-  const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings", about: "nav-about" };
+  const keys = { solve: "nav-solve", capture: "nav-capture", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings", about: "nav-about" };
   return keys[id] || "nav-solve";
 }
 
 function topBar() {
-  const pages = ["solve", "card", "charts", "reticle", "targets", "groups", "pbr", "truing", "equipment", "compare", "documents", "sync", "settings"];
+  const pages = ["solve", "capture", "card", "charts", "reticle", "targets", "groups", "pbr", "truing", "equipment", "compare", "documents", "sync", "settings"];
   return `<a class="ho-skip" href="#inputs">${esc(t("skip"))}</a>
     <header class="ho-top">
       <span class="brand">${esc(t("app-name"))}</span>
@@ -365,6 +373,7 @@ function settingsUnitFields() {
 }
 
 function pageHtml() {
+  if (page === "capture") return captureHtml();
   if (page === "card") return cardHtml();
   if (page === "charts") return chartHtml();
   if (page === "reticle") return reticleHtml();
@@ -680,9 +689,9 @@ function solveShell() {
     </div>
     <div id="extra" class="hidden">
       <div class="ho-row">
-        ${qtyField("latitude", t("latitude"), "0 deg", "deg", "angle")}
-        ${qtyField("azimuth", t("azimuth"), "0 deg", "deg", "angle")}
-        ${qtyField("cant", t("cant-angle"), "0 deg", "deg", "angle")}
+        ${qtyField("latitude", t("latitude"), phoneAim.latitude || "0 deg", "deg", "angle")}
+        ${qtyField("azimuth", t("azimuth"), phoneAim.azimuth || "0 deg", "deg", "angle")}
+        ${qtyField("cant", t("cant-angle"), phoneAim.cant || "0 deg", "deg", "angle")}
       </div>
     </div>
     <p class="ho-hint">${esc(t("solve-tab-effects-intro"))}</p>
@@ -752,7 +761,7 @@ function solveShell() {
 }
 
 function navButton(id) {
-  const keys = { solve: "nav-solve", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings" };
+  const keys = { solve: "nav-solve", capture: "nav-capture", card: "nav-card", charts: "nav-charts", reticle: "nav-reticle", targets: "nav-targets", groups: "nav-groups", pbr: "nav-pbr", truing: "nav-truing", equipment: "nav-equipment", compare: "nav-compare", documents: "nav-documents", sync: "nav-sync", settings: "nav-settings" };
   const current = page === id ? ` aria-current="page"` : "";
   return `<button type="button" data-page="${id}"${current}>${esc(t(keys[id] || "nav-solve"))}</button>`;
 }
@@ -1668,10 +1677,11 @@ function settingsHtml() {
         <div class="ho-seg" role="radiogroup" aria-label="${esc(t("settings-appearance"))}">
           ${["follow", "light", "dark"].map((mode) => {
             const on = s.appearance === mode;
-            return `<button type="button" role="radio" data-appearance="${mode}" aria-checked="${on}" tabindex="${on ? "0" : "-1"}">${esc(t("settings-" + mode))}</button>`;
+            const label = mode === "follow" && boot.platform === "android" ? t("settings-follow-phone") : t("settings-" + mode);
+            return `<button type="button" role="radio" data-appearance="${mode}" aria-checked="${on}" tabindex="${on ? "0" : "-1"}">${esc(label)}</button>`;
           }).join("")}
         </div>
-        <p class="ho-hint">${esc(t("follow-note"))}</p>
+        <p class="ho-hint">${esc(boot.platform === "android" ? t("follow-note-phone") : t("follow-note"))}</p>
         <label class="ho-check"><input type="checkbox" id="large-text" ${s.large_text ? "checked" : ""} /> ${esc(t("settings-large"))}</label>
         <label class="ho-check"><input type="checkbox" id="reduced-motion" ${s.reduced_motion ? "checked" : ""} /> ${esc(t("settings-motion"))}</label>
         <p class="ho-hint">${esc(t("palette"))}: ${esc(theme.source || "")} · ${esc(t("text-scale"))} ${esc(theme.text_scale || 1)}</p>
@@ -1880,6 +1890,7 @@ function bindPage() {
       if (page === "groups") scheduleGroup(0);
     });
   });
+  if (page === "capture") bindCapture();
   if (page === "solve") bindSolve();
   if (page === "card") bindCard();
   if (page === "charts") bindChart();
@@ -2958,7 +2969,12 @@ async function exportBundle() {
   bundleDetail = "";
   try {
     const result = await call("export_bundle", { includeLocation: bundleInclude });
-    bundleMessage = `${t("sync-wrote")} ${result.path}`;
+    if (boot.platform === "android") {
+      await call("share_file", { path: result.path, mime: "application/octet-stream" });
+      bundleMessage = t("sync-share");
+    } else {
+      bundleMessage = `${t("sync-wrote")} ${result.path}`;
+    }
   } catch (error) {
     setBundleError(error);
   }
@@ -3033,6 +3049,15 @@ function preferencesBody(patch) {
 }
 
 async function setPreset(preset) {
+  rememberCaptureFields();
+  if (page === "capture" && document.getElementById("temperature")) {
+    try {
+      await call("solve", { body: solveBody() });
+    } catch (error) {
+      captureError = true;
+      captureNote = errorText(error);
+    }
+  }
   const body = preferencesBody({ preset });
   body.units = Object.assign({}, boot.settings.units);
   if (preset !== "custom") delete body.angular;
@@ -3105,6 +3130,11 @@ function storedQuantity(text, unit) {
   return { text: text || "", unit: unit || "" };
 }
 
+function phoneQuantity(text, unit) {
+  if (!text) return null;
+  return { text, unit: unit || "deg" };
+}
+
 function airPayload(name, fallbackUnit) {
   const edited = qtyPayload(name);
   if (edited) return edited;
@@ -3124,10 +3154,10 @@ function solveBody() {
     range: qtyPayload("range") || storedQuantity(s.last_range, units().length),
     wind_speed: qtyPayload("wind_speed") || storedQuantity(s.last_wind_speed, units().velocity),
     wind_direction: (document.getElementById("wind_direction") || {}).value || s.last_wind_direction || "12oc",
-    inclination: qtyPayload("inclination") || storedQuantity(s.last_inclination, "deg"),
-    cant: qtyPayload("cant") || { text: "0 deg", unit: "deg" },
-    latitude: qtyPayload("latitude") || { text: "0 deg", unit: "deg" },
-    azimuth: qtyPayload("azimuth") || { text: "0 deg", unit: "deg" },
+    inclination: qtyPayload("inclination") || phoneQuantity(phoneAim.inclination, "deg") || storedQuantity(s.last_inclination, "deg"),
+    cant: qtyPayload("cant") || phoneQuantity(phoneAim.cant, "deg") || { text: "0 deg", unit: "deg" },
+    latitude: qtyPayload("latitude") || phoneQuantity(phoneAim.latitude, "deg") || { text: "0 deg", unit: "deg" },
+    azimuth: qtyPayload("azimuth") || phoneQuantity(phoneAim.azimuth, "deg") || { text: "0 deg", unit: "deg" },
     current_air: {
       temperature: airPayload("temperature", units().temperature),
       pressure: airPayload("pressure", units().pressure),
@@ -3426,6 +3456,7 @@ async function copyHold() {
 function paletteRows() {
   const screens = [
     ["solve", t("nav-solve"), ""],
+    ["capture", t("nav-capture"), ""],
     ["card", t("nav-card"), ""],
     ["charts", t("nav-charts"), ""],
     ["reticle", t("nav-reticle"), ""],
@@ -5928,6 +5959,7 @@ function aboutHtml() {
         <header><h2>${esc(t("nav-about"))}</h2></header>
         <p class="ho-hint">${esc(t("about-intro"))}</p>
         <p class="big">${esc(boot.version || "")} <small>${esc(t("about-version"))}</small></p>
+        ${boot.platform === "android" ? `<p class="ho-hint">${esc(t("about-phone"))} ${esc(boot.android_abi || "")}</p>` : ""}
       </section>
       <section class="ho-card stack">
         <header><h2>${esc(t("about-mit-heading"))}</h2></header>
@@ -6088,6 +6120,197 @@ function groupLinksForLoad(loadId) {
   return linked.map((item) => `<button type="button" data-open-group="${esc(item.id)}">${esc(item.label)}</button>`).join("");
 }
 
+function captureHtml() {
+  const air = (boot.settings && boot.settings.current_air) || {};
+  const phone = boot.platform === "android";
+  const measure = phone
+    ? `<button type="button" class="ho-btn primary" id="capture-measure">${esc(t("capture-measure"))}</button>
+       <p class="ho-hint">${esc(t("capture-pose"))}</p>
+       <label class="ho-check"><input type="checkbox" id="capture-save-place" ${captureSavePlace ? "checked" : ""} /> ${esc(t("capture-save-place"))}</label>`
+    : `<p class="ho-hint">${esc(t("capture-desktop"))}</p>`;
+  const rail = `<h2>${esc(t("nav-capture"))}</h2>
+    <p class="ho-hint">${esc(t("capture-intro"))}</p>
+    ${measure}
+    <p id="capture-note" class="${captureError ? "error" : "meta"}">${esc(captureNote)}</p>
+    <button type="button" class="ho-btn" id="capture-groups">${esc(t("capture-groups"))}</button>`;
+  const chrono = captureChrono
+    ? `<p class="big">${esc(Number(captureChrono.mean_mps).toFixed(1))} m/s <small>${esc(t("chrono-mean"))}${captureChrono.unit === "mps" ? "" : ` · ${esc(captureChrono.mean_display)} ${esc(shownUnit(captureChrono.unit))}`}</small></p>
+       <p class="ho-hint">${esc(t("chrono-sd"))} ${esc(Number(captureChrono.sd_mps).toFixed(1))} m/s · ${esc(t("chrono-es"))} ${esc(Number(captureChrono.es_mps).toFixed(1))} m/s</p>`
+    : `<p class="ho-hint">${esc(t("capture-chrono-empty"))}</p>`;
+  const main = `<div class="stack ho-capture" id="capture-body">
+      <section class="ho-card stack">
+        <header><h2>${esc(t("capture-air"))}</h2></header>
+        <p class="ho-hint">${esc(t("capture-air-intro"))}</p>
+        ${airFields(air, "", true)}
+        <p class="ho-hint">${esc(phoneLabel())}</p>
+        <button type="button" class="ho-btn primary" id="capture-use-air">${esc(t("capture-use-air"))}</button>
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("capture-chrono"))}</h2></header>
+        <label class="field">${esc(t("chrono-shots"))}<textarea id="capture-shots" rows="4">${esc(captureShots)}</textarea></label>
+        ${qtyField("capture-temperature", t("temperature"), captureTemperature, units().temperature, "temperature")}
+        <button type="button" class="ho-btn" id="capture-chrono">${esc(t("capture-chrono-run"))}</button>
+        ${chrono}
+      </section>
+      <section class="ho-card stack">
+        <header><h2>${esc(t("capture-dope"))}</h2></header>
+        <p class="ho-hint">${esc(t("capture-dope-intro"))}</p>
+        <div class="cluster">
+          ${qtyField("capture-range", t("range"), truingForm.range, units().length, "length")}
+          ${qtyField("capture-correction", t("elevation"), truingForm.elevation, "mrad", "angle")}
+        </div>
+        <button type="button" class="ho-btn" id="capture-truing">${esc(t("capture-truing"))}</button>
+      </section>
+    </div>`;
+  return frame({ rail, main, body: "with-list", railLabel: t("nav-capture") });
+}
+
+function rememberCaptureFields() {
+  const shots = document.getElementById("capture-shots");
+  const temperature = document.getElementById("capture-temperature");
+  const range = document.getElementById("capture-range");
+  const correction = document.getElementById("capture-correction");
+  if (shots) captureShots = shots.value;
+  if (temperature) captureTemperature = temperature.value;
+  if (range) truingForm.range = range.value;
+  if (correction) truingForm.elevation = correction.value;
+}
+
+function phoneLabel() {
+  const names = phoneAim.measured || [];
+  if (!names.length) return t("capture-not-measured");
+  return `${t("phone-measured")}: ${names.map((name) => t("phone-" + name)).join(", ")}`;
+}
+
+function bindCapture() {
+  const place = document.getElementById("capture-save-place");
+  if (place) place.addEventListener("change", () => { captureSavePlace = place.checked; });
+  const measure = document.getElementById("capture-measure");
+  if (measure) measure.addEventListener("click", measurePhone);
+  const use = document.getElementById("capture-use-air");
+  if (use) use.addEventListener("click", () => useCaptureAir());
+  const chrono = document.getElementById("capture-chrono");
+  if (chrono) chrono.addEventListener("click", runCaptureChrono);
+  const truing = document.getElementById("capture-truing");
+  if (truing) truing.addEventListener("click", sendCaptureToTruing);
+  const groups = document.getElementById("capture-groups");
+  if (groups) groups.addEventListener("click", () => { page = "groups"; render(); });
+}
+
+async function measurePhone() {
+  rememberCaptureFields();
+  captureError = false;
+  captureNote = t("capture-measuring");
+  const note = document.getElementById("capture-note");
+  if (note) {
+    note.className = "meta";
+    note.textContent = captureNote;
+  }
+  try {
+    const reading = await call("phone_sensors");
+    if (!reading || reading.ok !== true) {
+      captureError = true;
+      captureNote = reading && reading.kind === "permission" ? t("phone-permission") : t("phone-unavailable");
+      render();
+      return;
+    }
+    applyPhoneReading(reading);
+    if (captureSavePlace && reading.latitude_deg != null && reading.longitude_deg != null) {
+      const body = preferencesBody({
+        weather_place: "Phone",
+        weather_latitude: String(reading.latitude_deg),
+        weather_longitude: String(reading.longitude_deg),
+      });
+      boot = await call("set_preferences", { body });
+    }
+    await useCaptureAir(false);
+    captureError = false;
+    captureNote = t("phone-measured");
+    render();
+  } catch (error) {
+    captureError = true;
+    captureNote = errorText(error);
+    render();
+  }
+}
+
+function applyPhoneReading(reading) {
+  const setQty = (id, part) => {
+    const input = document.getElementById(id);
+    if (!input || !part || !part.text) return false;
+    input.value = part.text;
+    if (part.unit) input.dataset.unit = part.unit;
+    input.dataset.dirty = "1";
+    input.dataset.text = part.text;
+    return true;
+  };
+  const measured = [];
+  if (setQty("pressure", reading.pressure)) {
+    const kind = document.getElementById("pressure_kind");
+    if (kind) kind.value = "station";
+    measured.push("pressure");
+  }
+  if (setQty("altitude", reading.altitude)) measured.push("altitude");
+  if (reading.azimuth && reading.azimuth.text) {
+    phoneAim.azimuth = reading.azimuth.text;
+    measured.push("azimuth");
+  }
+  if (reading.inclination && reading.inclination.text) {
+    phoneAim.inclination = reading.inclination.text;
+    measured.push("inclination");
+  }
+  if (reading.cant && reading.cant.text) {
+    phoneAim.cant = reading.cant.text;
+    measured.push("cant");
+  }
+  if (reading.latitude_deg != null) phoneAim.latitude = `${reading.latitude_deg} deg`;
+  phoneAim.measured = measured;
+}
+
+async function useCaptureAir(refresh) {
+  rememberCaptureFields();
+  await call("solve", { body: solveBody() });
+  boot = await call("bootstrap");
+  if (refresh !== false) {
+    captureError = false;
+    captureNote = t("capture-air-used");
+    render();
+  }
+}
+
+async function runCaptureChrono() {
+  rememberCaptureFields();
+  const shots = document.getElementById("capture-shots");
+  const temperature = document.getElementById("capture-temperature");
+  captureError = false;
+  try {
+    const result = await call("chrono_session", { body: {
+      op: "stats",
+      shots: shots ? shots.value : "",
+      temperature: { text: temperature ? temperature.value : "", unit: temperature ? temperature.dataset.unit : units().temperature },
+    } });
+    result.shots = shots ? shots.value : "";
+    captureChrono = result;
+    captureNote = "";
+    render();
+  } catch (error) {
+    captureError = true;
+    captureNote = errorText(error);
+    render();
+  }
+}
+
+function sendCaptureToTruing() {
+  rememberCaptureFields();
+  const range = document.getElementById("capture-range");
+  const correction = document.getElementById("capture-correction");
+  truingKind = "mv";
+  if (range) truingForm.range = range.value;
+  if (correction) truingForm.elevation = correction.value;
+  page = "truing";
+  render();
+}
+
 function groupsHtml() {
   const state = groupState();
   const rail = `<div class="ho-seg wrap" role="tablist" aria-label="${esc(t("group-mode"))}">${groupTabButton("calibrate")}${groupTabButton("holes")}${groupTabButton("context")}</div>
@@ -6141,6 +6364,7 @@ function groupCalibrateHtml() {
     <div class="cluster">
       <label class="field">${esc(t("group-saved"))}<select id="group-saved">${groupSavedOptions()}</select></label>
       <label class="field">${esc(t("group-photo"))}<input id="group-file" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png,.heic,.heif" /></label>
+      ${boot.platform === "android" ? `<button type="button" class="ho-btn" id="group-camera-open">${esc(t("group-camera"))}</button><input id="group-camera" class="ho-file-hidden" type="file" accept="image/*" capture="environment" aria-label="${esc(t("group-camera"))}" />` : ""}
       <label title="${esc(t("group-photo-keep-tip"))}"><input id="group-keep" type="checkbox" ${state.keepLocation ? "checked" : ""} /> ${esc(t("group-photo-keep"))}</label>
     </div>
     <div class="cluster">
@@ -6456,6 +6680,27 @@ function bindGroups() {
   if (file) file.addEventListener("change", () => {
     const chosen = file.files && file.files[0];
     if (chosen) importGroupFile(chosen);
+  });
+  const camera = document.getElementById("group-camera");
+  const cameraOpen = document.getElementById("group-camera-open");
+  if (camera) camera.addEventListener("change", () => {
+    const chosen = camera.files && camera.files[0];
+    if (chosen) importGroupFile(chosen);
+  });
+  if (cameraOpen && camera) cameraOpen.addEventListener("click", async () => {
+    try {
+      const ready = await call("phone_prepare", { kind: "camera" });
+      if (ready && ready.ok) camera.click();
+      else {
+        groupState().notice = t("phone-camera-permission");
+        const node = document.getElementById("group-notice");
+        if (node) node.textContent = groupState().notice;
+      }
+    } catch (error) {
+      groupState().error = errorText(error);
+      const node = document.getElementById("group-error");
+      if (node) node.textContent = groupState().error;
+    }
   });
   const saved = document.getElementById("group-saved");
   if (saved) saved.addEventListener("change", () => {

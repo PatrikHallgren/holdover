@@ -26,7 +26,11 @@ secrets/
 node_modules/
 dist/
 .svelte-kit/
-app/src-tauri/gen/
+app/src-tauri/gen/schemas/
+
+# The public CI test key is the one exception. It cannot update an APK
+# signed with Patrik's release keystore, and the password is in the repo.
+!packaging/android/ci-test.keystore
 *.apk
 *.aab
 *.AppImage

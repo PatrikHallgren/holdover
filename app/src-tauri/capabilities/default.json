@@ -47,6 +47,9 @@
     "allow-analyze-group",
     "allow-save-group",
     "allow-detect-holes",
-    "allow-group-photo"
+    "allow-group-photo",
+    "allow-phone-sensors",
+    "allow-phone-prepare",
+    "allow-share-file"
   ]
 }
