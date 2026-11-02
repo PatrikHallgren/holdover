@@ -61,7 +61,9 @@ The script prints the APK path. It is under `app/src-tauri/gen/android/app/build
 adb install -r app/src-tauri/gen/android/app/build/outputs/apk/arm64/release/app-arm64-release.apk
 ```
 
-`-r` replaces an app signed with the same key. The first install can also be done by copying the APK onto the phone and opening it, after the file manager is allowed to install unknown apps. There is no Play Store build.
+`-r` replaces an app signed with the same key, including a rebuild with the same version code. The first install can also be done by copying the APK onto the phone and opening it, after the file manager is allowed to install unknown apps. There is no Play Store build.
+
+Launch reads the phone's light or dark setting from a background thread. That lookup goes through the app class loader. `FindClass` from that thread cannot see `se.hallgren.holdover.PhoneBridge` and the process dies at once with `ClassNotFoundException`. `packaging/android/check-phone-bridge.sh` checks the APK for that.
 
 A later 1.4.x or 1.5.0 APK, signed with the same key, installs the same way and keeps the library in the app's private storage. The bundle export is the backup.
 

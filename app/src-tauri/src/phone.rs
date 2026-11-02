@@ -166,7 +166,50 @@ mod android {
         let vm = unsafe { JavaVM::from_raw(context.vm().cast()) }.map_err(|err| err.to_string())?;
         let mut env = vm.attach_current_thread().map_err(|err| err.to_string())?;
         let activity = unsafe { JObject::from_raw(context.context().cast()) };
-        f(&mut env, &activity)
+        let result = if activity.as_raw().is_null() {
+            Err("the phone context is not ready".into())
+        } else {
+            f(&mut env, &activity)
+        };
+        // Detaching this thread with a pending exception aborts the process.
+        // FindClass on a Rust thread throws ClassNotFoundException for app
+        // classes; clear anything left before the attach guard drops.
+        let _ = env.exception_clear();
+        result
+    }
+
+    /// App classes are invisible to `FindClass` on a thread attached from
+    /// Rust. The theme loop is one of those threads, and it asks for the night
+    /// mode as soon as the window starts. Load `PhoneBridge` through the
+    /// context's own class loader instead.
+    fn bridge_class<'a>(
+        env: &mut jni::JNIEnv<'a>,
+        context: &JObject<'_>,
+    ) -> Result<jni::objects::JClass<'a>, String> {
+        let loader = env
+            .call_method(context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+            .map_err(|err| err.to_string())?;
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+            return Err("the phone context has no class loader".into());
+        }
+        let loader = loader.l().map_err(|err| err.to_string())?;
+        let name = env
+            .new_string("se.hallgren.holdover.PhoneBridge")
+            .map_err(|err| err.to_string())?;
+        let class = env
+            .call_method(
+                &loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&name)],
+            )
+            .map_err(|err| err.to_string())?;
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_clear();
+            return Err("PhoneBridge is not on the app class loader".into());
+        }
+        Ok(class.l().map_err(|err| err.to_string())?.into())
     }
 
     fn check(env: &mut jni::JNIEnv) -> Result<(), String> {
@@ -187,9 +230,7 @@ mod android {
 
     pub fn call(method: &str, payload: &str) -> Result<Value, String> {
         let text = with_env(|env, activity| {
-            let class = env
-                .find_class("se/hallgren/holdover/PhoneBridge")
-                .map_err(|err| err.to_string())?;
+            let class = bridge_class(env, activity)?;
             let body = env.new_string(payload).map_err(|err| err.to_string())?;
             let value = env
                 .call_static_method(
@@ -208,9 +249,7 @@ mod android {
 
     pub fn open_target(target: &str, mime: &str) -> Result<Value, String> {
         let text = with_env(|env, activity| {
-            let class = env
-                .find_class("se/hallgren/holdover/PhoneBridge")
-                .map_err(|err| err.to_string())?;
+            let class = bridge_class(env, activity)?;
             let jtarget = env.new_string(target).map_err(|err| err.to_string())?;
             let jmime = env.new_string(mime).map_err(|err| err.to_string())?;
             let value = env
@@ -243,9 +282,7 @@ mod android {
 
     pub fn night_mode() -> Result<String, String> {
         with_env(|env, activity| {
-            let class = env
-                .find_class("se/hallgren/holdover/PhoneBridge")
-                .map_err(|err| err.to_string())?;
+            let class = bridge_class(env, activity)?;
             let value = env
                 .call_static_method(
                     class,
@@ -291,6 +328,19 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item == "temperature"));
+    }
+
+    #[test]
+    fn the_bridge_is_loaded_through_the_app_class_loader() {
+        let source = include_str!("phone.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            !code.contains("find_class"),
+            "FindClass on a Rust thread cannot see se.hallgren.holdover.PhoneBridge"
+        );
+        assert!(code.contains("getClassLoader"));
+        assert!(code.contains("loadClass"));
+        assert!(code.contains("se.hallgren.holdover.PhoneBridge"));
     }
 
     #[test]
