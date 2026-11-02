@@ -2,7 +2,7 @@
 
 This is the same Tauri 2 app as the desktop, built for Android. Solve, the range card, profiles, Field, group photographs, and Sync are on the phone. Ballistics and group statistics stay in `holdover-core`. The `.holdover` bundle is the one from Milestone 7. iOS is out of scope.
 
-Version 1.4.0 is the number in the crate, the window title, and the PKGBUILD. `versionCode` is `major * 1000000 + minor * 1000 + patch`, so 1.4.0 is 1004000. No tag and no release are created by this change.
+Version 1.4.0 is the number in the crate, the window title, and the PKGBUILD. The usual `versionCode` is `major * 1000000 + minor * 1000 + patch`, so 1.4.0 would be 1004000. This sideload sets `versionCode` to 1004001 so it replaces that first 1.4.0 install. The next release has to use a code above 1004001. A 1.4.1 build that only uses the formula is the same code and will not replace this one. No tag and no release are created by this change.
 
 The phone this build is for is a OnePlus 13, model CPH2655, Android 16 (API 36), `arm64-v8a`. `compileSdk` and `targetSdk` are 36. `minSdk` is 26. The APK contains only `arm64-v8a`.
 

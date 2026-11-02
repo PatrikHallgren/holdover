@@ -265,8 +265,11 @@ body.fit-solve .ho-cards { flex: 0 0 auto; height: auto; min-height: auto; }
   .ho-ctx > div { flex: none; gap: var(--s1); white-space: nowrap; }
   .ho-context > .ho-btn { margin-left: auto; flex: none; }
 }
-body.platform-android .ho-top { padding-top: max(8px, env(safe-area-inset-top)); }
-body.platform-android .ho-status { padding-bottom: max(4px, env(safe-area-inset-bottom)); }
+/* Keyboard badges are desktop shortcuts. A touchscreen has no use for them. */
+body.platform-android kbd,
+body.platform-android .ho-keys,
+body.platform-android .ho-status .keys,
+body.platform-android .ho-palette footer { display: none; }
 .ho-file-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
 @media (max-width: 759px) {
   .ho-capture .cluster { flex-direction: column; align-items: stretch; }

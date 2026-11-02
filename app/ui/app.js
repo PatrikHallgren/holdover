@@ -129,6 +129,10 @@ function t(key) {
   return (boot && boot.strings && boot.strings[key]) || key;
 }
 
+function touchUi() {
+  return !!(boot && boot.platform === "android");
+}
+
 function tf(key, vars) {
   let text = t(key);
   const data = vars || {};
@@ -807,8 +811,8 @@ function windClockField(value, opts) {
   const hour = clockHour(value);
   const buttons = [12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((item) =>
     `<button type="button" role="radio" data-hour="${item}" aria-checked="${item === hour}" title="${esc(tf("clock-hour", { hour: item }))}">${item}</button>`).join("");
-  const hint = tf("hint-clock", { rest: t("wind-clock-hint") });
-  const key = options.key === false ? "" : `<kbd>D</kbd>`;
+  const hint = touchUi() ? t("wind-clock-hint") : tf("hint-clock", { rest: t("wind-clock-hint") });
+  const key = touchUi() || options.key === false ? "" : `<kbd>D</kbd>`;
   const minusLabel = tf("step-minus", { field: label, step: t("one-hour") });
   const plusLabel = tf("step-plus", { field: label, step: t("one-hour") });
   return `<div class="ho-field" data-stepper="${esc(stepper)}">
@@ -922,7 +926,7 @@ function humidityField(prefix, humidity) {
       <span class="ho-chip">%</span>
       <button type="button" class="ho-step" data-dir="1" tabindex="-1" aria-label="${esc(tf("step-plus", { field: label, step: amount }))}">+</button>
     </div>
-    <p class="ho-hint" data-base="${esc(`${tf("hint-step", { step: amount })} · ${t("humidity-hint")}`)}">${esc(`${tf("hint-step", { step: amount })} · ${t("humidity-hint")}`)}</p>
+    <p class="ho-hint" data-base="${esc(touchUi() ? t("humidity-hint") : `${tf("hint-step", { step: amount })} · ${t("humidity-hint")}`)}">${esc(touchUi() ? t("humidity-hint") : `${tf("hint-step", { step: amount })} · ${t("humidity-hint")}`)}</p>
   </div>`;
 }
 
@@ -940,7 +944,7 @@ function qtyField(id, label, text, unit, dim, si, display, step) {
 
 function hoQty(id, label, unit, dim, step, input) {
   const amount = step ? stepAmount(step, unit) : "";
-  const hint = step ? (step === "wind_speed" ? tf("hint-wind", { step: amount }) : tf("hint-step", { step: amount })) : "";
+  const hint = step ? (step === "wind_speed" ? tf("hint-wind", { step: amount }) : (touchUi() ? "" : tf("hint-step", { step: amount }))) : "";
   const key = { range: "R", wind_speed: "W", inclination: "A" }[id] || "";
   const chip = unit ? `<button type="button" class="chip ho-chip" data-for="${id}" title="${esc(label)}">${esc(shownUnit(unit))}</button>` : "";
   const minus = step ? `<button type="button" class="ho-step" data-dir="-1" tabindex="-1" aria-label="${esc(tf("step-minus", { field: label, step: amount }))}" title="${esc(tf("step-minus", { field: label, step: amount }))}">−</button>` : "";
