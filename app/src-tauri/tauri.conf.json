@@ -25,7 +25,7 @@
     "active": false,
     "android": {
       "minSdkVersion": 26,
-      "versionCode": 1005000
+      "versionCode": 1005001
     }
   }
 }

@@ -233,12 +233,36 @@ pub fn offer_qr_png(offer: &Offer) -> Result<Vec<u8>, LanError> {
 
 pub fn offer_qr(offer: &Offer) -> Result<String, LanError> {
     let code = QrCode::new(offer.url().as_bytes()).map_err(|_| LanError::new("pair-invalid"))?;
+    // qrcode 0.14 prefixes the document with an XML declaration. The window
+    // injects the element itself, so the declaration is removed here.
     let image = code
         .render::<svg::Color>()
-        .min_dimensions(220, 220)
+        .dark_color(svg::Color("#000"))
+        .light_color(svg::Color("#fff"))
+        .min_dimensions(480, 480)
         .quiet_zone(true)
         .build();
-    Ok(image)
+    svg_element(&image)
+}
+
+fn svg_element(image: &str) -> Result<String, LanError> {
+    let trimmed = image.trim().trim_start_matches('\u{feff}');
+    let svg = match trimmed.strip_prefix("<?xml") {
+        Some(rest) => rest
+            .split_once("?>")
+            .map(|(_, body)| body.trim_start())
+            .unwrap_or(trimmed),
+        None => trimmed,
+    };
+    if !svg.starts_with("<svg")
+        || !svg.ends_with("</svg>")
+        || svg.contains("<script")
+        || !svg.contains("fill=\"#000\"")
+        || !svg.contains("fill=\"#fff\"")
+    {
+        return Err(LanError::new("pair-invalid"));
+    }
+    Ok(svg.to_string())
 }
 
 pub fn decode_qr_image(bytes: &[u8]) -> Result<String, LanError> {
@@ -299,4 +323,189 @@ fn url_decode(text: &str) -> String {
         index += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use image::codecs::png::PngEncoder;
+    use image::{ExtendedColorType, GrayImage, ImageEncoder, Luma};
+    use qrcode::render::svg;
+    use qrcode::QrCode;
+    use sha2::{Digest, Sha256};
+
+    use super::{decode_qr_image, new_identity, offer_qr, offer_qr_png};
+    use crate::session::PairWait;
+
+    fn digest(text: &str) -> [u8; 32] {
+        Sha256::digest(text.as_bytes()).into()
+    }
+
+    fn svg_attr(svg: &str, name: &str) -> u32 {
+        let key = format!("{name}=\"");
+        let start = svg.find(&key).expect("attribute") + key.len();
+        let end = start + svg[start..].find('"').expect("attribute end");
+        svg[start..end].parse().expect("attribute number")
+    }
+
+    fn path_data(svg: &str) -> &str {
+        let key = "d=\"";
+        let start = svg.find(key).expect("path") + key.len();
+        let end = start + svg[start..].find('"').expect("path end");
+        &svg[start..end]
+    }
+
+    fn take_u32(bytes: &[u8], index: &mut usize) -> Option<u32> {
+        let start = *index;
+        while *index < bytes.len() && bytes[*index].is_ascii_digit() {
+            *index += 1;
+        }
+        if *index == start {
+            return None;
+        }
+        std::str::from_utf8(&bytes[start..*index])
+            .ok()?
+            .parse()
+            .ok()
+    }
+
+    fn expect_byte(bytes: &[u8], index: &mut usize, byte: u8) -> bool {
+        if *index < bytes.len() && bytes[*index] == byte {
+            *index += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Paint the SVG the window injects. A failure here means the picture on
+    /// screen is not the code a phone would scan.
+    fn paint_svg(svg: &str) -> GrayImage {
+        let width = svg_attr(svg, "width");
+        let height = svg_attr(svg, "height");
+        let mut image = GrayImage::from_pixel(width, height, Luma([255]));
+        let bytes = path_data(svg).as_bytes();
+        let mut index = 0;
+        let mut painted = false;
+        while index < bytes.len() {
+            if bytes[index] != b'M' {
+                index += 1;
+                continue;
+            }
+            index += 1;
+            let left = take_u32(bytes, &mut index).expect("left");
+            assert!(expect_byte(bytes, &mut index, b' '));
+            let top = take_u32(bytes, &mut index).expect("top");
+            assert!(expect_byte(bytes, &mut index, b'h'));
+            let rect_w = take_u32(bytes, &mut index).expect("width");
+            assert!(expect_byte(bytes, &mut index, b'v'));
+            let rect_h = take_u32(bytes, &mut index).expect("height");
+            assert!(expect_byte(bytes, &mut index, b'H'));
+            let left_again = take_u32(bytes, &mut index).expect("left close");
+            assert!(expect_byte(bytes, &mut index, b'V'));
+            let top_again = take_u32(bytes, &mut index).expect("top close");
+            assert_eq!(left, left_again);
+            assert_eq!(top, top_again);
+            assert!(left + rect_w <= width && top + rect_h <= height);
+            for y in top..top + rect_h {
+                for x in left..left + rect_w {
+                    image.put_pixel(x, y, Luma([0]));
+                }
+            }
+            painted = true;
+        }
+        assert!(painted);
+        image
+    }
+
+    fn png_of(image: &GrayImage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        PngEncoder::new(&mut bytes)
+            .write_image(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+                ExtendedColorType::L8,
+            )
+            .expect("png");
+        bytes
+    }
+
+    fn jpeg_photo(image: &GrayImage) -> Vec<u8> {
+        let scaled = image::imageops::resize(
+            image,
+            image.width() * 3,
+            image.height() * 3,
+            image::imageops::FilterType::Nearest,
+        );
+        let margin = 48u32;
+        let mut framed = GrayImage::from_pixel(
+            scaled.width() + margin * 2,
+            scaled.height() + margin * 2,
+            Luma([255]),
+        );
+        image::imageops::overlay(&mut framed, &scaled, i64::from(margin), i64::from(margin));
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90)
+            .encode_image(&framed)
+            .expect("jpeg");
+        bytes
+    }
+
+    #[test]
+    fn qrcode_svg_starts_with_an_xml_declaration() {
+        let code = QrCode::new(b"holdover-fixture").unwrap();
+        let raw = code.render::<svg::Color>().quiet_zone(true).build();
+        assert!(
+            raw.starts_with("<?xml"),
+            "the picture library prefixes the document"
+        );
+        assert!(
+            !raw.trim().starts_with("<svg"),
+            "the declaration sits in front of the element"
+        );
+    }
+
+    #[test]
+    fn pairing_picture_is_black_on_white_and_a_photo_decodes() {
+        let identity = new_identity("desk", "Bench").unwrap();
+        let (_wait, offer) =
+            PairWait::start(identity, vec!["127.0.0.1".into()], 1_700_000_000).unwrap();
+        let svg = offer_qr(&offer).unwrap();
+        assert!(
+            svg.starts_with("<svg"),
+            "the window receives an svg element"
+        );
+        assert!(
+            !svg.contains("<?xml"),
+            "the declaration is not part of the element"
+        );
+        assert!(svg.contains("fill=\"#000\""));
+        assert!(svg.contains("fill=\"#fff\""));
+        let painted = paint_svg(&svg);
+        let width = painted.width();
+        let height = painted.height();
+        assert!(width >= 480 && height >= 480);
+        assert_eq!(painted.get_pixel(0, 0).0[0], 255);
+        assert_eq!(painted.get_pixel(width - 1, height - 1).0[0], 255);
+        assert!(painted.pixels().any(|pixel| pixel.0[0] == 0));
+        let expected = digest(&offer.url());
+        let from_svg = decode_qr_image(&png_of(&painted)).expect("svg picture scans");
+        assert_eq!(
+            digest(&from_svg),
+            expected,
+            "scanned picture does not match the pairing payload"
+        );
+        let from_png = decode_qr_image(&offer_qr_png(&offer).unwrap()).expect("png scans");
+        assert_eq!(
+            digest(&from_png),
+            expected,
+            "png picture does not match the pairing payload"
+        );
+        let from_jpeg = decode_qr_image(&jpeg_photo(&painted)).expect("jpeg photo scans");
+        assert_eq!(
+            digest(&from_jpeg),
+            expected,
+            "photo does not match the pairing payload"
+        );
+    }
 }

@@ -3041,12 +3041,75 @@ async function applyBundle() {
   }
 }
 
-function lanMessage() {
-  const code = lan && lan.code;
-  if (!code) return (lan && lan.mode === "done") ? t("lan-applied") : "";
+// qrcode 0.14 starts the picture with <?xml ...?>. A check for "<svg" at the
+// first character drops the picture and leaves only the text.
+function pairingSvg(raw) {
+  let text = String(raw || "").replace(/^\uFEFF/, "").trim();
+  text = text.replace(/^<\?xml\b[^?]*\?>\s*/i, "");
+  text = text.replace(/^<!doctype\b[^>]*>\s*/i, "");
+  if (!/^<svg\b[^>]*>[\s\S]*<\/svg>$/i.test(text)) return "";
+  if ((text.match(/<svg\b/gi) || []).length !== 1) return "";
+  if (/<script\b|<\/script|foreignObject|<\?|<!|javascript:|on[a-z]+\s*=/i.test(text)) return "";
+  const tags = text.match(/<\/?[a-zA-Z0-9:-]+/g) || [];
+  const names = tags.map((tag) => tag.replace(/^<\/?/, "").toLowerCase());
+  if (names.some((name) => name !== "svg" && name !== "rect" && name !== "path")) return "";
+  return text;
+}
+
+function lanNow() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function lanClock(unix) {
+  const date = new Date(Number(unix) * 1000);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function lanExpiryLine(expires, nowSec) {
+  const left = Number(expires) - Number(nowSec);
+  if (!(Number(expires) > 0) || left <= 0) return t("lan-pair-expired");
+  const minutes = Math.max(1, Math.ceil(left / 60));
+  return tf("lan-expires", { time: lanClock(expires), minutes });
+}
+
+function lanMessageFor(view) {
+  const code = view && view.code;
+  if (!code) return (view && view.mode === "done") ? t("lan-applied") : "";
   const key = "lan-" + String(code).replace(/_/g, "-");
   const text = t(key);
   return text === key ? String(code) : text;
+}
+
+function lanMessage() {
+  return lanMessageFor(lan);
+}
+
+function lanPairCard(view, nowSec) {
+  const current = view || {};
+  const url = String(current.offer_url || "");
+  const svg = pairingSvg(current.offer_svg);
+  const expires = Number(current.expires) || 0;
+  const now = Number(nowSec) || 0;
+  const failure = current.mode === "done" ? "" : lanMessageFor(current);
+  const expired = current.code === "pair-expired" || (url && expires > 0 && now >= expires);
+  if (expired) {
+    return `<section class="ho-pair" aria-labelledby="lan-qr-title"><h2 id="lan-qr-title">${esc(t("lan-qr"))}</h2><p class="error" role="alert">${esc(failure || t("lan-pair-expired"))}</p></section>`;
+  }
+  if (!url && !svg) {
+    return failure ? `<p class="error" role="alert">${esc(failure)}</p>` : "";
+  }
+  const picture = svg
+    ? `<div class="ho-qr" role="img" aria-label="${esc(t("lan-qr"))}">${svg}</div>`
+    : `<p class="error" role="alert">${esc(t("lan-qr-failed"))}</p>`;
+  const alert = failure ? `<p class="error" role="alert">${esc(failure)}</p>` : "";
+  const expiry = expires
+    ? `<p class="ho-hint" id="lan-expiry">${esc(lanExpiryLine(expires, now))}</p>`
+    : `<p class="ho-hint" id="lan-expiry">${esc(t("lan-pair-tip"))}</p>`;
+  const fallback = url
+    ? `<div class="ho-field"><div class="head"><label for="lan-offer-text">${esc(t("lan-text-code"))}</label></div><p class="ho-hint">${esc(t("lan-text-fallback"))}</p><textarea id="lan-offer-text" class="ho-pair-fallback" readonly rows="3" spellcheck="false" autocomplete="off">${esc(url)}</textarea></div><button type="button" class="ho-btn" id="lan-copy-code">${esc(t("lan-copy"))}</button>`
+    : "";
+  return `<section class="ho-pair" aria-labelledby="lan-qr-title"><h2 id="lan-qr-title">${esc(t("lan-qr"))}</h2>${expiry}${alert}${picture}${fallback}</section>`;
 }
 
 function lanRail() {
@@ -3066,8 +3129,7 @@ function lanRail() {
     </div>
     <button type="button" class="ho-btn" id="lan-save-name" title="${esc(t("lan-name-tip"))}">${esc(t("lan-save-name"))}</button>
     <button type="button" class="ho-btn primary" id="lan-pair" title="${esc(t("lan-pair-tip"))}">${esc(t("lan-pair"))}</button>
-    ${view.offer_svg && String(view.offer_svg).trim().startsWith("<svg") ? `<div class="ho-qr" role="img" aria-label="${esc(t("lan-qr"))}">${view.offer_svg}</div>` : ""}
-    ${view.offer_url ? `<p class="ho-hint">${esc(view.offer_url)}</p>` : ""}
+    ${view.offer_url && pairingSvg(view.offer_svg) ? `<p class="ho-hint">${esc(t("lan-code-shown"))}</p>` : ""}
     <div class="ho-field"><div class="head"><label for="lan-code">${esc(t("lan-code"))}</label></div>
       <input id="lan-code" value="${esc(lanCode)}" title="${esc(t("lan-code-tip"))}" />
     </div>
@@ -3095,7 +3157,10 @@ function lanRail() {
 
 function lanMain() {
   const rows = (lan && lan.preview && lan.preview.rows) || [];
-  if (!rows.length) return `<p class="ho-hint">${esc(t("lan-intro"))}</p>`;
+  if (!rows.length) {
+    const card = lanPairCard(lan || {}, lanNow());
+    return card || `<p class="ho-hint">${esc(t("lan-intro"))}</p>`;
+  }
   const body = rows.map((row) => {
     const conflicts = row.conflicts || [];
     const choice = lanChoices[row.id] || {};
@@ -3158,6 +3223,19 @@ function bindLan() {
   click("lan-listen", () => lanAct({ action: "listen" }));
   click("lan-discover", () => lanAct({ action: "discover" }));
   click("lan-stop", () => lanAct({ action: "stop" }));
+  click("lan-copy-code", async () => {
+    const node = document.getElementById("lan-offer-text");
+    if (!node) return;
+    const value = node.value;
+    node.focus();
+    node.select();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(value);
+    } catch (_error) {
+      node.focus();
+      node.select();
+    }
+  });
   click("lan-sync", () => {
     const peer = selectedLanPeer();
     lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort), spki: peer, include_location: lanInclude });

@@ -6,7 +6,7 @@
 
 pkgname=holdover
 pkgver=1.5.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Personal ballistic calculator and equipment notebook"
 arch=('x86_64')
 url="https://github.com/PatrikHallgren/holdover"

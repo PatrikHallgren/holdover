@@ -463,6 +463,8 @@ fn pair_loop(
             view.mode = "idle".into();
             if view.code.is_empty() && unix_now() >= wait.offer().expires {
                 view.code = "pair-expired".into();
+                view.offer_svg.clear();
+                view.offer_url.clear();
             }
         }
     }

@@ -862,7 +862,7 @@ The phases are ordered by dependency. Effort is estimated after M0.
 | **Phase 2: M10, LAN sync** | QR pairing, mDNS, mutual TLS, field-level merge | Pair, sync and conflict flows tested; no internet needed |
 | **Later / not planned** | Swedish UI (low priority); iOS companion (out of scope for now); altitude-varying atmosphere; Monte-Carlo hit probability. *Not planned:* imports from other apps/devices (Strelok, chronographs, Kestrel), bundled maker data or reticles | — |
 
-M10 is implemented in 1.5.0 (`versionCode` 1005000). Automated tests run two libraries on one machine over TLS. A physical desktop↔phone session, including a real bundle round-trip on the phone, has not been run. The manual steps are in `docs/M10-LAN.md`. The `.holdover` bundle remains the fallback.
+M10 is implemented in 1.5.0, desktop package revision 2 (`versionCode` 1005001). The pairing picture is in the main pane. Automated tests run two libraries on one machine over TLS, and a UI test renders the picture at desktop and narrow widths. A physical desktop↔phone session, including a real bundle round-trip on the phone, has not been run. The manual steps are in `docs/M10-LAN.md`. The `.holdover` bundle remains the fallback.
 
 ---
 

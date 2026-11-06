@@ -1,6 +1,6 @@
 # Milestone 10 checklist
 
-Version 1.5.0. `versionCode` is 1005000. No tag and no release are created here.
+Version 1.5.0, desktop package revision 2. `versionCode` is 1005001, above the 1.5.0-1 install's 1005000. The usual formula for 1.5.1 is also 1005001, so a later build has to use a code above 1005001. No tag and no release are created here.
 
 This checklist is for a person with the desktop and the phone on the same network. The automated tests do not do these steps. They run two libraries on one machine. A physical desktop-to-phone sync has not been done, and a real `.holdover` round-trip on the phone has not been done either.
 
@@ -8,7 +8,7 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 
 ## Pair
 
-1. On the desktop, Sync, Phone, Show pairing code. A code and a text line appear. The text starts with `holdover://pair?v=1`.
+1. On the desktop, Sync, Phone, Show pairing code. The main area shows a black-on-white picture of the code, the time it expires, and the text of the code under the picture. The text starts with `holdover://pair?v=1`. Scan the picture. Paste the text if the camera cannot read the picture.
 2. On the phone, Sync, Phone, paste that line into Pairing code and press Pair with this code. Or choose a photograph of the code.
 3. On the desktop, the phone's name and key fingerprint appear. Accept this device.
 4. Both sides list the other under Paired devices. Cancel clears the code. A second use of the same code is refused. An old code, after 10 minutes, is refused.
@@ -35,7 +35,8 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 
 ## What this pass did not do
 
-- Install 1.5.0 on the OnePlus 13.
-- Pair the phone with the Omarchy desktop.
+- Install 1.5.0 revision 2 (`versionCode` 1005001) on the OnePlus 13. The 1.5.0-1 desktop build showed the pairing text in the sidebar and no picture.
+- Pair the phone with the Omarchy desktop, or finish a sync. That has not passed.
+- Photograph the desktop picture with the OnePlus camera. An automated test decodes a JPEG made from the same picture.
 - Confirm mDNS on that home network.
 - Confirm a `.holdover` file copied onto the phone and back.
