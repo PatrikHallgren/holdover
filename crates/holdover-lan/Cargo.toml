@@ -1,0 +1,29 @@
+[package]
+name = "holdover-lan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Pairing and local-network sync for Holdover"
+publish = false
+
+[dependencies]
+holdover-core = { path = "../holdover-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"
+sha2 = "0.10.9"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.13"
+x509-parser = "0.16"
+qrcode = { version = "0.14", default-features = false, features = ["svg", "image"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rqrr = "0.7"
+mdns-sd = "0.13"
+if-addrs = "0.13"
+
+[dev-dependencies]
+sha2 = "0.10.9"

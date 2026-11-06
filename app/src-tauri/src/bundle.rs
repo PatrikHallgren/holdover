@@ -8,8 +8,8 @@ use std::io::{Cursor, Read, Write};
 
 use holdover_core::{
     bundle_doc_value, choices_for, effect, merge_plan, merge_private, parse_bundle_doc,
-    referenced_blobs, strip_private, BundleDoc, CopyStamp, Resolution, SeenRevision, SyncBase,
-    SyncRecord, BUNDLE_FORMAT, BUNDLE_SCHEMA_VERSION,
+    referenced_blobs, strip_private, BundleDoc, CopyStamp, FieldStamp, Resolution, SeenRevision,
+    SyncBase, SyncRecord, BUNDLE_FORMAT, BUNDLE_SCHEMA_VERSION,
 };
 use rusqlite::params;
 use serde_json::{json, Value};
@@ -396,7 +396,7 @@ fn preview_json(
     })
 }
 
-fn load_records(conn: &rusqlite::Connection) -> Result<Vec<SyncRecord>, String> {
+pub(crate) fn load_records(conn: &rusqlite::Connection) -> Result<Vec<SyncRecord>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, kind, created_at, updated_at, revision, deleted_at, device_id, body
@@ -436,7 +436,9 @@ fn load_records(conn: &rusqlite::Connection) -> Result<Vec<SyncRecord>, String> 
     Ok(out)
 }
 
-fn load_bases(conn: &rusqlite::Connection) -> Result<BTreeMap<String, SyncBase>, String> {
+pub(crate) fn load_bases(
+    conn: &rusqlite::Connection,
+) -> Result<BTreeMap<String, SyncBase>, String> {
     let mut stmt = conn
         .prepare("SELECT id, device_id, revision, updated_at, deleted, suppress FROM sync_base")
         .map_err(|err| err.to_string())?;
@@ -509,10 +511,45 @@ fn base_from_parts(
         deleted,
         devices,
         seen,
+        fields: field_stamps(parsed.get("fields")),
     }
 }
 
-fn write_base(tx: &rusqlite::Transaction<'_>, id: &str, base: &SyncBase) -> Result<(), String> {
+fn field_stamps(value: Option<&Value>) -> BTreeMap<String, FieldStamp> {
+    let Some(map) = value.and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    map.iter()
+        .filter_map(|(key, stamp)| {
+            Some((
+                key.clone(),
+                FieldStamp {
+                    updated_at: stamp.get("updated_at")?.as_str()?.to_string(),
+                    device_id: stamp.get("device_id")?.as_str()?.to_string(),
+                    revision: stamp.get("revision")?.as_i64()?,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn stamp_value(stamp: &FieldStamp) -> Value {
+    json!({
+        "updated_at": stamp.updated_at,
+        "device_id": stamp.device_id,
+        "revision": stamp.revision,
+    })
+}
+
+pub(crate) fn write_base(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    base: &SyncBase,
+) -> Result<(), String> {
+    let mut field_json = serde_json::Map::new();
+    for (key, stamp) in &base.fields {
+        field_json.insert(key.clone(), stamp_value(stamp));
+    }
     let suppress = json!({
         "devices": base.devices,
         "seen": base.seen.iter().map(|seen| json!({
@@ -521,6 +558,7 @@ fn write_base(tx: &rusqlite::Transaction<'_>, id: &str, base: &SyncBase) -> Resu
             "updated_at": seen.updated_at,
             "deleted": seen.deleted,
         })).collect::<Vec<_>>(),
+        "fields": Value::Object(field_json),
     })
     .to_string();
     tx.execute(
@@ -545,9 +583,17 @@ fn write_base(tx: &rusqlite::Transaction<'_>, id: &str, base: &SyncBase) -> Resu
     Ok(())
 }
 
-fn upsert_record(tx: &rusqlite::Transaction<'_>, record: &SyncRecord) -> Result<(), String> {
+pub(crate) fn upsert_record(
+    tx: &rusqlite::Transaction<'_>,
+    record: &SyncRecord,
+) -> Result<(), String> {
     tx.execute("DELETE FROM records WHERE id = ?1", params![record.id])
         .map_err(|err| err.to_string())?;
+    tx.execute(
+        "DELETE FROM field_rev WHERE record_id = ?1",
+        params![record.id],
+    )
+    .map_err(|err| err.to_string())?;
     let deleted = record
         .deleted_at
         .as_ref()

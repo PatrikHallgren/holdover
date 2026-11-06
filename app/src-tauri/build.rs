@@ -47,6 +47,8 @@ fn main() {
             "phone_sensors",
             "phone_prepare",
             "share_file",
+            "lan_status",
+            "lan_act",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

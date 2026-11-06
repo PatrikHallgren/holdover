@@ -138,6 +138,17 @@ pub fn open_target(target: &str, mime: &str) -> Result<Value, String> {
 }
 
 /// `Some("dark")` or `Some("light")` when the phone reports a night mode.
+pub fn multicast(on: bool) {
+    #[cfg(target_os = "android")]
+    {
+        let _ = android::call("setMulticast", if on { "1" } else { "0" });
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = on;
+    }
+}
+
 pub fn system_mode() -> Option<&'static str> {
     #[cfg(target_os = "android")]
     {
