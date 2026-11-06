@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use holdover_core::{
     FieldStamp, LanChoice, LanCommit, MergeStatus, Side, Stamped, SyncBase, SyncRecord,
@@ -727,6 +727,38 @@ fn copy_log(from: &mut TcpStream, to: &mut TcpStream, log: &Mutex<Vec<u8>>) {
             }
         }
     }
+}
+
+#[test]
+fn a_dead_address_does_not_block_the_address_that_is_listening() {
+    let desk = new_identity("desk", "Bench").unwrap();
+    let phone = new_identity("phone", "Pocket").unwrap();
+    let now = unix_now();
+    let (mut wait, mut offer) =
+        PairWait::start(desk.clone(), vec!["127.0.0.1".into()], now).unwrap();
+    offer.hosts = vec!["192.0.2.1".into(), "127.0.0.1".into()];
+    let offer_for_client = offer.clone();
+    let phone_for_client = phone.clone();
+    let started = Instant::now();
+    let client = thread::spawn(move || {
+        join_pair(
+            &phone_for_client,
+            &offer_for_client,
+            now,
+            Duration::from_secs(3),
+        )
+    });
+    let pending = wait.next(now, Duration::from_secs(3)).expect("hello");
+    let _server = pending
+        .accept_with(wait.device_name(), wait.device_id())
+        .unwrap();
+    let peer = client.join().unwrap().expect("paired");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the unreachable address consumed the wait"
+    );
+    assert_eq!(peer.host, "127.0.0.1");
+    assert_eq!(phone.name, "Pocket");
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

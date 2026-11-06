@@ -5,8 +5,8 @@
 #   mise exec rust@1.98.1 -- bash -lc 'cd packaging && makepkg -si'
 
 pkgname=holdover
-pkgver=1.5.0
-pkgrel=2
+pkgver=1.5.2
+pkgrel=1
 pkgdesc="Personal ballistic calculator and equipment notebook"
 arch=('x86_64')
 url="https://github.com/PatrikHallgren/holdover"

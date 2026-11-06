@@ -23,7 +23,7 @@ jobs:
             sudo apt-get install -y /tmp/chrome.deb
           fi
       - name: Hold figure parser and pairing picture
-        run: node --test app/ui/figure-parts.test.js app/ui/pairing-qr.test.js
+        run: node --test app/ui/figure-parts.test.js app/ui/pairing-qr.test.js app/ui/pairing-join.test.js
       - name: Format
         run: cargo fmt --all -- --check
       - name: Test
@@ -85,8 +85,8 @@ jobs:
           "$badging" dump badging "$apk" | tee /tmp/holdover-badging.txt
           grep -q "targetSdkVersion:'36'" /tmp/holdover-badging.txt
           grep -q "native-code: 'arm64-v8a'" /tmp/holdover-badging.txt
-          grep -q "versionName='1.5.0'" /tmp/holdover-badging.txt
-          grep -q "versionCode='1005001'" /tmp/holdover-badging.txt
+          grep -q "versionName='1.5.2'" /tmp/holdover-badging.txt
+          grep -q "versionCode='1005002'" /tmp/holdover-badging.txt
           bash packaging/android/check-phone-bridge.sh "$apk"
       - uses: actions/upload-artifact@v4
         with:

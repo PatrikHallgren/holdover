@@ -2,7 +2,7 @@
 // The installed 1.5.0-1 window dropped the picture because the SVG from
 // qrcode starts with an XML declaration, and the rail only kept the text.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -109,7 +109,7 @@ function page(rail, main, large) {
     const pair = document.querySelector(".ho-pair");
     const rail = document.querySelector(".ho-rail");
     const text = document.getElementById("lan-offer-text");
-    const alert = document.querySelector("[role=alert]");
+    const alert = document.querySelector("main [role=alert]");
     const expiry = document.getElementById("lan-expiry");
     const pad = document.querySelector(".ho-qr");
     let sample = null;
@@ -183,31 +183,51 @@ function render(html, options) {
     "--dump-dom",
     "file://" + file,
   ];
-  const result = spawnSync(chromeBin(), args, { encoding: "utf8", timeout: 40000, maxBuffer: 32 * 1024 * 1024 });
-  if (options.shot && fs.existsSync(shot)) fs.copyFileSync(shot, options.shot);
-  const stdout = result.stdout || "";
-  const stderr = result.stderr || "";
-  if (result.status !== 0) {
-    fs.rmSync(dir, { recursive: true, force: true });
-    assert.fail("chrome exited " + result.status + "\n" + stderr.slice(0, 600) + "\n" + stdout.slice(0, 400));
-  }
-  const match = (stdout + "\n" + stderr).match(/id="probe">([\s\S]*?)<\/script>/);
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true });
-      break;
-    } catch (_error) {
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
-    }
-  }
-  assert.ok(match, "rendered probe missing\n" + stdout.slice(0, 400) + "\n" + stderr.slice(0, 400));
-  const raw = match[1]
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-  return JSON.parse(raw);
+  const child = spawn(chromeBin(), args, { stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  let settled = false;
+  const done = new Promise((resolve, reject) => {
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+      if (options.shot && fs.existsSync(shot)) fs.copyFileSync(shot, options.shot);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+          break;
+        } catch (_error) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+        }
+      }
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error("chrome produced no document")), 20000);
+    child.stdout.on("data", (buf) => {
+      out += buf.toString();
+      if (!out.includes("</html>")) return;
+      const match = out.match(/id="probe">([\s\S]*?)<\/script>/);
+      if (!match) {
+        finish(new Error("rendered probe missing"));
+        return;
+      }
+      const raw = match[1]
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
+      try {
+        finish(null, JSON.parse(raw));
+      } catch (error) {
+        finish(error);
+      }
+    });
+    child.on("error", (error) => finish(error));
+  });
+  return done;
 }
 
 test("an xml-prefixed picture is drawn in the main pane, with text and expiry", () => {
@@ -262,10 +282,10 @@ test("an xml-prefixed picture is drawn in the main pane, with text and expiry", 
   assert.doesNotMatch(main, /<\?xml/);
 });
 
-test("the picture stays large on a desktop, a scaled desktop, and a narrow window", { timeout: 180000 }, () => {
+test("the picture stays large on a desktop, a scaled desktop, and a narrow window", { timeout: 180000 }, async () => {
   const api = load(stateFor(view()));
   const html = page(api.lanRail(), api.lanPairCard(view(), NOW), false);
-  const desktop = render(html, { width: 1280, height: 800, scale: 1, shot: "/tmp/holdover-pair-desktop.png" });
+  const desktop = await render(html, { width: 1280, height: 800, scale: 1, shot: "/tmp/holdover-pair-desktop.png" });
   assert.equal(desktop.railSvg, false);
   assert.equal(desktop.mainHasSvg, true);
   assert.equal(desktop.alert, null);
@@ -283,15 +303,15 @@ test("the picture stays large on a desktop, a scaled desktop, and a narrow windo
   assert.equal(desktop.railText.includes(TEXT), false);
   assert.match(desktop.expiry, /2 minutes/);
 
-  const scaled = render(html, { width: 1280, height: 800, scale: 1.5 });
+  const scaled = await render(html, { width: 1280, height: 800, scale: 1.5 });
   assert.ok(Math.abs(scaled.dpr - 1.5) < 0.05, String(scaled.dpr));
   assert.ok(Math.abs(scaled.sample.width - desktop.sample.width) < 8, JSON.stringify({ scaled: scaled.sample.width, desktop: desktop.sample.width }));
   assert.ok(Math.abs(scaled.sample.width - scaled.sample.height) < 3);
 
-  const large = render(page(api.lanRail(), api.lanPairCard(view(), NOW), true), { width: 1280, height: 800, scale: 1 });
+  const large = await render(page(api.lanRail(), api.lanPairCard(view(), NOW), true), { width: 1280, height: 800, scale: 1 });
   assert.ok(Math.abs(large.sample.width - desktop.sample.width) < 8, JSON.stringify({ large: large.sample.width, desktop: desktop.sample.width }));
 
-  const narrow = render(html, { width: 390, height: 844, scale: 2, shot: "/tmp/holdover-pair-narrow.png" });
+  const narrow = await render(html, { width: 390, height: 844, scale: 2, shot: "/tmp/holdover-pair-narrow.png" });
   assert.equal(narrow.railSvg, false);
   assert.equal(narrow.mainHasSvg, true);
   assert.equal(narrow.textValue, TEXT);
@@ -303,7 +323,7 @@ test("the picture stays large on a desktop, a scaled desktop, and a narrow windo
   assert.equal(narrow.pad, "rgb(255, 255, 255)");
 
   const expiredApi = load(stateFor(view({ code: "pair-expired", expires: NOW - 5 })));
-  const expired = render(page(expiredApi.lanRail(), expiredApi.lanPairCard(view({ code: "pair-expired", expires: NOW - 5 }), NOW), false), { width: 1280, height: 800, scale: 1 });
+  const expired = await render(page(expiredApi.lanRail(), expiredApi.lanPairCard(view({ code: "pair-expired", expires: NOW - 5 }), NOW), false), { width: 1280, height: 800, scale: 1 });
   assert.equal(expired.mainHasSvg, false);
   assert.equal(expired.sample, null);
   assert.match(expired.alert.text, /expired/);
@@ -312,7 +332,7 @@ test("the picture stays large on a desktop, a scaled desktop, and a narrow windo
 
   const bad = view({ offer_svg: "not-a-picture" });
   const badApi = load(stateFor(bad));
-  const failed = render(page(badApi.lanRail(), badApi.lanPairCard(bad, NOW), false), { width: 1280, height: 800, scale: 1 });
+  const failed = await render(page(badApi.lanRail(), badApi.lanPairCard(bad, NOW), false), { width: 1280, height: 800, scale: 1 });
   assert.equal(failed.mainHasSvg, false);
   assert.match(failed.alert.text, /could not be drawn/);
   assert.equal(failed.textValue, TEXT);

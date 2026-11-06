@@ -16,8 +16,8 @@ pub use identity::{
     unix_now, Identity, Offer,
 };
 pub use session::{
-    join_pair, open_sync, preview_value, Catalog, ClientSync, Library, PairWait, Peer,
-    SyncListener, PREVIEW_WAIT,
+    join_pair, join_pair_with, open_sync, preview_value, Catalog, ClientSync, Library, PairWait,
+    Peer, SyncListener, PREVIEW_WAIT,
 };
 pub use tls::LanError;
 

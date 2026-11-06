@@ -270,7 +270,7 @@ body.platform-android kbd,
 body.platform-android .ho-keys,
 body.platform-android .ho-status .keys,
 body.platform-android .ho-palette footer { display: none; }
-.ho-file-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+.ho-file-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 @media (max-width: 759px) {
   .ho-capture .cluster { flex-direction: column; align-items: stretch; }
   .ho-capture .ho-card .ho-btn { align-self: flex-start; }

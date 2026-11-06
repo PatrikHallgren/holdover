@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use holdover_core::{field_values, merge_private, FieldStamp, LanChoice, LanCommit, Stamped};
 use holdover_lan::{
-    advertise, browse, decode_qr_image, join_pair, local_hosts, new_identity, offer_qr, open_sync,
-    parse_offer, preview_value, unix_now, Advertisement, Catalog, ClientSync, Identity, Library,
-    PairWait, Peer, SyncListener, PREVIEW_WAIT,
+    advertise, browse, decode_qr_image, join_pair_with, local_hosts, new_identity, offer_qr,
+    open_sync, parse_offer, preview_value, unix_now, Advertisement, Catalog, ClientSync, Identity,
+    Library, PairWait, Peer, SyncListener, PREVIEW_WAIT,
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -161,7 +161,17 @@ impl LanHub {
 
     pub fn pair_join(&mut self, store: Arc<Mutex<Store>>, code: &str) -> Result<(), String> {
         self.stop();
-        let offer = parse_offer(code).map_err(|err| err.code)?;
+        let offer = match parse_offer(code.trim()) {
+            Ok(offer) => offer,
+            Err(err) => {
+                self.note(&err.code, "");
+                return Err(err.code);
+            }
+        };
+        if unix_now() >= offer.expires {
+            self.note("pair-expired", "");
+            return Err("pair-expired".into());
+        }
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
         let identity = {
@@ -170,18 +180,33 @@ impl LanHub {
                 .map_err(|_| "the library is busy".to_string())?;
             guard.lan_identity()?
         };
-        {
-            let mut view = self
-                .shared
-                .lock()
-                .map_err(|_| "the sync state is busy".to_string())?;
+        self.note("", "reaching");
+        if let Ok(mut view) = self.shared.lock() {
             view.mode = "joining".into();
-            view.message = String::new();
-            view.code = String::new();
         }
         let shared = self.shared.clone();
+        let stop_flag = stop.clone();
         thread::spawn(move || {
-            let result = join_pair(&identity, &offer, unix_now(), Duration::from_secs(20));
+            let result = join_pair_with(
+                &identity,
+                &offer,
+                unix_now(),
+                Duration::from_secs(8),
+                |phase| {
+                    if stop_flag.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if let Ok(mut view) = shared.lock() {
+                        if view.mode == "joining" {
+                            view.message = phase.to_string();
+                            view.code.clear();
+                        }
+                    }
+                },
+            );
+            if stop_flag.load(Ordering::SeqCst) {
+                return;
+            }
             let mut view = match shared.lock() {
                 Ok(view) => view,
                 Err(_) => return,
@@ -193,16 +218,28 @@ impl LanHub {
                     }
                     view.mode = "paired".into();
                     view.message = peer.name;
-                    view.code = String::new();
+                    view.code.clear();
                 }
                 Err(err) => {
                     view.mode = "idle".into();
+                    view.message.clear();
                     view.code = err.code;
                 }
             }
         });
-        let _ = stop;
         Ok(())
+    }
+
+    fn note(&self, code: &str, message: &str) {
+        if let Ok(mut view) = self.shared.lock() {
+            view.mode = if message == "reaching" {
+                "joining".into()
+            } else {
+                "idle".into()
+            };
+            view.code = code.to_string();
+            view.message = message.to_string();
+        }
     }
 
     pub fn pair_decide(&mut self, accept: bool) -> Result<(), String> {
@@ -450,7 +487,7 @@ fn pair_loop(
                     }
                 }
             }
-            Err(err) if err.code == "disconnected" => {}
+            Err(err) if err.code == "disconnected" || err.code == "tls" => {}
             Err(err) => {
                 if let Ok(mut view) = shared.lock() {
                     view.code = err.code;

@@ -1,6 +1,6 @@
 # Milestone 10 checklist
 
-Version 1.5.0, desktop package revision 2. `versionCode` is 1005001, above the 1.5.0-1 install's 1005000. The usual formula for 1.5.1 is also 1005001, so a later build has to use a code above 1005001. No tag and no release are created here.
+Version 1.5.2, desktop package revision 1. `versionCode` is 1005002. The 1.5.0-1 sideload was 1005000 and the 1.5.0 revision 2 sideload was 1005001. The usual formula for 1.5.1 is also 1005001, which is already installed, so this build is 1.5.2. No tag and no release are created here.
 
 This checklist is for a person with the desktop and the phone on the same network. The automated tests do not do these steps. They run two libraries on one machine. A physical desktop-to-phone sync has not been done, and a real `.holdover` round-trip on the phone has not been done either.
 
@@ -9,8 +9,8 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 ## Pair
 
 1. On the desktop, Sync, Phone, Show pairing code. The main area shows a black-on-white picture of the code, the time it expires, and the text of the code under the picture. The text starts with `holdover://pair?v=1`. Scan the picture. Paste the text if the camera cannot read the picture.
-2. On the phone, Sync, Phone, paste that line into Pairing code and press Pair with this code. Or choose a photograph of the code.
-3. On the desktop, the phone's name and key fingerprint appear. Accept this device.
+2. On the phone, Sync, Phone, paste that line into Pairing code and press Pair with this code. Or press Choose photograph or Take photograph. The phone says it is reaching the other Holdover, then that the other device has the request. A photograph that cannot be read, an empty choice, or a computer that cannot be reached stays on screen as an error. Nothing is paired by the photograph itself.
+3. On the desktop, the phone's name and key fingerprint appear. Accept this device. Until Accept is pressed, the phone keeps saying the request is waiting.
 4. Both sides list the other under Paired devices. Cancel clears the code. A second use of the same code is refused. An old code, after 10 minutes, is refused.
 
 ## Sync, with the network discovery working
@@ -35,8 +35,8 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 
 ## What this pass did not do
 
-- Install 1.5.0 revision 2 (`versionCode` 1005001) on the OnePlus 13. The 1.5.0-1 desktop build showed the pairing text in the sidebar and no picture.
+- Install 1.5.2 (`versionCode` 1005002) on the OnePlus 13 and on the Omarchy desktop. 1.5.0 revision 2 is installed, and its pairing picture does appear in the main pane. A pairing attempt on that install changed nothing on screen and showed no error.
 - Pair the phone with the Omarchy desktop, or finish a sync. That has not passed.
-- Photograph the desktop picture with the OnePlus camera. An automated test decodes a JPEG made from the same picture.
+- Photograph the desktop picture with the OnePlus camera, or choose one from the gallery, on 1.5.2. An automated test decodes a JPEG made from the same picture and drives the Choose photograph button in desktop Chrome. That is not the phone's WebView.
 - Confirm mDNS on that home network.
 - Confirm a `.holdover` file copied onto the phone and back.

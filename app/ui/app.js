@@ -36,6 +36,7 @@ let syncTab = "export";
 let syncFilter = "all";
 let lan = null;
 let lanStamp = "";
+let lanHold = null;
 let lanCode = "";
 let lanHost = "";
 let lanPort = "";
@@ -2768,7 +2769,7 @@ function syncHtml() {
       ${phoneOn ? lanRail() : ""}
     </div>
     ${facts}
-    <p id="bundle-message" class="${bundleError ? "error" : "meta"}">${esc(phoneOn ? lanMessage() : bundleMessage)}</p>
+    <p id="bundle-message" class="${(phoneOn && lan && lan.mode !== "done" && lanMessageFor(lan)) || bundleError ? "error" : "meta"}">${esc(phoneOn ? lanMessage() : bundleMessage)}</p>
     ${!phoneOn && bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}`;
   const main = phoneOn ? lanMain() : importOn ? syncImportTable() : `<p class="ho-hint">${esc(t("sync-export-intro"))}</p>`;
   return frame({ rail, main, body: "with-list", railLabel: t("nav-sync") });
@@ -3082,7 +3083,40 @@ function lanMessageFor(view) {
 }
 
 function lanMessage() {
-  return lanMessageFor(lan);
+  return lanStatusText(lan);
+}
+
+function lanStatusText(view) {
+  const current = view || {};
+  if (current.mode === "done" && !current.code) return t("lan-applied");
+  const failure = lanMessageFor(current);
+  if (failure) return failure;
+  if (current.mode === "joining") return t(current.message === "awaiting" ? "lan-awaiting" : "lan-reaching");
+  if (current.mode === "paired") return tf("lan-paired", { name: current.message || "" });
+  if (current.message === "reading") return t("lan-reading");
+  if (current.message === "photo-ready") return t("lan-photo-ready");
+  return "";
+}
+
+function lanStatusBlock(view) {
+  const text = lanStatusText(view);
+  if (!text) return "";
+  const failure = view && view.mode !== "done" && lanMessageFor(view);
+  const role = failure ? "alert" : "status";
+  return `<p class="${failure ? "error" : "ho-hint"}" data-lan-status="${role}" role="${role}">${esc(text)}</p>`;
+}
+
+function lanLiveCode(fieldValue) {
+  return String(fieldValue == null ? "" : fieldValue).trim();
+}
+
+function lanMergeStatus(hub, hold) {
+  const next = Object.assign({}, hub || {});
+  if (!hold || !hold.token) return next;
+  if (next.code || next.message || next.mode === "joining" || next.mode === "paired") return next;
+  if (hold.kind === "code") next.code = hold.token;
+  else next.message = hold.token;
+  return next;
 }
 
 function lanPairCard(view, nowSec) {
@@ -3096,9 +3130,7 @@ function lanPairCard(view, nowSec) {
   if (expired) {
     return `<section class="ho-pair" aria-labelledby="lan-qr-title"><h2 id="lan-qr-title">${esc(t("lan-qr"))}</h2><p class="error" role="alert">${esc(failure || t("lan-pair-expired"))}</p></section>`;
   }
-  if (!url && !svg) {
-    return failure ? `<p class="error" role="alert">${esc(failure)}</p>` : "";
-  }
+  if (!url && !svg) return "";
   const picture = svg
     ? `<div class="ho-qr" role="img" aria-label="${esc(t("lan-qr"))}">${svg}</div>`
     : `<p class="error" role="alert">${esc(t("lan-qr-failed"))}</p>`;
@@ -3124,6 +3156,7 @@ function lanRail() {
        </div>`
     : "";
   return `${pending}
+    ${lanStatusBlock(view)}
     <div class="ho-field"><div class="head"><label for="lan-name">${esc(t("lan-name"))}</label></div>
       <input id="lan-name" value="${esc(lanName || view.name || "")}" maxlength="40" title="${esc(t("lan-name-tip"))}" />
     </div>
@@ -3134,8 +3167,14 @@ function lanRail() {
       <input id="lan-code" value="${esc(lanCode)}" title="${esc(t("lan-code-tip"))}" />
     </div>
     <button type="button" class="ho-btn" id="lan-join">${esc(t("lan-join"))}</button>
-    <div class="ho-field" title="${esc(t("lan-photo-tip"))}"><div class="head"><label for="lan-photo">${esc(t("lan-photo"))}</label></div>
-      <input id="lan-photo" type="file" accept="image/*" title="${esc(t("lan-photo-tip"))}" />
+    <div class="ho-field" title="${esc(t("lan-photo-tip"))}"><div class="head"><label id="lan-photo-label">${esc(t("lan-photo"))}</label></div>
+      <p class="ho-hint">${esc(t("lan-photo-tip"))}</p>
+      <div class="btnrow">
+        <button type="button" class="ho-btn" id="lan-photo-open">${esc(t("lan-photo-choose"))}</button>
+        <button type="button" class="ho-btn" id="lan-photo-camera">${esc(t("lan-photo-camera"))}</button>
+      </div>
+      <input id="lan-photo" class="ho-file-hidden" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" aria-labelledby="lan-photo-label" />
+      <input id="lan-photo-capture" class="ho-file-hidden" type="file" accept="image/*" capture="environment" aria-label="${esc(t("lan-photo-camera"))}" />
     </div>
     <button type="button" class="ho-btn" id="lan-listen" title="${esc(t("lan-listen-tip"))}">${esc(t("lan-listen"))}</button>
     <button type="button" class="ho-btn" id="lan-discover" title="${esc(t("lan-discover-tip"))}">${esc(t("lan-discover"))}</button>
@@ -3159,7 +3198,12 @@ function lanMain() {
   const rows = (lan && lan.preview && lan.preview.rows) || [];
   if (!rows.length) {
     const card = lanPairCard(lan || {}, lanNow());
-    return card || `<p class="ho-hint">${esc(t("lan-intro"))}</p>`;
+    const status = lanStatusBlock(lan);
+    if (card) {
+      if (status && !card.includes("role=\"alert\"") && !card.includes("role=\"status\"")) return status + card;
+      return card;
+    }
+    return status || `<p class="ho-hint">${esc(t("lan-intro"))}</p>`;
   }
   const body = rows.map((row) => {
     const conflicts = row.conflicts || [];
@@ -3217,7 +3261,14 @@ function bindLan() {
   };
   click("lan-save-name", () => lanAct({ action: "set-name", name: lanName }));
   click("lan-pair", () => lanAct({ action: "pair-start" }));
-  click("lan-join", () => lanAct({ action: "pair-join", code: lanCode }));
+  click("lan-join", () => {
+    const node = document.getElementById("lan-code");
+    lanCode = lanLiveCode(node ? node.value : lanCode);
+    lanHold = null;
+    lan = Object.assign({}, lan || {}, { mode: "joining", message: "reaching", code: "" });
+    render();
+    lanAct({ action: "pair-join", code: lanCode });
+  });
   click("lan-accept", () => lanAct({ action: "pair-accept" }));
   click("lan-reject", () => lanAct({ action: "pair-reject" }));
   click("lan-listen", () => lanAct({ action: "listen" }));
@@ -3241,16 +3292,42 @@ function bindLan() {
     lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort), spki: peer, include_location: lanInclude });
   });
   click("lan-apply", () => lanAct({ action: "sync-apply", choices: lanChoices }));
-  const photo = document.getElementById("lan-photo");
-  if (photo) photo.addEventListener("change", async () => {
-    const file = photo.files && photo.files[0];
-    if (!file) return;
-    const bytesBase64 = await readFileBase64(file);
-    const result = await call("lan_act", { body: { action: "decode-qr", bytes_base64: bytesBase64 } });
-    lanCode = result.code || "";
-    lanStamp = "";
-    render();
-  });
+  const watchPhoto = (buttonId, inputId, camera) => {
+    const button = document.getElementById(buttonId);
+    const input = document.getElementById(inputId);
+    if (!button || !input) return;
+    button.addEventListener("click", async () => {
+      if (camera) {
+        try {
+          const ready = await call("phone_prepare", { kind: "camera" });
+          if (!ready || !ready.ok) {
+            lanHold = { kind: "code", token: "photo-failed" };
+            lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-failed", message: "" });
+            render();
+            return;
+          }
+        } catch (_error) {
+          lanHold = { kind: "code", token: "photo-failed" };
+          lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-failed", message: "" });
+          render();
+          return;
+        }
+      }
+      input.click();
+    });
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0];
+      if (!file) {
+        lanHold = { kind: "code", token: "photo-empty" };
+        lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-empty", message: "" });
+        render();
+        return;
+      }
+      lanUsePhoto(file);
+    });
+  };
+  watchPhoto("lan-photo-open", "lan-photo", false);
+  watchPhoto("lan-photo-camera", "lan-photo-capture", true);
   document.querySelectorAll("[data-lan-use]").forEach((button) => {
     button.addEventListener("click", () => {
       lanHost = button.dataset.host || lanHost;
@@ -3299,12 +3376,36 @@ async function pollLan() {
     const next = await call("lan_status");
     const stamp = JSON.stringify(next);
     if (stamp === lanStamp) return;
-    lan = next;
     lanStamp = stamp;
+    if (next.code || next.message || next.mode === "joining" || next.mode === "paired") lanHold = null;
+    lan = lanMergeStatus(next, lanHold);
     if (!lanName) lanName = next.name || "";
     render();
   } catch (error) {
-    lan = Object.assign({}, lan || {}, { code: String(error.message || error) });
+    lanHold = { kind: "code", token: "disconnected" };
+    lan = Object.assign({}, lan || {}, { mode: "idle", code: "disconnected", message: "" });
+    render();
+  }
+}
+
+async function lanUsePhoto(file) {
+  lanHold = { kind: "message", token: "reading" };
+  lan = Object.assign({}, lan || {}, { mode: "idle", code: "", message: "reading" });
+  render();
+  try {
+    const bytesBase64 = await readFileBase64(file);
+    const result = await call("lan_act", { body: { action: "decode-qr", bytes_base64: bytesBase64 } });
+    const code = result && result.code ? String(result.code).trim() : "";
+    if (!code) throw new Error("photo-failed");
+    lanCode = code;
+    lanHold = { kind: "message", token: "photo-ready" };
+    lan = Object.assign({}, lan || {}, { mode: "idle", code: "", message: "photo-ready" });
+    render();
+  } catch (_error) {
+    lanHold = { kind: "code", token: "photo-failed" };
+    lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-failed", message: "" });
+    lanStamp = "";
+    render();
   }
 }
 
@@ -3313,7 +3414,8 @@ async function lanAct(body) {
     if (body.action === "sync-begin" || body.action === "sync-apply") lanChoices = body.action === "sync-begin" ? {} : lanChoices;
     const next = await call("lan_act", { body });
     if (next && next.code && body.action === "decode-qr") return;
-    lan = next;
+    if (next && (next.code || next.message || next.mode === "joining" || next.mode === "paired")) lanHold = null;
+    lan = lanMergeStatus(next, lanHold);
     lanStamp = JSON.stringify(next);
     render();
   } catch (error) {

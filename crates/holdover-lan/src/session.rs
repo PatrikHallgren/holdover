@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use holdover_core::{
@@ -111,6 +112,14 @@ impl PairWait {
 
     pub fn next(&mut self, now: u64, timeout: Duration) -> Result<Pending, LanError> {
         let stream = accept_one(&self.listener, timeout)?;
+        // A socket that never starts TLS must not sit here for the whole
+        // accept wait. The phone may have another address connected.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .map_err(|_| LanError::new("disconnected"))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .map_err(|_| LanError::new("disconnected"))?;
         let mut tls = accept_tls(stream, self.config.clone()).map_err(|err| {
             if err.code == "tls" {
                 LanError::new("tls")
@@ -170,6 +179,8 @@ impl PairWait {
             .peer_addr()
             .map(|addr| addr.ip().to_string())
             .unwrap_or_default();
+        let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
+        let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
         Ok(Pending {
             stream: tls,
             device_id,
@@ -237,6 +248,18 @@ pub fn join_pair(
     now: u64,
     timeout: Duration,
 ) -> Result<Peer, LanError> {
+    join_pair_with(identity, offer, now, timeout, |_| {})
+}
+
+/// `progress` receives `reaching` while addresses are tried and `awaiting`
+/// after the pinned session is up and the other side has yet to accept.
+pub fn join_pair_with(
+    identity: &Identity,
+    offer: &Offer,
+    now: u64,
+    timeout: Duration,
+    mut progress: impl FnMut(&str),
+) -> Result<Peer, LanError> {
     if offer.schema > LAN_SCHEMA {
         return Err(LanError::new("schema-newer"));
     }
@@ -247,74 +270,126 @@ pub fn join_pair(
         return Err(LanError::new("pair-expired"));
     }
     let pin = pin_from_hex(&offer.spki_hex)?;
-    let mut last = LanError::new("disconnected");
+    progress("reaching");
+    let mut last = LanError::new("pair-unreachable");
+    let (tx, rx) = mpsc::channel();
+    let mut started = 0u32;
     for host in &offer.hosts {
-        let address = format!("{host}:{}", offer.port);
-        let Ok(addr) = address.parse::<SocketAddr>() else {
-            last = LanError::new("disconnected");
+        let Some(addr) = socket_for(host, offer.port) else {
             continue;
         };
-        let stream = match dial(addr, timeout) {
-            Ok(stream) => stream,
-            Err(err) => {
-                last = err;
-                continue;
+        started += 1;
+        let tx = tx.clone();
+        let host = host.clone();
+        thread::spawn(move || {
+            if let Ok(stream) = TcpStream::connect_timeout(&addr, timeout) {
+                let _ = stream.set_read_timeout(Some(PREVIEW_WAIT));
+                let _ = stream.set_write_timeout(Some(PREVIEW_WAIT));
+                let _ = tx.send((host, stream));
             }
-        };
-        let mut tls = connect_tls(stream, identity, pin)?;
-        write_json(
-            &mut tls,
-            &json!({
-                "t": "pair-hello",
-                "token": offer.token,
-                "schema": LAN_SCHEMA,
-                "device_id": identity.device_id,
-                "name": identity.name,
-            }),
-        )?;
-        let reply = read_json(&mut tls)?;
-        let kind = reply.get("t").and_then(Value::as_str).unwrap_or("");
-        if kind == "pair-reject" {
-            return Err(LanError::new(
-                reply
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .unwrap_or("pair-invalid"),
-            ));
-        }
-        if kind == "pair-denied" {
-            return Err(LanError::new("pair-denied"));
-        }
-        if kind != "pair-accept" {
-            return Err(LanError::new("disconnected"));
-        }
-        let schema = reply.get("schema").and_then(Value::as_i64).unwrap_or(0);
-        if schema != LAN_SCHEMA {
-            return Err(LanError::new(if schema > LAN_SCHEMA {
-                "schema-newer"
-            } else {
-                "schema-older"
-            }));
-        }
-        write_json(&mut tls, &json!({"t": "pair-ack"}))?;
-        return Ok(Peer {
-            device_id: reply
-                .get("device_id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            name: reply
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or(&offer.name)
-                .to_string(),
-            spki_hex: offer.spki_hex.clone(),
-            spki: pin,
-            host: host.clone(),
-            port: offer.port,
         });
     }
+    drop(tx);
+    if started == 0 {
+        return Err(LanError::new("pair-unreachable"));
+    }
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let (host, stream) = match rx.recv_timeout(remaining) {
+            Ok(item) => item,
+            Err(_) => break,
+        };
+        match pair_on_stream(stream, identity, offer, pin, &host, &mut progress) {
+            Ok(peer) => return Ok(peer),
+            Err(err) if matches!(err.code.as_str(), "tls" | "pair-pin" | "disconnected") => {
+                last = err;
+            }
+            Err(err) => return Err(err),
+        }
+    }
     Err(last)
+}
+
+fn socket_for(host: &str, port: u16) -> Option<SocketAddr> {
+    let text = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    text.parse().ok()
+}
+
+fn pair_on_stream(
+    stream: TcpStream,
+    identity: &Identity,
+    offer: &Offer,
+    pin: [u8; 32],
+    host: &str,
+    progress: &mut impl FnMut(&str),
+) -> Result<Peer, LanError> {
+    // The handshake is short. The wait after the hello is the other person
+    // reading the request and pressing Accept.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+    let mut tls = connect_tls(stream, identity, pin)?;
+    write_json(
+        &mut tls,
+        &json!({
+            "t": "pair-hello",
+            "token": offer.token,
+            "schema": LAN_SCHEMA,
+            "device_id": identity.device_id,
+            "name": identity.name,
+        }),
+    )?;
+    let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
+    let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
+    progress("awaiting");
+    let reply = read_json(&mut tls)?;
+    let kind = reply.get("t").and_then(Value::as_str).unwrap_or("");
+    if kind == "pair-reject" {
+        return Err(LanError::new(
+            reply
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("pair-invalid"),
+        ));
+    }
+    if kind == "pair-denied" {
+        return Err(LanError::new("pair-denied"));
+    }
+    if kind != "pair-accept" {
+        return Err(LanError::new("disconnected"));
+    }
+    let schema = reply.get("schema").and_then(Value::as_i64).unwrap_or(0);
+    if schema != LAN_SCHEMA {
+        return Err(LanError::new(if schema > LAN_SCHEMA {
+            "schema-newer"
+        } else {
+            "schema-older"
+        }));
+    }
+    write_json(&mut tls, &json!({"t": "pair-ack"}))?;
+    Ok(Peer {
+        device_id: reply
+            .get("device_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        name: reply
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&offer.name)
+            .to_string(),
+        spki_hex: offer.spki_hex.clone(),
+        spki: pin,
+        host: host.to_string(),
+        port: offer.port,
+    })
 }
 
 pub struct SyncListener {
@@ -1026,4 +1101,18 @@ pub fn unchanged_count(preview: &LanPreview) -> usize {
 #[allow(dead_code)]
 fn _deleted(record: &SyncRecord) -> bool {
     is_deleted(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::socket_for;
+
+    #[test]
+    fn an_ipv6_host_is_bracketed_before_the_port() {
+        let addr = socket_for("::1", 9).expect("address");
+        assert!(addr.is_ipv6());
+        assert_eq!(addr.port(), 9);
+        assert_eq!(socket_for("127.0.0.1", 443).unwrap().port(), 443);
+        assert!(socket_for("not a host", 1).is_none());
+    }
 }
