@@ -50,6 +50,8 @@
     "allow-group-photo",
     "allow-phone-sensors",
     "allow-phone-prepare",
-    "allow-share-file"
+    "allow-share-file",
+    "allow-lan-status",
+    "allow-lan-act"
   ]
 }

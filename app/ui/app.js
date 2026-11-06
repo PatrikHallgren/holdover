@@ -34,6 +34,15 @@ let restoreDoc = null;
 let restorePreview = null;
 let syncTab = "export";
 let syncFilter = "all";
+let lan = null;
+let lanStamp = "";
+let lanCode = "";
+let lanHost = "";
+let lanPort = "";
+let lanName = "";
+let lanInclude = false;
+let lanChoices = {};
+let lanTimer = 0;
 let bundlePreview = null;
 let bundleBytes = "";
 let bundleChoices = {};
@@ -2736,14 +2745,16 @@ async function commitLibrary(policy) {
 function syncHtml() {
   const exportOn = syncTab === "export";
   const importOn = syncTab === "import";
-  const facts = bundlePreview
+  const phoneOn = syncTab === "phone";
+  const facts = bundlePreview && !phoneOn
     ? `<dl class="ho-kv mini"><dt>${esc(t("sync-schema"))}</dt><dd>${esc(bundlePreview.schema_version)}</dd><span class="ho-unit"></span><dt>${esc(t("sync-local-only"))}</dt><dd>${esc(bundlePreview.local_only || 0)}</dd><span class="ho-unit"></span></dl>`
     : "";
   const rail = `<h2>${esc(t("sync-bundle"))}</h2>
-    <p class="ho-hint">${esc(t("sync-intro"))}</p>
+    <p class="ho-hint">${esc(phoneOn ? t("lan-intro") : t("sync-intro"))}</p>
     <div class="ho-seg" id="sync-tabs" role="tablist" aria-label="${esc(t("sync-tabs"))}">
       ${syncModeButton("export", "sync-export", exportOn)}
       ${syncModeButton("import", "sync-import", importOn)}
+      ${syncModeButton("phone", "sync-phone", phoneOn)}
     </div>
     <div role="tabpanel" data-sync-panel="export" ${exportOn ? "" : "hidden"}>
       <p class="ho-hint">${esc(t("sync-export-intro"))}</p>
@@ -2753,10 +2764,13 @@ function syncHtml() {
     <div role="tabpanel" data-sync-panel="import" ${importOn ? "" : "hidden"}>
       ${syncImportControls()}
     </div>
+    <div role="tabpanel" data-sync-panel="phone" ${phoneOn ? "" : "hidden"}>
+      ${phoneOn ? lanRail() : ""}
+    </div>
     ${facts}
-    <p id="bundle-message" class="${bundleError ? "error" : "meta"}">${esc(bundleMessage)}</p>
-    ${bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}`;
-  const main = importOn ? syncImportTable() : `<p class="ho-hint">${esc(t("sync-export-intro"))}</p>`;
+    <p id="bundle-message" class="${bundleError ? "error" : "meta"}">${esc(phoneOn ? lanMessage() : bundleMessage)}</p>
+    ${!phoneOn && bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}`;
+  const main = phoneOn ? lanMain() : importOn ? syncImportTable() : `<p class="ho-hint">${esc(t("sync-export-intro"))}</p>`;
   return frame({ rail, main, body: "with-list", railLabel: t("nav-sync") });
 }
 
@@ -2918,6 +2932,7 @@ function bindSync() {
   });
   const apply = document.getElementById("bundle-apply");
   if (apply) apply.addEventListener("click", applyBundle);
+  if (syncTab === "phone") bindLan();
 }
 
 function bindTablist(selector, datasetKey, onSelect) {
@@ -3022,6 +3037,213 @@ async function applyBundle() {
     render();
   } catch (error) {
     setBundleError(error);
+    render();
+  }
+}
+
+function lanMessage() {
+  const code = lan && lan.code;
+  if (!code) return (lan && lan.mode === "done") ? t("lan-applied") : "";
+  const key = "lan-" + String(code).replace(/_/g, "-");
+  const text = t(key);
+  return text === key ? String(code) : text;
+}
+
+function lanRail() {
+  const view = lan || {};
+  const peers = (view.peers || []).map((peer) => `<li><span>${esc(peer.name || peer.device_id || "")}</span> <button type="button" class="ho-btn" data-lan-use="${esc(peer.spki)}" data-host="${esc(peer.host || "")}" data-port="${esc(peer.port || "")}">${esc(t("lan-sync"))}</button> <button type="button" class="ho-btn" data-lan-forget="${esc(peer.spki)}">${esc(t("lan-forget"))}</button></li>`).join("");
+  const pending = view.pending_name
+    ? `<p>${esc(t("lan-pending"))}: ${esc(view.pending_name)}</p>
+       <p class="ho-hint">${esc(t("lan-fingerprint"))}: ${esc(view.pending_fingerprint || "")}</p>
+       <div class="btnrow">
+         <button type="button" class="ho-btn primary" id="lan-accept">${esc(t("lan-accept"))}</button>
+         <button type="button" class="ho-btn" id="lan-reject">${esc(t("lan-reject"))}</button>
+       </div>`
+    : "";
+  return `${pending}
+    <div class="ho-field"><div class="head"><label for="lan-name">${esc(t("lan-name"))}</label></div>
+      <input id="lan-name" value="${esc(lanName || view.name || "")}" maxlength="40" title="${esc(t("lan-name-tip"))}" />
+    </div>
+    <button type="button" class="ho-btn" id="lan-save-name" title="${esc(t("lan-name-tip"))}">${esc(t("lan-save-name"))}</button>
+    <button type="button" class="ho-btn primary" id="lan-pair" title="${esc(t("lan-pair-tip"))}">${esc(t("lan-pair"))}</button>
+    ${view.offer_svg && String(view.offer_svg).trim().startsWith("<svg") ? `<div class="ho-qr" role="img" aria-label="${esc(t("lan-qr"))}">${view.offer_svg}</div>` : ""}
+    ${view.offer_url ? `<p class="ho-hint">${esc(view.offer_url)}</p>` : ""}
+    <div class="ho-field"><div class="head"><label for="lan-code">${esc(t("lan-code"))}</label></div>
+      <input id="lan-code" value="${esc(lanCode)}" title="${esc(t("lan-code-tip"))}" />
+    </div>
+    <button type="button" class="ho-btn" id="lan-join">${esc(t("lan-join"))}</button>
+    <div class="ho-field" title="${esc(t("lan-photo-tip"))}"><div class="head"><label for="lan-photo">${esc(t("lan-photo"))}</label></div>
+      <input id="lan-photo" type="file" accept="image/*" title="${esc(t("lan-photo-tip"))}" />
+    </div>
+    <button type="button" class="ho-btn" id="lan-listen" title="${esc(t("lan-listen-tip"))}">${esc(t("lan-listen"))}</button>
+    <button type="button" class="ho-btn" id="lan-discover" title="${esc(t("lan-discover-tip"))}">${esc(t("lan-discover"))}</button>
+    <div class="ho-fields">
+      <div class="ho-field"><div class="head"><label for="lan-host">${esc(t("lan-address"))}</label></div>
+        <input id="lan-host" value="${esc(lanHost)}" inputmode="decimal" title="${esc(t("lan-address-tip"))}" />
+      </div>
+      <div class="ho-field"><div class="head"><label for="lan-port">${esc(t("lan-port"))}</label></div>
+        <input id="lan-port" value="${esc(lanPort)}" inputmode="numeric" title="${esc(t("lan-address-tip"))}" />
+      </div>
+    </div>
+    <label class="ho-check"><input type="checkbox" id="lan-include" title="${esc(t("lan-include-tip"))}" ${lanInclude ? "checked" : ""} /> ${esc(t("lan-include"))}</label>
+    <div class="btnrow">
+      <button type="button" class="ho-btn primary" id="lan-sync" title="${esc(t("lan-sync-tip"))}">${esc(t("lan-sync"))}</button>
+      <button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>
+    </div>
+    ${peers ? `<h3>${esc(t("lan-peers"))}</h3><ul class="ho-list">${peers}</ul>` : ""}`;
+}
+
+function lanMain() {
+  const rows = (lan && lan.preview && lan.preview.rows) || [];
+  if (!rows.length) return `<p class="ho-hint">${esc(t("lan-intro"))}</p>`;
+  const body = rows.map((row) => {
+    const conflicts = row.conflicts || [];
+    const choice = lanChoices[row.id] || {};
+    let controls = "";
+    if (row.status === "conflict" && conflicts.length) {
+      controls = conflicts.map((field) => {
+        const picked = choice.fields && choice.fields[field.field];
+        return `<div><span>${esc(field.field)}</span>
+          <button type="button" data-lan-field="${esc(field.field)}" data-id="${esc(row.id)}" data-side="mine" aria-pressed="${picked === "mine"}">${esc(t("sync-keep-mine"))}: ${esc(field.local)}</button>
+          <button type="button" data-lan-field="${esc(field.field)}" data-id="${esc(row.id)}" data-side="theirs" aria-pressed="${picked === "theirs"}">${esc(t("sync-take-theirs"))}: ${esc(field.remote)}</button>
+        </div>`;
+      }).join("");
+    } else if (row.status === "conflict") {
+      controls = ["keep-mine", "take-theirs"].concat(row.keep_both ? ["keep-both"] : []).map((id) => {
+        return `<button type="button" data-lan-choice="${esc(id)}" data-id="${esc(row.id)}" aria-pressed="${choice.choice === id}">${esc(t("sync-" + id))}</button>`;
+      }).join("");
+    } else if (row.push) {
+      controls = esc(t("lan-send"));
+    } else if (row.status === "new") {
+      controls = esc(t("lan-receive"));
+    }
+    return `<tr><td class="text">${esc(t("equip-" + row.kind) === "equip-" + row.kind ? row.kind : t("equip-" + row.kind))}</td><td class="text">${esc(t("sync-status-" + row.status))}</td><td class="text">${esc(row.label || "")}</td><td class="text">${controls}</td></tr>`;
+  }).join("");
+  const unresolved = rows.some((row) => row.status === "conflict" && !lanChoiceReady(row));
+  return `<table class="ho-table"><thead><tr><th class="text">${esc(t("archive-kind"))}</th><th class="text">${esc(t("sync-filter"))}</th><th class="text">${esc(t("label"))}</th><th class="text"></th></tr></thead><tbody>${body}</tbody></table>
+    ${unresolved ? `<p class="ho-hint">${esc(t("lan-unresolved"))}</p>` : rows.length ? "" : `<p class="ho-hint">${esc(t("lan-nothing"))}</p>`}
+    <button type="button" class="ho-btn primary" id="lan-apply" title="${esc(t("lan-apply-tip"))}" ${unresolved ? "disabled" : ""}>${esc(t("lan-apply"))}</button>`;
+}
+
+function lanChoiceReady(row) {
+  const choice = lanChoices[row.id];
+  if (!choice) return false;
+  if ((row.conflicts || []).length) {
+    return (row.conflicts || []).every((field) => choice.fields && choice.fields[field.field]);
+  }
+  return !!choice.choice;
+}
+
+function bindLan() {
+  const remember = (id, assign) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener("input", () => assign(node.value));
+    node.addEventListener("change", () => assign(node.type === "checkbox" ? node.checked : node.value));
+  };
+  remember("lan-name", (value) => { lanName = value; });
+  remember("lan-code", (value) => { lanCode = value; });
+  remember("lan-host", (value) => { lanHost = value; });
+  remember("lan-port", (value) => { lanPort = value; });
+  remember("lan-include", (value) => { lanInclude = !!value; });
+  const click = (id, action) => {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("click", action);
+  };
+  click("lan-save-name", () => lanAct({ action: "set-name", name: lanName }));
+  click("lan-pair", () => lanAct({ action: "pair-start" }));
+  click("lan-join", () => lanAct({ action: "pair-join", code: lanCode }));
+  click("lan-accept", () => lanAct({ action: "pair-accept" }));
+  click("lan-reject", () => lanAct({ action: "pair-reject" }));
+  click("lan-listen", () => lanAct({ action: "listen" }));
+  click("lan-discover", () => lanAct({ action: "discover" }));
+  click("lan-stop", () => lanAct({ action: "stop" }));
+  click("lan-sync", () => {
+    const peer = selectedLanPeer();
+    lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort), spki: peer, include_location: lanInclude });
+  });
+  click("lan-apply", () => lanAct({ action: "sync-apply", choices: lanChoices }));
+  const photo = document.getElementById("lan-photo");
+  if (photo) photo.addEventListener("change", async () => {
+    const file = photo.files && photo.files[0];
+    if (!file) return;
+    const bytesBase64 = await readFileBase64(file);
+    const result = await call("lan_act", { body: { action: "decode-qr", bytes_base64: bytesBase64 } });
+    lanCode = result.code || "";
+    lanStamp = "";
+    render();
+  });
+  document.querySelectorAll("[data-lan-use]").forEach((button) => {
+    button.addEventListener("click", () => {
+      lanHost = button.dataset.host || lanHost;
+      lanPort = button.dataset.port || lanPort;
+      lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort), spki: button.dataset.lanUse, include_location: lanInclude });
+    });
+  });
+  document.querySelectorAll("[data-lan-forget]").forEach((button) => {
+    button.addEventListener("click", () => lanAct({ action: "forget", spki: button.dataset.lanForget }));
+  });
+  document.querySelectorAll("[data-lan-field]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      const current = lanChoices[id] || { choice: "fields", fields: {} };
+      current.choice = "fields";
+      current.fields = current.fields || {};
+      current.fields[button.dataset.lanField] = button.dataset.side;
+      lanChoices[id] = current;
+      render();
+    });
+  });
+  document.querySelectorAll("[data-lan-choice]").forEach((button) => {
+    button.addEventListener("click", () => {
+      lanChoices[button.dataset.id] = { choice: button.dataset.lanChoice };
+      render();
+    });
+  });
+  if (!lanTimer) {
+    lanTimer = window.setInterval(pollLan, 1000);
+    pollLan();
+  }
+}
+
+function selectedLanPeer() {
+  const peers = (lan && lan.peers) || [];
+  const found = (lan && lan.found) || [];
+  const match = peers.concat(found).find((peer) => peer.host === lanHost && String(peer.port) === String(lanPort) && peer.spki);
+  if (match) return match.spki;
+  const paired = peers.find((peer) => peer.spki);
+  return paired ? paired.spki : "";
+}
+
+async function pollLan() {
+  if (page !== "sync" || syncTab !== "phone") return;
+  try {
+    const next = await call("lan_status");
+    const stamp = JSON.stringify(next);
+    if (stamp === lanStamp) return;
+    lan = next;
+    lanStamp = stamp;
+    if (!lanName) lanName = next.name || "";
+    render();
+  } catch (error) {
+    lan = Object.assign({}, lan || {}, { code: String(error.message || error) });
+  }
+}
+
+async function lanAct(body) {
+  try {
+    if (body.action === "sync-begin" || body.action === "sync-apply") lanChoices = body.action === "sync-begin" ? {} : lanChoices;
+    const next = await call("lan_act", { body });
+    if (next && next.code && body.action === "decode-qr") return;
+    lan = next;
+    lanStamp = JSON.stringify(next);
+    render();
+  } catch (error) {
+    const text = String(error.message || error);
+    lan = Object.assign({}, lan || {}, { code: text.replace(/^.*lan-/, "lan-").split(/\s/)[0].replace(/^lan-/, "") || text });
+    const code = text.includes("pair-") || text.includes("schema-") || text.includes("unauthorized") || text.includes("disconnected") ? text : text;
+    lan.code = (code.match(/[a-z0-9-]+/) || [text])[0];
+    lanStamp = "";
     render();
   }
 }

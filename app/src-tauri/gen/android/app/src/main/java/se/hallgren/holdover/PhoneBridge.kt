@@ -15,6 +15,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
+import android.net.wifi.WifiManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import org.json.JSONArray
@@ -27,6 +28,7 @@ object PhoneBridge {
   private const val REQUEST_SENSORS = 4401
   private const val REQUEST_CAMERA = 4402
   private var attached: MainActivity? = null
+  private var multicast: WifiManager.MulticastLock? = null
 
   fun attach(activity: MainActivity) {
     attached = activity
@@ -38,6 +40,25 @@ object PhoneBridge {
 
   private fun activity(context: Context): Activity? {
     return (context as? Activity) ?: attached
+  }
+
+  @JvmStatic
+  fun setMulticast(context: Context, on: String): String {
+    return try {
+      val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+      val lock = multicast ?: wifi.createMulticastLock("holdover").also {
+        it.setReferenceCounted(false)
+        multicast = it
+      }
+      if (on == "1") {
+        if (!lock.isHeld) lock.acquire()
+      } else if (lock.isHeld) {
+        lock.release()
+      }
+      JSONObject().put("ok", true).toString()
+    } catch (err: Exception) {
+      fail("multicast", err.message ?: "multicast lock failed")
+    }
   }
 
   @JvmStatic

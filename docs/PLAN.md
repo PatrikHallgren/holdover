@@ -629,6 +629,7 @@ Strelok is primarily used on a phone at the range or in the stand. Tauri 2 targe
    - The desktop offers an opt-in "Pair phone" QR code containing a one-time key and its LAN address.
    - The devices exchange long-term keys and then sync over the local network (mDNS discovery, mutual TLS with pinned keys) only while both apps are open and the user starts a sync.
    - No relay, no port forwarding, no internet.
+   - 1.5.0 uses TLS 1.3 (rustls), a P-256 key pinned by its SHA-256, a 10-minute one-time pairing code, and a typed address when mDNS is blocked. Details and the untested-on-device status are in `docs/M10-LAN.md` and `docs/DECISIONS.md`.
 3. **Merge rules (both stages):**
    - Records are keyed by UUID, with per-field `updated_at` and device revision.
    - Last-writer-wins per field for simple fields. Concurrent edits to the same field are shown as a conflict to resolve. Deletes are tombstones.
@@ -860,6 +861,8 @@ The phases are ordered by dependency. Effort is estimated after M0.
 | **Phase 2: M9, Android companion** | Tauri Android app (sideloaded, self-signed APK): Solve, cards, profiles, field capture, group photo capture, opt-in sensors; bundle sync with desktop. iOS out of scope | Signed APK installs and updates in place on Patrik's Android phone; bundle round-trip with desktop; group results identical to desktop for the same photo |
 | **Phase 2: M10, LAN sync** | QR pairing, mDNS, mutual TLS, field-level merge | Pair, sync and conflict flows tested; no internet needed |
 | **Later / not planned** | Swedish UI (low priority); iOS companion (out of scope for now); altitude-varying atmosphere; Monte-Carlo hit probability. *Not planned:* imports from other apps/devices (Strelok, chronographs, Kestrel), bundled maker data or reticles | — |
+
+M10 is implemented in 1.5.0 (`versionCode` 1005000). Automated tests run two libraries on one machine over TLS. A physical desktop↔phone session, including a real bundle round-trip on the phone, has not been run. The manual steps are in `docs/M10-LAN.md`. The `.holdover` bundle remains the fallback.
 
 ---
 

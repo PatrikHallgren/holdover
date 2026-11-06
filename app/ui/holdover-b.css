@@ -323,7 +323,9 @@ body.reduced .ho * { transition: none !important; }
 .ho-choice { display: grid; grid-template-columns: auto 1fr; gap: 2px var(--s3); padding: var(--s3); border: 1px solid var(--control-border); border-radius: var(--r-md); align-items: baseline; }
 .ho-choice[aria-checked="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--selected); }
 .ho-choice b { font-weight: 600; } .ho-choice span { grid-column: 2; font-size: var(--fs-small); color: var(--text-secondary); }
-tr.current .ho-badge, .ho-list [aria-current] .ho-badge, .ho-choice[aria-checked="true"] span { color: var(--text); }
+tr.current .ho-badge, .ho-list [aria-current] .ho-badge, .ho-list [aria-selected="true"] .ho-badge, .ho-choice[aria-checked="true"] span { color: var(--text); }
+.ho-qr { background: #fff; padding: 8px; width: max-content; border-radius: 4px; }
+.ho-qr svg { display: block; width: 220px; height: 220px; }
 
 /* ---- Solve page (PR1). Other pages keep their markup. ---- */
 body { font-variant-numeric: tabular-nums; }
