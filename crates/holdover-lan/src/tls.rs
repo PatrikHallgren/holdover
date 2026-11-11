@@ -21,11 +21,24 @@ const MAX_FRAME: usize = 32 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanError {
     pub code: String,
+    /// Addresses and ports that were tried, for the on-screen error. Empty
+    /// when the failure has no dial list.
+    pub detail: String,
 }
 
 impl LanError {
     pub fn new(code: impl Into<String>) -> Self {
-        Self { code: code.into() }
+        Self {
+            code: code.into(),
+            detail: String::new(),
+        }
+    }
+
+    pub fn with_detail(code: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            detail: detail.into(),
+        }
     }
 }
 

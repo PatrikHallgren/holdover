@@ -662,27 +662,33 @@ pub fn open_sync_many<C: Catalog>(
     include_location: bool,
     timeout: Duration,
 ) -> Result<ClientSync, LanError> {
-    if addresses.is_empty() {
-        return Err(LanError::new("sync-unreachable"));
+    let targets: Vec<SocketAddr> = addresses
+        .iter()
+        .copied()
+        .filter(|addr| addr.port() != 0)
+        .collect();
+    if targets.is_empty() {
+        return Err(LanError::with_detail("sync-unreachable", "no port"));
     }
     let (tx, rx) = mpsc::channel();
-    for address in addresses {
+    for address in &targets {
         let tx = tx.clone();
         let address = *address;
         thread::spawn(move || {
-            if let Ok(stream) = TcpStream::connect_timeout(&address, timeout) {
-                let _ = tx.send((address, stream));
-            }
+            let outcome = match TcpStream::connect_timeout(&address, timeout) {
+                Ok(stream) => Ok((address, stream)),
+                Err(err) => Err((address, dial_why(err.kind()))),
+            };
+            let _ = tx.send(outcome);
         });
     }
     drop(tx);
-    let mut last = LanError::new("sync-unreachable");
+    let mut pending = targets;
+    let mut tried: Vec<(SocketAddr, String)> = Vec::new();
     let deadline = Instant::now() + timeout;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        // A socket that is already connected is still tried after the budget.
-        // A dead address must not hide the one that answered.
-        let (address, stream) = if remaining.is_zero() {
+        let outcome = if remaining.is_zero() {
             match rx.try_recv() {
                 Ok(item) => item,
                 Err(_) => break,
@@ -696,24 +702,63 @@ pub fn open_sync_many<C: Catalog>(
                 },
             }
         };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
-        match open_sync_connected(
-            catalog,
-            identity,
-            stream,
-            address,
-            server_pin,
-            include_location,
-        ) {
-            Ok(session) => return Ok(session),
-            Err(err) if matches!(err.code.as_str(), "tls" | "disconnected" | "unauthorized") => {
-                last = err;
+        match outcome {
+            Ok((address, stream)) => {
+                pending.retain(|item| *item != address);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+                match open_sync_connected(
+                    catalog,
+                    identity,
+                    stream,
+                    address,
+                    server_pin,
+                    include_location,
+                ) {
+                    Ok(session) => return Ok(session),
+                    Err(err)
+                        if matches!(err.code.as_str(), "tls" | "disconnected" | "unauthorized") =>
+                    {
+                        tried.push((address, err.code));
+                    }
+                    Err(err) => return Err(err),
+                }
             }
-            Err(err) => return Err(err),
+            Err((address, why)) => {
+                pending.retain(|item| *item != address);
+                tried.push((address, why.to_string()));
+            }
         }
     }
-    Err(last)
+    for address in pending {
+        tried.push((address, "timeout".to_string()));
+    }
+    Err(LanError::with_detail(
+        "sync-unreachable",
+        describe_tries(&tried),
+    ))
+}
+
+fn dial_why(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::TimedOut => "timeout",
+        ErrorKind::ConnectionRefused => "refused",
+        ErrorKind::ConnectionReset => "reset",
+        ErrorKind::ConnectionAborted => "reset",
+        _ => "unreachable",
+    }
+}
+
+fn describe_tries(tries: &[(SocketAddr, String)]) -> String {
+    if tries.is_empty() {
+        return "no port".into();
+    }
+    tries
+        .iter()
+        .filter(|(addr, _)| addr.port() != 0)
+        .map(|(addr, why)| format!("tried {addr} {why}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn open_sync_connected<C: Catalog>(

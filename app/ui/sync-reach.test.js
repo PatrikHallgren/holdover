@@ -264,6 +264,23 @@ test("sync status strings name the port, the miss, and an empty search", () => {
   assert.match(app, /listen_port/);
   assert.match(app, /function lanErrorCode/);
   assert.match(ftl, /lan-sync-unreachable = /);
+  assert.match(ftl, /lan-firewall = .*ufw allow 43720\/tcp/);
+  assert.match(app, /view\.detail/);
+  assert.match(app, /t\("lan-firewall"\)/);
+  const messages = stringsFromFtl(ftl);
+  const t = (key) => messages[key] || key;
+  const lanMessageFor = new Function(
+    "t",
+    `${sliceBetween(app, "function lanMessageFor(", "function lanMessage(")}\nreturn lanMessageFor;`,
+  )(t);
+  const shown = lanMessageFor({
+    code: "sync-unreachable",
+    detail: "tried 192.168.1.20:43720 timeout; tried 100.64.0.2:43720 refused",
+    firewall: true,
+  });
+  assert.match(shown, /192\.168\.1\.20:43720 timeout/);
+  assert.match(shown, /100\.64\.0\.2:43720 refused/);
+  assert.match(shown, /ufw allow 5353\/udp/);
   assert.match(ftl, /lan-mdns-none = /);
   assert.match(ftl, /lan-self = /);
   assert.match(ftl, /lan-sync-reaching = /);

@@ -27,6 +27,7 @@ pub struct LanHub {
     session: Option<ClientSync>,
     decision: Arc<Mutex<Option<bool>>>,
     _advertise: Option<Advertisement>,
+    worker: Option<thread::JoinHandle<()>>,
 }
 
 struct LanView {
@@ -39,6 +40,8 @@ struct LanView {
     pending_fp: String,
     message: String,
     code: String,
+    detail: String,
+    firewall: bool,
     preview: Option<Value>,
     found: Vec<Value>,
 }
@@ -55,6 +58,8 @@ impl Default for LanView {
             pending_fp: String::new(),
             message: String::new(),
             code: String::new(),
+            detail: String::new(),
+            firewall: false,
             preview: None,
             found: Vec::new(),
         }
@@ -69,6 +74,7 @@ impl Default for LanHub {
             session: None,
             decision: Arc::new(Mutex::new(None)),
             _advertise: None,
+            worker: None,
         }
     }
 }
@@ -90,24 +96,16 @@ impl LanHub {
             "pending_fingerprint": view.pending_fp,
             "message": view.message,
             "code": view.code,
+            "detail": view.detail,
+            "firewall": view.firewall,
             "preview": view.preview,
             "found": view.found,
             "name": store.lan_name()?,
             "peers": peers,
             "hosts": local_hosts(),
-            "listen_port": if view.port != 0 { view.port } else { self.saved_port(store) },
+            "listen_port": if view.port != 0 { view.port } else { DEFAULT_PORT },
             "listening": view.mode == "listen" || view.mode == "pair",
         }))
-    }
-
-    fn saved_port(&self, store: &Store) -> u16 {
-        store
-            .meta_get("lan_port")
-            .ok()
-            .flatten()
-            .and_then(|text| text.parse().ok())
-            .filter(|port| *port != 0)
-            .unwrap_or(DEFAULT_PORT)
     }
 
     fn remember_port(&self, store: &Store, port: u16) {
@@ -118,6 +116,11 @@ impl LanHub {
 
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        // The accept loop notices the flag within a second and drops the
+        // socket. Joining here is what lets the next Ready bind 43720 again.
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
         self.session.take();
         self._advertise.take();
         crate::phone::mdns_stop();
@@ -125,6 +128,12 @@ impl LanHub {
             *view = LanView::default();
         }
         multicast(false);
+    }
+
+    fn worker_alive(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
     }
 
     pub fn set_name(&mut self, store: &Store, name: &str) -> Result<(), String> {
@@ -145,13 +154,7 @@ impl LanHub {
                 .map_err(|_| "the library is busy".to_string())?;
             (guard.lan_identity()?, local_hosts())
         };
-        let preferred = {
-            let guard = store
-                .lock()
-                .map_err(|_| "the library is busy".to_string())?;
-            self.saved_port(&guard)
-        };
-        let (wait, offer) = PairWait::start_on(identity.clone(), hosts, unix_now(), preferred)
+        let (wait, offer) = PairWait::start_on(identity.clone(), hosts, unix_now(), DEFAULT_PORT)
             .map_err(|err| err.code)?;
         let svg = offer_qr(&offer).map_err(|err| err.code)?;
         {
@@ -166,6 +169,8 @@ impl LanHub {
             view.port = offer.port;
             view.message = String::new();
             view.code = String::new();
+            view.detail.clear();
+            view.firewall = false;
         }
         if let Ok(guard) = store.lock() {
             self.remember_port(&guard, offer.port);
@@ -192,7 +197,9 @@ impl LanHub {
                 .unwrap_or_else(|| "127.0.0.1".into()),
         );
         multicast(true);
-        thread::spawn(move || pair_loop(store, wait, shared, decision, stop, identity));
+        self.worker = Some(thread::spawn(move || {
+            pair_loop(store, wait, shared, decision, stop, identity)
+        }));
         Ok(())
     }
 
@@ -304,6 +311,9 @@ impl LanHub {
     }
 
     pub fn listen(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
+        if self.reuse_listen(&store)? {
+            return Ok(());
+        }
         self.stop();
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
@@ -314,18 +324,12 @@ impl LanHub {
             (guard.lan_identity()?, guard.lan_pins()?)
         };
         if pins.is_empty() {
-            self.fail_visible("lan-no-peer");
-            lan_log("listen", "lan-no-peer", "", 0);
+            self.fail_visible("lan-no-peer", "", false);
+            lan_log_detail("listen", "lan-no-peer", "host=none");
             return Err("lan-no-peer".into());
         }
-        let preferred = {
-            let guard = store
-                .lock()
-                .map_err(|_| "the library is busy".to_string())?;
-            self.saved_port(&guard)
-        };
         let listener =
-            SyncListener::bind_on(identity.clone(), pins, preferred).map_err(|err| err.code)?;
+            SyncListener::bind_on(identity.clone(), pins, DEFAULT_PORT).map_err(|err| err.code)?;
         let port = listener.port;
         {
             let mut view = self
@@ -335,6 +339,8 @@ impl LanHub {
             view.mode = "listen".into();
             view.port = port;
             view.code = String::new();
+            view.detail.clear();
+            view.firewall = false;
             view.message.clear();
         }
         if let Ok(guard) = store.lock() {
@@ -354,8 +360,45 @@ impl LanHub {
         );
         multicast(true);
         let shared = self.shared.clone();
-        thread::spawn(move || listen_loop(store, listener, shared, stop));
+        self.worker = Some(thread::spawn(move || {
+            listen_loop(store, listener, shared, stop)
+        }));
         Ok(())
+    }
+
+    /// A second Ready keeps the socket that is already accepting. Rebinding
+    /// while that socket was still open is what moved the port off 43720.
+    fn reuse_listen(&mut self, store: &Arc<Mutex<Store>>) -> Result<bool, String> {
+        if !self.worker_alive() {
+            return Ok(false);
+        }
+        let port = {
+            let view = self
+                .shared
+                .lock()
+                .map_err(|_| "the sync state is busy".to_string())?;
+            if view.mode != "listen" || view.port == 0 {
+                return Ok(false);
+            }
+            view.port
+        };
+        let identity = store
+            .lock()
+            .map_err(|_| "the library is busy".to_string())?
+            .lan_identity()?;
+        let host = local_hosts()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "127.0.0.1".into());
+        self._advertise = publish(
+            port,
+            &identity.device_id,
+            &identity.name,
+            &identity.spki_hex,
+            &host,
+        );
+        lan_log("listen", "ok", &host, port);
+        Ok(true)
     }
 
     pub fn discover(&mut self, store: &Store) -> Result<(), String> {
@@ -451,8 +494,9 @@ impl LanHub {
             .unwrap_or_default();
         let addresses = sync_addresses(host, port, saved, &found, spki);
         if addresses.is_empty() || spki_pin(spki).is_err() {
-            self.fail_visible("sync-unreachable");
-            lan_log("sync-begin", "sync-unreachable", host, port);
+            let detail = "no port";
+            self.fail_visible("sync-unreachable", detail, false);
+            lan_log_detail("sync-begin", "sync-unreachable", detail);
             return Err("sync-unreachable".into());
         }
         let pin = spki_pin(spki)?;
@@ -479,8 +523,9 @@ impl LanHub {
                 } else {
                     err.code.as_str()
                 };
-                self.fail_visible(code);
-                lan_log("sync-begin", code, host, port);
+                let firewall = lan_timed_out(&err.detail);
+                self.fail_visible(code, &err.detail, firewall);
+                lan_log_detail("sync-begin", code, &err.detail);
                 return Err(code.to_string());
             }
         };
@@ -496,6 +541,8 @@ impl LanHub {
         view.preview = Some(preview);
         view.message.clear();
         view.code.clear();
+        view.detail.clear();
+        view.firewall = false;
         if let Ok(guard) = store.lock() {
             let _ = guard.remember_peer_addr(spki, &used_host, used_port);
         }
@@ -503,7 +550,7 @@ impl LanHub {
         Ok(())
     }
 
-    fn fail_visible(&self, code: &str) {
+    fn fail_visible(&self, code: &str, detail: &str, firewall: bool) {
         if let Ok(mut view) = self.shared.lock() {
             if view.mode != "listen" && view.mode != "pair" {
                 view.mode = "idle".into();
@@ -511,6 +558,8 @@ impl LanHub {
             view.message.clear();
             view.preview = None;
             view.code = code.to_string();
+            view.detail = detail.to_string();
+            view.firewall = firewall;
         }
     }
 
@@ -840,7 +889,23 @@ fn sync_addresses(
             break;
         }
     }
+    out.retain(|addr| addr.port() != 0);
     out
+}
+
+fn lan_timed_out(detail: &str) -> bool {
+    detail.split(';').any(|part| {
+        let part = part.trim();
+        if !part.ends_with(" timeout") {
+            return false;
+        }
+        let Some(addr) = part.split_whitespace().nth(1) else {
+            return false;
+        };
+        let host = addr.rsplit_once(':').map(|(host, _)| host).unwrap_or(addr);
+        let host = host.trim_matches(|ch| ch == '[' || ch == ']');
+        host_rank(host) == 0
+    })
 }
 
 fn publish(
@@ -869,7 +934,12 @@ fn lan_log(action: &str, result: &str, host: &str, port: u16) {
     } else {
         host_kind(host)
     };
-    let line = format!("lan action={action} result={result} host={kind} port={port}");
+    lan_log_detail(action, result, &format!("host={kind} port={port}"));
+}
+
+fn lan_log_detail(action: &str, result: &str, detail: &str) {
+    let detail = detail.replace(['\n', '\r'], " ");
+    let line = format!("lan action={action} result={result} {detail}");
     eprintln!("holdover: {line}");
     crate::phone::log_line(&line);
     #[cfg(not(target_os = "android"))]
@@ -1150,6 +1220,93 @@ mod tests {
             .unwrap();
         assert!(lan < tail);
         assert!(sync_addresses("", 0, None, &[], "abc").is_empty());
+    }
+
+    #[test]
+    fn a_blank_port_never_dials_zero_and_keeps_a_discovered_port() {
+        let saved = json!({
+            "host": "100.64.0.2,192.168.1.9",
+            "port": 0,
+            "spki": "abc",
+        });
+        let found = vec![json!({
+            "host": "192.168.1.9",
+            "port": 36333,
+            "spki": "abc",
+        })];
+        let addrs = sync_addresses("100.64.0.2", 0, Some(&saved), &found, "abc");
+        assert!(addrs.iter().all(|addr| addr.port() != 0));
+        assert!(addrs.iter().any(|addr| addr.port() == 43720));
+        assert!(addrs.iter().any(|addr| addr.port() == 36333));
+        assert!(addrs[0].ip().to_string().starts_with("192.168"));
+        assert!(lan_timed_out(
+            "tried 192.168.1.9:43720 timeout; tried 100.64.0.2:43720 refused"
+        ));
+        assert!(!lan_timed_out("tried 100.64.0.2:43720 timeout"));
+        assert!(!lan_timed_out("tried 192.168.1.9:43720 refused"));
+    }
+
+    #[test]
+    fn ready_reuses_the_listener_and_a_new_pair_uses_that_port() {
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-port-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("desk.db")).unwrap();
+        let other = holdover_lan::new_identity("phone", "Pocket").unwrap();
+        store
+            .save_peer(&holdover_lan::Peer {
+                device_id: other.device_id.clone(),
+                name: other.name.clone(),
+                spki_hex: other.spki_hex.clone(),
+                spki: other.spki,
+                host: "192.168.1.9,100.64.0.2".into(),
+                port: 0,
+            })
+            .unwrap();
+        store.set_meta("lan_port", "41189").unwrap();
+        let stable_free = std::net::TcpListener::bind("0.0.0.0:43720").is_ok();
+        let store = Arc::new(Mutex::new(store));
+        let mut hub = LanHub::default();
+        hub.listen(store.clone()).unwrap();
+        let first = hub.status(&store.lock().unwrap()).unwrap()["port"]
+            .as_u64()
+            .unwrap();
+        if stable_free {
+            assert_eq!(
+                first, 43720,
+                "a remembered random port must not win over 43720"
+            );
+        }
+        assert_ne!(first, 0);
+        let still_held = std::net::TcpListener::bind(("0.0.0.0", first as u16)).is_err();
+        assert!(still_held, "the first Ready is not accepting");
+        hub.listen(store.clone()).unwrap();
+        let second = hub.status(&store.lock().unwrap()).unwrap()["port"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(second, first, "the second Ready opened a new port");
+        hub.pair_start(store.clone()).unwrap();
+        let paired = hub.status(&store.lock().unwrap()).unwrap()["port"]
+            .as_u64()
+            .unwrap();
+        if stable_free {
+            assert_eq!(paired, 43720);
+        } else {
+            assert_ne!(paired, 0);
+        }
+        hub.stop();
+        if stable_free {
+            let closed = std::net::TcpListener::bind("0.0.0.0:43720");
+            assert!(closed.is_ok(), "Cancel left 43720 open");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

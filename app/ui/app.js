@@ -3079,7 +3079,11 @@ function lanMessageFor(view) {
   if (!code) return (view && view.mode === "done") ? t("lan-applied") : "";
   const key = "lan-" + String(code).replace(/_/g, "-");
   const text = t(key);
-  return text === key ? String(code) : text;
+  let message = text === key ? String(code) : text;
+  const detail = view && view.detail ? String(view.detail) : "";
+  if (detail) message += " " + detail;
+  if (view && view.firewall) message += " " + t("lan-firewall");
+  return message;
 }
 
 function lanMessage() {

@@ -720,6 +720,38 @@ fn a_dead_sync_address_does_not_hide_the_listener() {
 }
 
 #[test]
+fn a_closed_port_names_the_address_and_port_zero_is_not_dialed() {
+    let phone_key = new_identity("phone", "Pocket").unwrap();
+    let desk_key = new_identity("desk", "Bench").unwrap();
+    let mut phone = Mem::new("phone");
+    let closed = SocketAddr::from(([127, 0, 0, 1], 1));
+    let zero = SocketAddr::from(([127, 0, 0, 1], 0));
+    let err = open_sync_many(
+        &mut phone,
+        &phone_key,
+        &[zero, closed],
+        desk_key.spki,
+        false,
+        Duration::from_secs(2),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "sync-unreachable");
+    assert!(err.detail.contains("127.0.0.1:1"), "{}", err.detail);
+    assert!(err.detail.contains("refused"), "{}", err.detail);
+    assert!(!err.detail.contains(":0"), "{}", err.detail);
+    let only_zero = open_sync_many(
+        &mut phone,
+        &phone_key,
+        &[zero],
+        desk_key.spki,
+        false,
+        Duration::from_secs(1),
+    )
+    .unwrap_err();
+    assert_eq!(only_zero.detail, "no port");
+}
+
+#[test]
 fn sync_with_no_address_is_unreachable() {
     let phone_key = new_identity("phone", "Pocket").unwrap();
     let desk_key = new_identity("desk", "Bench").unwrap();

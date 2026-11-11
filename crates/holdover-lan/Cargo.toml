@@ -24,6 +24,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 rqrr = "0.7"
 mdns-sd = "0.13"
 if-addrs = "0.13"
+socket2 = "0.5.10"
 
 [dev-dependencies]
 sha2 = "0.10.9"

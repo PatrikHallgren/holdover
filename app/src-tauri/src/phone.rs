@@ -152,12 +152,34 @@ pub fn multicast(on: bool) {
 pub fn log_line(line: &str) {
     #[cfg(target_os = "android")]
     {
+        // liblog does not need the activity or the class loader. The JNI
+        // path was not showing up in `adb logcat -s Holdover`.
+        android_log(line);
         let _ = android::call("logLine", line);
     }
     #[cfg(not(target_os = "android"))]
     {
         let _ = line;
     }
+}
+
+#[cfg(target_os = "android")]
+fn android_log(line: &str) {
+    let tag = std::ffi::CString::new("Holdover").unwrap_or_default();
+    let text = std::ffi::CString::new(line.replace('\0', " ")).unwrap_or_default();
+    unsafe {
+        __android_log_write(4, tag.as_ptr(), text.as_ptr());
+    }
+}
+
+#[cfg(target_os = "android")]
+#[link(name = "log")]
+extern "C" {
+    fn __android_log_write(
+        priority: i32,
+        tag: *const std::ffi::c_char,
+        text: *const std::ffi::c_char,
+    ) -> i32;
 }
 
 pub fn mdns_browse(wait: std::time::Duration) -> Option<Vec<holdover_lan::Found>> {

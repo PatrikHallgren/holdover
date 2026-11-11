@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::time::Duration;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use socket2::{Domain, SockAddr, Socket, Type};
 
 use crate::tls::LanError;
 
@@ -199,24 +200,34 @@ pub fn browse(wait: Duration) -> Result<Vec<Found>, LanError> {
 }
 
 /// `preferred` of 0 asks the system for a port. A preferred port that is busy
-/// falls back to a system port so Ready for a sync still starts.
+/// falls back to a system port so Ready for a sync still starts. The socket
+/// allows reuse so a listener that has just closed does not leave the port
+/// stuck. Two listeners still cannot hold the same port at once.
 pub fn bind_listener(preferred: u16) -> Result<(TcpListener, u16), LanError> {
+    let mut ports = Vec::new();
     if preferred != 0 {
-        if let Ok(listener) = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], preferred))) {
-            let port = listener
+        ports.push(preferred);
+    }
+    ports.push(0);
+    for port in ports {
+        if let Some(listener) = bind_one(port) {
+            let bound = listener
                 .local_addr()
                 .map_err(|_| LanError::new("disconnected"))?
                 .port();
-            return Ok((listener, port));
+            return Ok((listener, bound));
         }
     }
-    let listener = TcpListener::bind(SocketAddr::from(([0, 0, 0, 0], 0)))
-        .map_err(|_| LanError::new("disconnected"))?;
-    let port = listener
-        .local_addr()
-        .map_err(|_| LanError::new("disconnected"))?
-        .port();
-    Ok((listener, port))
+    Err(LanError::new("disconnected"))
+}
+
+fn bind_one(port: u16) -> Option<TcpListener> {
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).ok()?;
+    socket.set_reuse_address(true).ok()?;
+    let addr = SockAddr::from(SocketAddr::from(([0, 0, 0, 0], port)));
+    socket.bind(&addr).ok()?;
+    socket.listen(128).ok()?;
+    Some(TcpListener::from(socket))
 }
 
 #[cfg(test)]
@@ -249,6 +260,17 @@ mod tests {
         assert_eq!(host_rank("10.1.2.3"), 0);
         assert_eq!(host_rank("100.127.0.1"), 1);
         assert_eq!(host_rank("100.63.0.1"), 2);
+    }
+
+    #[test]
+    fn closing_the_listener_frees_the_same_port_and_reuse_is_set() {
+        let (first, port) = bind_listener(0).unwrap();
+        let sock = socket2::SockRef::from(&first);
+        assert!(sock.reuse_address().unwrap());
+        drop(first);
+        let (second, again) = bind_listener(port).unwrap();
+        assert_eq!(again, port, "the closed listener still held the port");
+        drop(second);
     }
 
     #[test]
