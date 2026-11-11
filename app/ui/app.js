@@ -3093,9 +3093,26 @@ function lanStatusText(view) {
   if (failure) return failure;
   if (current.mode === "joining") return t(current.message === "awaiting" ? "lan-awaiting" : "lan-reaching");
   if (current.mode === "paired") return tf("lan-paired", { name: current.message || "" });
+  if (current.message === "sync-reaching") return t("lan-sync-reaching");
+  if (current.message === "discovering") return t("lan-discovering");
+  if (current.mode === "listen") return t("lan-listening");
   if (current.message === "reading") return t("lan-reading");
   if (current.message === "photo-ready") return t("lan-photo-ready");
   return "";
+}
+
+function lanSelf(view) {
+  const port = Number(view && view.listen_port) || 0;
+  if (!port) return "";
+  const hosts = ((view && view.hosts) || []).join(", ");
+  const text = tf(view && view.listening ? "lan-self-listening" : "lan-self", { hosts, port: String(port) });
+  return `<p class="ho-hint" data-lan-self>${esc(text)}</p>`;
+}
+
+function lanErrorCode(text) {
+  const raw = String(text || "");
+  const match = raw.match(/[a-z0-9-]+/);
+  return (match ? match[0] : raw).replace(/^lan-/, "");
 }
 
 function lanStatusBlock(view) {
@@ -3146,7 +3163,7 @@ function lanPairCard(view, nowSec) {
 
 function lanRail() {
   const view = lan || {};
-  const peers = (view.peers || []).map((peer) => `<li><span>${esc(peer.name || peer.device_id || "")}</span> <button type="button" class="ho-btn" data-lan-use="${esc(peer.spki)}" data-host="${esc(peer.host || "")}" data-port="${esc(peer.port || "")}">${esc(t("lan-sync"))}</button> <button type="button" class="ho-btn" data-lan-forget="${esc(peer.spki)}">${esc(t("lan-forget"))}</button></li>`).join("");
+  const peers = (view.peers || []).map((peer) => `<li><span>${esc(peer.name || peer.device_id || "")}</span> <button type="button" class="ho-btn" data-lan-use="${esc(peer.spki)}" data-host="${esc(String(peer.host || "").split(",")[0])}" data-port="${esc(peer.port || "")}">${esc(t("lan-sync"))}</button> <button type="button" class="ho-btn" data-lan-forget="${esc(peer.spki)}">${esc(t("lan-forget"))}</button></li>`).join("");
   const pending = view.pending_name
     ? `<p>${esc(t("lan-pending"))}: ${esc(view.pending_name)}</p>
        <p class="ho-hint">${esc(t("lan-fingerprint"))}: ${esc(view.pending_fingerprint || "")}</p>
@@ -3156,6 +3173,7 @@ function lanRail() {
        </div>`
     : "";
   return `${pending}
+    ${lanSelf(view)}
     ${lanStatusBlock(view)}
     <div class="ho-field"><div class="head"><label for="lan-name">${esc(t("lan-name"))}</label></div>
       <input id="lan-name" value="${esc(lanName || view.name || "")}" maxlength="40" title="${esc(t("lan-name-tip"))}" />
@@ -3272,7 +3290,12 @@ function bindLan() {
   click("lan-accept", () => lanAct({ action: "pair-accept" }));
   click("lan-reject", () => lanAct({ action: "pair-reject" }));
   click("lan-listen", () => lanAct({ action: "listen" }));
-  click("lan-discover", () => lanAct({ action: "discover" }));
+  click("lan-discover", () => {
+    lanHold = null;
+    lan = Object.assign({}, lan || {}, { message: "discovering", code: "" });
+    render();
+    lanAct({ action: "discover" });
+  });
   click("lan-stop", () => lanAct({ action: "stop" }));
   click("lan-copy-code", async () => {
     const node = document.getElementById("lan-offer-text");
@@ -3289,7 +3312,10 @@ function bindLan() {
   });
   click("lan-sync", () => {
     const peer = selectedLanPeer();
-    lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort), spki: peer, include_location: lanInclude });
+    lanHold = null;
+    lan = Object.assign({}, lan || {}, { message: "sync-reaching", code: "" });
+    render();
+    lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort) || 0, spki: peer, include_location: lanInclude });
   });
   click("lan-apply", () => lanAct({ action: "sync-apply", choices: lanChoices }));
   const watchPhoto = (buttonId, inputId, camera) => {
@@ -3332,7 +3358,10 @@ function bindLan() {
     button.addEventListener("click", () => {
       lanHost = button.dataset.host || lanHost;
       lanPort = button.dataset.port || lanPort;
-      lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort), spki: button.dataset.lanUse, include_location: lanInclude });
+      lanHold = null;
+      lan = Object.assign({}, lan || {}, { message: "sync-reaching", code: "" });
+      render();
+      lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort) || 0, spki: button.dataset.lanUse, include_location: lanInclude });
     });
   });
   document.querySelectorAll("[data-lan-forget]").forEach((button) => {
@@ -3419,10 +3448,9 @@ async function lanAct(body) {
     lanStamp = JSON.stringify(next);
     render();
   } catch (error) {
-    const text = String(error.message || error);
-    lan = Object.assign({}, lan || {}, { code: text.replace(/^.*lan-/, "lan-").split(/\s/)[0].replace(/^lan-/, "") || text });
-    const code = text.includes("pair-") || text.includes("schema-") || text.includes("unauthorized") || text.includes("disconnected") ? text : text;
-    lan.code = (code.match(/[a-z0-9-]+/) || [text])[0];
+    const code = lanErrorCode(error && error.message ? error.message : error);
+    lanHold = { kind: "code", token: code };
+    lan = Object.assign({}, lan || {}, { code, message: "" });
     lanStamp = "";
     render();
   }

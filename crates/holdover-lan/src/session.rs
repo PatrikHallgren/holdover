@@ -16,7 +16,7 @@ use holdover_core::{
 };
 use serde_json::{json, Map, Value};
 
-use crate::discover::bind_listener;
+use crate::discover::{bind_listener, local_hosts};
 use crate::identity::{make_offer, pin_from_hex, Identity, Offer};
 use crate::tls::{
     accept_tls, connect_tls, ct_eq, hex_encode, peer_spki_of, read_json, server_config, sha256_hex,
@@ -70,6 +70,7 @@ pub struct Pending {
     name: String,
     spki: [u8; 32],
     host: String,
+    hosts: Vec<String>,
     consumed: Arc<AtomicBool>,
 }
 
@@ -79,7 +80,16 @@ impl PairWait {
         hosts: Vec<String>,
         now: u64,
     ) -> Result<(Self, Offer), LanError> {
-        let (listener, port) = bind_listener()?;
+        Self::start_on(identity, hosts, now, 0)
+    }
+
+    pub fn start_on(
+        identity: Identity,
+        hosts: Vec<String>,
+        now: u64,
+        preferred_port: u16,
+    ) -> Result<(Self, Offer), LanError> {
+        let (listener, port) = bind_listener(preferred_port)?;
         let offer = make_offer(&identity, port, hosts, now);
         let config = server_config(&identity)?;
         Ok((
@@ -181,12 +191,14 @@ impl PairWait {
             .unwrap_or_default();
         let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
         let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
+        let hosts = announced_hosts(hello.get("hosts"));
         Ok(Pending {
             stream: tls,
             device_id,
             name,
             spki: peer,
             host,
+            hosts,
             consumed: self.consumed.clone(),
         })
     }
@@ -209,6 +221,10 @@ impl Pending {
 
     pub fn fingerprint(&self) -> String {
         hex_encode(&self.spki)
+    }
+
+    pub fn client_hosts(&self) -> &[String] {
+        &self.hosts
     }
 
     pub fn accept_with(mut self, server_name: &str, server_device: &str) -> Result<Peer, LanError> {
@@ -314,6 +330,30 @@ pub fn join_pair_with(
     Err(last)
 }
 
+fn announced_hosts(value: Option<&Value>) -> Vec<String> {
+    let mut hosts = Vec::new();
+    let Some(list) = value.and_then(Value::as_array) else {
+        return hosts;
+    };
+    for item in list.iter().take(8) {
+        let Some(text) = item.as_str() else {
+            continue;
+        };
+        let Ok(addr) = text.parse::<std::net::Ipv4Addr>() else {
+            continue;
+        };
+        if addr.is_unspecified() || addr.is_broadcast() || addr.is_link_local() {
+            continue;
+        }
+        let text = addr.to_string();
+        if !hosts.contains(&text) {
+            hosts.push(text);
+        }
+    }
+    crate::discover::sort_hosts(&mut hosts);
+    hosts
+}
+
 fn socket_for(host: &str, port: u16) -> Option<SocketAddr> {
     let text = if host.contains(':') {
         format!("[{host}]:{port}")
@@ -344,6 +384,7 @@ fn pair_on_stream(
             "schema": LAN_SCHEMA,
             "device_id": identity.device_id,
             "name": identity.name,
+            "hosts": local_hosts(),
         }),
     )?;
     let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
@@ -402,7 +443,15 @@ pub struct SyncListener {
 
 impl SyncListener {
     pub fn bind(identity: Identity, pins: Vec<[u8; 32]>) -> Result<Self, LanError> {
-        let (listener, port) = bind_listener()?;
+        Self::bind_on(identity, pins, 0)
+    }
+
+    pub fn bind_on(
+        identity: Identity,
+        pins: Vec<[u8; 32]>,
+        preferred_port: u16,
+    ) -> Result<Self, LanError> {
+        let (listener, port) = bind_listener(preferred_port)?;
         let config = server_config(&identity)?;
         Ok(Self {
             listener,
@@ -595,6 +644,86 @@ pub fn open_sync<C: Catalog>(
     timeout: Duration,
 ) -> Result<ClientSync, LanError> {
     let tcp = dial(address, timeout)?;
+    open_sync_connected(
+        catalog,
+        identity,
+        tcp,
+        address,
+        server_pin,
+        include_location,
+    )
+}
+
+pub fn open_sync_many<C: Catalog>(
+    catalog: &mut C,
+    identity: &Identity,
+    addresses: &[SocketAddr],
+    server_pin: [u8; 32],
+    include_location: bool,
+    timeout: Duration,
+) -> Result<ClientSync, LanError> {
+    if addresses.is_empty() {
+        return Err(LanError::new("sync-unreachable"));
+    }
+    let (tx, rx) = mpsc::channel();
+    for address in addresses {
+        let tx = tx.clone();
+        let address = *address;
+        thread::spawn(move || {
+            if let Ok(stream) = TcpStream::connect_timeout(&address, timeout) {
+                let _ = tx.send((address, stream));
+            }
+        });
+    }
+    drop(tx);
+    let mut last = LanError::new("sync-unreachable");
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        // A socket that is already connected is still tried after the budget.
+        // A dead address must not hide the one that answered.
+        let (address, stream) = if remaining.is_zero() {
+            match rx.try_recv() {
+                Ok(item) => item,
+                Err(_) => break,
+            }
+        } else {
+            match rx.recv_timeout(remaining) {
+                Ok(item) => item,
+                Err(_) => match rx.try_recv() {
+                    Ok(item) => item,
+                    Err(_) => break,
+                },
+            }
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+        match open_sync_connected(
+            catalog,
+            identity,
+            stream,
+            address,
+            server_pin,
+            include_location,
+        ) {
+            Ok(session) => return Ok(session),
+            Err(err) if matches!(err.code.as_str(), "tls" | "disconnected" | "unauthorized") => {
+                last = err;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last)
+}
+
+fn open_sync_connected<C: Catalog>(
+    catalog: &mut C,
+    identity: &Identity,
+    tcp: TcpStream,
+    address: SocketAddr,
+    server_pin: [u8; 32],
+    include_location: bool,
+) -> Result<ClientSync, LanError> {
     let mut tls = connect_tls(tcp, identity, server_pin).map_err(|err| {
         if err.code == "pair-pin" {
             LanError::new("unauthorized")

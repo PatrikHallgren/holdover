@@ -10,14 +10,17 @@ mod identity;
 mod session;
 mod tls;
 
-pub use discover::{advertise, browse, local_hosts, Advertisement, Found, SERVICE_TYPE};
+pub use discover::{
+    advertise, browse, host_kind, host_rank, local_hosts, sort_hosts, Advertisement, Found,
+    DEFAULT_PORT, SERVICE_TYPE,
+};
 pub use identity::{
     decode_qr_image, identity_from_parts, new_identity, offer_qr, offer_qr_png, parse_offer,
     unix_now, Identity, Offer,
 };
 pub use session::{
-    join_pair, join_pair_with, open_sync, preview_value, Catalog, ClientSync, Library, PairWait,
-    Peer, SyncListener, PREVIEW_WAIT,
+    join_pair, join_pair_with, open_sync, open_sync_many, preview_value, Catalog, ClientSync,
+    Library, PairWait, Peer, SyncListener, PREVIEW_WAIT,
 };
 pub use tls::LanError;
 

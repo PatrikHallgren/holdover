@@ -31,8 +31,8 @@ android {
         applicationId = "se.hallgren.holdover"
         minSdk = 26
         targetSdk = 36
-        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1005002").toInt()
-        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.5.2")
+        versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1005003").toInt()
+        versionName = tauriProperties.getProperty("tauri.android.versionName", "1.5.3")
         ndk {
             abiFilters += listOf("arm64-v8a")
         }

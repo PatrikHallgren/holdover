@@ -149,6 +149,87 @@ pub fn multicast(on: bool) {
     }
 }
 
+pub fn log_line(line: &str) {
+    #[cfg(target_os = "android")]
+    {
+        let _ = android::call("logLine", line);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = line;
+    }
+}
+
+pub fn mdns_browse(wait: std::time::Duration) -> Option<Vec<holdover_lan::Found>> {
+    #[cfg(target_os = "android")]
+    {
+        let millis = wait.as_millis().min(5000).to_string();
+        let value = android::call("discoverMdns", &millis).unwrap_or_else(|_| json!([]));
+        let rows = value
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| {
+                let host = row.get("host")?.as_str()?.trim().to_string();
+                let port = row.get("port")?.as_u64()? as u16;
+                let spki = row.get("fp")?.as_str()?.trim().to_string();
+                if host.is_empty() || port == 0 || spki.len() != 64 {
+                    return None;
+                }
+                Some(holdover_lan::Found {
+                    name: row
+                        .get("name")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    host,
+                    port,
+                    device_id: row
+                        .get("id")
+                        .and_then(|item| item.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    spki_hex: spki,
+                })
+            })
+            .collect();
+        Some(rows)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = wait;
+        None
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn mdns_advertise(port: u16, device_id: &str, name: &str, spki_hex: &str) {
+    #[cfg(target_os = "android")]
+    {
+        let payload = json!({
+            "port": port,
+            "id": device_id,
+            "name": name,
+            "fp": spki_hex,
+        })
+        .to_string();
+        let _ = android::call("advertiseMdns", &payload);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (port, device_id, name, spki_hex);
+    }
+}
+
+pub fn mdns_stop() {
+    #[cfg(target_os = "android")]
+    {
+        let _ = android::call("stopMdns", "");
+    }
+    #[cfg(not(target_os = "android"))]
+    {}
+}
+
 pub fn system_mode() -> Option<&'static str> {
     #[cfg(target_os = "android")]
     {

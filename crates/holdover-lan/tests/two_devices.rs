@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,8 +11,8 @@ use holdover_core::{
     FieldStamp, LanChoice, LanCommit, MergeStatus, Side, Stamped, SyncBase, SyncRecord,
 };
 use holdover_lan::{
-    browse, decode_qr_image, join_pair, new_identity, offer_qr_png, open_sync, parse_offer,
-    unix_now, Catalog, ClientSync, Library, PairWait, SyncListener, SERVICE_TYPE,
+    browse, decode_qr_image, join_pair, new_identity, offer_qr_png, open_sync, open_sync_many,
+    parse_offer, unix_now, Catalog, ClientSync, Library, PairWait, SyncListener, SERVICE_TYPE,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -682,6 +682,58 @@ fn an_apply_failure_leaves_both_libraries_unchanged() {
     assert_eq!(desk.records.len(), 1);
     assert_eq!(phone.records.len(), 1);
     assert!(phone.records.iter().all(|row| row.record.id == "rifle-2"));
+}
+
+#[test]
+fn a_dead_sync_address_does_not_hide_the_listener() {
+    let desk_key = new_identity("desk", "Bench").unwrap();
+    let phone_key = new_identity("phone", "Pocket").unwrap();
+    let mut phone = Mem::new("phone");
+    let mut desk = Mem::new("desk");
+    let listener = SyncListener::bind(desk_key.clone(), vec![phone_key.spki]).unwrap();
+    let port = listener.port;
+    let server = thread::spawn(move || {
+        let mut listener = listener;
+        let _ = listener.serve_one(&mut desk, Duration::from_secs(5));
+    });
+    let dead: SocketAddr = "192.0.2.1:9".parse().unwrap();
+    let live: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let started = Instant::now();
+    let session = open_sync_many(
+        &mut phone,
+        &phone_key,
+        &[dead, live],
+        desk_key.spki,
+        false,
+        Duration::from_secs(3),
+    )
+    .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a dead address held the sync for {:?}",
+        started.elapsed()
+    );
+    assert_eq!(session.peer().host, "127.0.0.1");
+    assert_eq!(session.peer().port, port);
+    drop(session);
+    let _ = server.join();
+}
+
+#[test]
+fn sync_with_no_address_is_unreachable() {
+    let phone_key = new_identity("phone", "Pocket").unwrap();
+    let desk_key = new_identity("desk", "Bench").unwrap();
+    let mut phone = Mem::new("phone");
+    let err = open_sync_many(
+        &mut phone,
+        &phone_key,
+        &[],
+        desk_key.spki,
+        false,
+        Duration::from_secs(1),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "sync-unreachable");
 }
 
 #[test]

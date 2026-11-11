@@ -1,17 +1,19 @@
 //! Desktop and phone LAN sync. The listener runs only after the person asks.
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use holdover_core::{field_values, merge_private, FieldStamp, LanChoice, LanCommit, Stamped};
+#[cfg(test)]
+use holdover_lan::open_sync;
 use holdover_lan::{
-    advertise, browse, decode_qr_image, join_pair_with, local_hosts, new_identity, offer_qr,
-    open_sync, parse_offer, preview_value, unix_now, Advertisement, Catalog, ClientSync, Identity,
-    Library, PairWait, Peer, SyncListener, PREVIEW_WAIT,
+    advertise, browse, decode_qr_image, host_kind, host_rank, join_pair_with, local_hosts,
+    new_identity, offer_qr, open_sync_many, parse_offer, preview_value, sort_hosts, unix_now,
+    Advertisement, Catalog, ClientSync, Identity, Library, PairWait, Peer, SyncListener,
+    DEFAULT_PORT, PREVIEW_WAIT,
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -93,13 +95,32 @@ impl LanHub {
             "name": store.lan_name()?,
             "peers": peers,
             "hosts": local_hosts(),
+            "listen_port": if view.port != 0 { view.port } else { self.saved_port(store) },
+            "listening": view.mode == "listen" || view.mode == "pair",
         }))
+    }
+
+    fn saved_port(&self, store: &Store) -> u16 {
+        store
+            .meta_get("lan_port")
+            .ok()
+            .flatten()
+            .and_then(|text| text.parse().ok())
+            .filter(|port| *port != 0)
+            .unwrap_or(DEFAULT_PORT)
+    }
+
+    fn remember_port(&self, store: &Store, port: u16) {
+        if port != 0 {
+            let _ = store.set_meta("lan_port", &port.to_string());
+        }
     }
 
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         self.session.take();
         self._advertise.take();
+        crate::phone::mdns_stop();
         if let Ok(mut view) = self.shared.lock() {
             *view = LanView::default();
         }
@@ -124,8 +145,14 @@ impl LanHub {
                 .map_err(|_| "the library is busy".to_string())?;
             (guard.lan_identity()?, local_hosts())
         };
-        let (wait, offer) =
-            PairWait::start(identity.clone(), hosts, unix_now()).map_err(|err| err.code)?;
+        let preferred = {
+            let guard = store
+                .lock()
+                .map_err(|_| "the library is busy".to_string())?;
+            self.saved_port(&guard)
+        };
+        let (wait, offer) = PairWait::start_on(identity.clone(), hosts, unix_now(), preferred)
+            .map_err(|err| err.code)?;
         let svg = offer_qr(&offer).map_err(|err| err.code)?;
         {
             let mut view = self
@@ -140,20 +167,30 @@ impl LanHub {
             view.message = String::new();
             view.code = String::new();
         }
+        if let Ok(guard) = store.lock() {
+            self.remember_port(&guard, offer.port);
+        }
+        lan_log(
+            "pair-start",
+            "ok",
+            &local_hosts().first().cloned().unwrap_or_default(),
+            offer.port,
+        );
         let shared = self.shared.clone();
         let decision = self.decision.clone();
         *decision
             .lock()
             .map_err(|_| "the sync state is busy".to_string())? = None;
-        let ad = advertise(
+        self._advertise = publish(
             offer.port,
             &identity.device_id,
             &identity.name,
             &identity.spki_hex,
-            &local_hosts()[0],
-        )
-        .ok();
-        self._advertise = ad;
+            &local_hosts()
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "127.0.0.1".into()),
+        );
         multicast(true);
         thread::spawn(move || pair_loop(store, wait, shared, decision, stop, identity));
         Ok(())
@@ -212,7 +249,13 @@ impl LanHub {
                 Err(_) => return,
             };
             match result {
-                Ok(peer) => {
+                Ok(mut peer) => {
+                    let mut hosts = offer.hosts.clone();
+                    if !hosts.iter().any(|host| host == &peer.host) {
+                        hosts.push(peer.host.clone());
+                    }
+                    sort_hosts(&mut hosts);
+                    peer.host = hosts.join(",");
                     if let Ok(guard) = store.lock() {
                         let _ = guard.save_peer(&peer);
                     }
@@ -271,9 +314,18 @@ impl LanHub {
             (guard.lan_identity()?, guard.lan_pins()?)
         };
         if pins.is_empty() {
+            self.fail_visible("lan-no-peer");
+            lan_log("listen", "lan-no-peer", "", 0);
             return Err("lan-no-peer".into());
         }
-        let listener = SyncListener::bind(identity.clone(), pins).map_err(|err| err.code)?;
+        let preferred = {
+            let guard = store
+                .lock()
+                .map_err(|_| "the library is busy".to_string())?;
+            self.saved_port(&guard)
+        };
+        let listener =
+            SyncListener::bind_on(identity.clone(), pins, preferred).map_err(|err| err.code)?;
         let port = listener.port;
         {
             let mut view = self
@@ -283,20 +335,23 @@ impl LanHub {
             view.mode = "listen".into();
             view.port = port;
             view.code = String::new();
-            view.message = String::new();
+            view.message.clear();
+        }
+        if let Ok(guard) = store.lock() {
+            self.remember_port(&guard, port);
         }
         let host = local_hosts()
             .into_iter()
             .next()
             .unwrap_or_else(|| "127.0.0.1".into());
-        self._advertise = advertise(
+        lan_log("listen", "ok", &host, port);
+        self._advertise = publish(
             port,
             &identity.device_id,
             &identity.name,
             &identity.spki_hex,
             &host,
-        )
-        .ok();
+        );
         multicast(true);
         let shared = self.shared.clone();
         thread::spawn(move || listen_loop(store, listener, shared, stop));
@@ -305,41 +360,70 @@ impl LanHub {
 
     pub fn discover(&mut self, store: &Store) -> Result<(), String> {
         let peers = store.lan_peers()?;
-        let found = match browse(Duration::from_millis(1500)) {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|row| {
-                    let paired = peers
-                        .as_array()
-                        .map(|items| items.iter().any(|peer| peer["spki"] == row.spki_hex))
-                        .unwrap_or(false);
-                    json!({
-                        "name": row.name,
-                        "host": row.host,
-                        "port": row.port,
-                        "device_id": row.device_id,
-                        "spki": row.spki_hex,
-                        "paired": paired,
-                    })
-                })
-                .collect(),
-            Err(err) => {
-                let mut view = self
-                    .shared
-                    .lock()
-                    .map_err(|_| "the sync state is busy".to_string())?;
-                view.code = err.code;
-                view.found.clear();
-                return Ok(());
-            }
+        multicast(true);
+        let found = match crate::phone::mdns_browse(Duration::from_secs(2)) {
+            Some(rows) => rows,
+            None => match browse(Duration::from_secs(2)) {
+                Ok(rows) => rows,
+                Err(err) => {
+                    self.release_multicast();
+                    lan_log("discover", &err.code, "", 0);
+                    if let Ok(mut view) = self.shared.lock() {
+                        view.found.clear();
+                        view.message.clear();
+                        view.code = err.code.clone();
+                    }
+                    return Err(err.code);
+                }
+            },
         };
+        self.release_multicast();
+        let found: Vec<Value> = found
+            .into_iter()
+            .map(|row| {
+                let paired = peers
+                    .as_array()
+                    .map(|items| items.iter().any(|peer| peer["spki"] == row.spki_hex))
+                    .unwrap_or(false);
+                json!({
+                    "name": row.name,
+                    "host": row.host,
+                    "port": row.port,
+                    "device_id": row.device_id,
+                    "spki": row.spki_hex,
+                    "paired": paired,
+                })
+            })
+            .collect();
+        lan_log(
+            "discover",
+            if found.is_empty() { "mdns-none" } else { "ok" },
+            "",
+            found.len() as u16,
+        );
         let mut view = self
             .shared
             .lock()
             .map_err(|_| "the sync state is busy".to_string())?;
         view.found = found;
-        view.code = String::new();
+        view.message.clear();
+        view.code = if view.found.is_empty() {
+            "mdns-none".into()
+        } else {
+            String::new()
+        };
         Ok(())
+    }
+
+    fn release_multicast(&self) {
+        let listening = self
+            .shared
+            .lock()
+            .map(|view| view.mode == "listen" || view.mode == "pair")
+            .unwrap_or(false);
+        if !listening {
+            multicast(false);
+        }
     }
 
     pub fn sync_begin(
@@ -351,26 +435,57 @@ impl LanHub {
         include_location: bool,
     ) -> Result<(), String> {
         self.session.take();
-        let identity = {
+        let (identity, peers) = {
             let guard = store
                 .lock()
                 .map_err(|_| "the library is busy".to_string())?;
-            guard.lan_identity()?
+            (guard.lan_identity()?, guard.lan_peers()?)
         };
+        let saved = peers
+            .as_array()
+            .and_then(|items| items.iter().find(|peer| peer["spki"] == spki));
+        let found = self
+            .shared
+            .lock()
+            .map(|view| view.found.clone())
+            .unwrap_or_default();
+        let addresses = sync_addresses(host, port, saved, &found, spki);
+        if addresses.is_empty() || spki_pin(spki).is_err() {
+            self.fail_visible("sync-unreachable");
+            lan_log("sync-begin", "sync-unreachable", host, port);
+            return Err("sync-unreachable".into());
+        }
         let pin = spki_pin(spki)?;
-        let addr: SocketAddr = format!("{host}:{port}")
-            .parse()
-            .map_err(|_| "lan-address".to_string())?;
+        if let Ok(mut view) = self.shared.lock() {
+            view.message = "sync-reaching".into();
+            view.code.clear();
+        }
         let mut catalog = ArcCatalog::new(store.clone())?;
-        let session = open_sync(
+        let session = match open_sync_many(
             &mut catalog,
             &identity,
-            addr,
+            &addresses,
             pin,
             include_location,
-            Duration::from_secs(8),
-        )
-        .map_err(|err| err.code)?;
+            Duration::from_secs(4),
+        ) {
+            Ok(session) => session,
+            Err(err) => {
+                let code = if matches!(
+                    err.code.as_str(),
+                    "sync-unreachable" | "disconnected" | "tls"
+                ) {
+                    "sync-unreachable"
+                } else {
+                    err.code.as_str()
+                };
+                self.fail_visible(code);
+                lan_log("sync-begin", code, host, port);
+                return Err(code.to_string());
+            }
+        };
+        let used_host = session.peer().host.clone();
+        let used_port = session.peer().port;
         let preview = preview_value(&session.preview);
         self.session = Some(session);
         let mut view = self
@@ -379,11 +494,24 @@ impl LanHub {
             .map_err(|_| "the sync state is busy".to_string())?;
         view.mode = "preview".into();
         view.preview = Some(preview);
-        view.code = String::new();
+        view.message.clear();
+        view.code.clear();
         if let Ok(guard) = store.lock() {
-            let _ = guard.remember_peer_addr(spki, host, port);
+            let _ = guard.remember_peer_addr(spki, &used_host, used_port);
         }
+        lan_log("sync-begin", "ok", &used_host, used_port);
         Ok(())
+    }
+
+    fn fail_visible(&self, code: &str) {
+        if let Ok(mut view) = self.shared.lock() {
+            if view.mode != "listen" && view.mode != "pair" {
+                view.mode = "idle".into();
+            }
+            view.message.clear();
+            view.preview = None;
+            view.code = code.to_string();
+        }
     }
 
     pub fn sync_apply(&mut self, store: Arc<Mutex<Store>>, choices: &Value) -> Result<(), String> {
@@ -457,27 +585,39 @@ fn pair_loop(
                     view.pending_fp.clear();
                 }
                 match answer {
-                    Some(true) => match pending
-                        .accept_with(identity.name.as_str(), identity.device_id.as_str())
-                    {
-                        Ok(peer) => {
-                            if let Ok(guard) = store.lock() {
-                                let _ = guard.save_peer(&peer);
+                    Some(true) => {
+                        let mut hosts = pending.client_hosts().to_vec();
+                        match pending
+                            .accept_with(identity.name.as_str(), identity.device_id.as_str())
+                        {
+                            Ok(mut peer) => {
+                                if !peer.host.is_empty()
+                                    && !hosts.iter().any(|item| item == &peer.host)
+                                {
+                                    hosts.push(peer.host.clone());
+                                }
+                                sort_hosts(&mut hosts);
+                                if !hosts.is_empty() {
+                                    peer.host = hosts.join(",");
+                                }
+                                if let Ok(guard) = store.lock() {
+                                    let _ = guard.save_peer(&peer);
+                                }
+                                if let Ok(mut view) = shared.lock() {
+                                    view.mode = "paired".into();
+                                    view.message = peer.name;
+                                    view.offer_svg.clear();
+                                    view.offer_url.clear();
+                                }
+                                return;
                             }
-                            if let Ok(mut view) = shared.lock() {
-                                view.mode = "paired".into();
-                                view.message = peer.name;
-                                view.offer_svg.clear();
-                                view.offer_url.clear();
+                            Err(err) => {
+                                if let Ok(mut view) = shared.lock() {
+                                    view.code = err.code;
+                                }
                             }
-                            return;
                         }
-                        Err(err) => {
-                            if let Ok(mut view) = shared.lock() {
-                                view.code = err.code;
-                            }
-                        }
-                    },
+                    }
                     Some(false) => {
                         let _ = pending.reject();
                     }
@@ -624,6 +764,129 @@ fn multicast(on: bool) {
     crate::phone::multicast(on);
 }
 
+fn peer_hosts(value: &str) -> Vec<String> {
+    let mut hosts: Vec<String> = value
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    hosts.dedup();
+    hosts
+}
+
+fn parse_socket(host: &str, port: u16) -> Option<std::net::SocketAddr> {
+    if port == 0 || host.is_empty() {
+        return None;
+    }
+    let text = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    text.parse().ok()
+}
+
+fn sync_addresses(
+    explicit_host: &str,
+    explicit_port: u16,
+    saved: Option<&Value>,
+    found: &[Value],
+    spki: &str,
+) -> Vec<std::net::SocketAddr> {
+    let mut raw = Vec::new();
+    let saved_hosts = saved
+        .map(|peer| peer_hosts(peer["host"].as_str().unwrap_or("")))
+        .unwrap_or_default();
+    let saved_port = saved.and_then(|peer| peer["port"].as_u64()).unwrap_or(0) as u16;
+    if !explicit_host.trim().is_empty() && explicit_port != 0 {
+        raw.push((explicit_host.trim().to_string(), explicit_port));
+    }
+    let mut ports = Vec::new();
+    if saved_port != 0 {
+        ports.push(saved_port);
+    }
+    if !ports.contains(&DEFAULT_PORT) {
+        ports.push(DEFAULT_PORT);
+    }
+    for host in &saved_hosts {
+        for port in &ports {
+            raw.push((host.clone(), *port));
+        }
+    }
+    for row in found {
+        if !spki.is_empty() && row["spki"].as_str() != Some(spki) {
+            continue;
+        }
+        let host = row["host"].as_str().unwrap_or("").trim().to_string();
+        let port = row["port"].as_u64().unwrap_or(0) as u16;
+        if !host.is_empty() && port != 0 {
+            raw.push((host, port));
+        }
+    }
+    raw.sort_by(|left, right| {
+        host_rank(&left.0)
+            .cmp(&host_rank(&right.0))
+            .then_with(|| left.0.cmp(&right.0))
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    let mut out = Vec::new();
+    for (host, port) in raw {
+        if let Some(addr) = parse_socket(&host, port) {
+            if !out.contains(&addr) {
+                out.push(addr);
+            }
+        }
+        if out.len() == 12 {
+            break;
+        }
+    }
+    out
+}
+
+fn publish(
+    port: u16,
+    device_id: &str,
+    name: &str,
+    spki_hex: &str,
+    host: &str,
+) -> Option<Advertisement> {
+    #[cfg(target_os = "android")]
+    {
+        let _ = host;
+        let _ = advertise;
+        crate::phone::mdns_advertise(port, device_id, name, spki_hex);
+        None
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        advertise(port, device_id, name, spki_hex, host).ok()
+    }
+}
+
+fn lan_log(action: &str, result: &str, host: &str, port: u16) {
+    let kind = if host.is_empty() {
+        "none"
+    } else {
+        host_kind(host)
+    };
+    let line = format!("lan action={action} result={result} host={kind} port={port}");
+    eprintln!("holdover: {line}");
+    crate::phone::log_line(&line);
+    #[cfg(not(target_os = "android"))]
+    {
+        let message = std::ffi::CString::new(line)
+            .unwrap_or_else(|_| std::ffi::CString::new("holdover lan").unwrap());
+        unsafe {
+            libc::openlog(
+                c"holdover".as_ptr(),
+                libc::LOG_PID | libc::LOG_NDELAY,
+                libc::LOG_USER,
+            );
+            libc::syslog(libc::LOG_INFO, c"%s".as_ptr(), message.as_ptr());
+        }
+    }
+}
+
 fn parse_choice_map(value: &Value) -> Result<BTreeMap<String, LanChoice>, String> {
     let mut out = BTreeMap::new();
     let Some(map) = value.as_object() else {
@@ -726,10 +989,31 @@ impl Store {
     }
 
     fn remember_peer_addr(&self, spki: &str, host: &str, port: u16) -> Result<(), String> {
+        let current = self.lan_peers()?;
+        let existing = current
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|peer| peer["spki"] == spki)
+                    .and_then(|peer| peer["host"].as_str())
+                    .map(|text| text.to_string())
+            })
+            .unwrap_or_default();
+        let mut hosts = peer_hosts(&existing);
+        if !host.is_empty() && !hosts.iter().any(|item| item == host) {
+            hosts.push(host.to_string());
+        }
+        sort_hosts(&mut hosts);
+        let joined = if hosts.is_empty() {
+            host.to_string()
+        } else {
+            hosts.join(",")
+        };
         self.conn
             .execute(
-                "UPDATE lan_peer SET host = ?1, port = ?2 WHERE spki = ?3",
-                params![host, port, spki],
+                "UPDATE lan_peer SET host = ?1, port = CASE WHEN ?2 = 0 THEN port ELSE ?2 END WHERE spki = ?3",
+                params![joined, port, spki],
             )
             .map_err(|err| err.to_string())?;
         Ok(())
@@ -842,6 +1126,31 @@ mod tests {
     use super::*;
     use holdover_core::{MergeStatus, SyncBase};
     use serde_json::json;
+
+    #[test]
+    fn sync_tries_the_saved_port_and_the_stable_port_with_lan_first() {
+        let saved = json!({
+            "host": "100.64.0.2,192.168.1.9",
+            "port": 34351,
+            "spki": "abc",
+        });
+        let addrs = sync_addresses("", 0, Some(&saved), &[], "abc");
+        let text: Vec<String> = addrs.iter().map(|addr| addr.to_string()).collect();
+        assert!(text.contains(&"192.168.1.9:34351".to_string()));
+        assert!(text.contains(&"192.168.1.9:43720".to_string()));
+        assert!(text.contains(&"100.64.0.2:34351".to_string()));
+        assert!(text.contains(&"100.64.0.2:43720".to_string()));
+        let lan = text
+            .iter()
+            .position(|addr| addr.starts_with("192.168"))
+            .unwrap();
+        let tail = text
+            .iter()
+            .position(|addr| addr.starts_with("100."))
+            .unwrap();
+        assert!(lan < tail);
+        assert!(sync_addresses("", 0, None, &[], "abc").is_empty());
+    }
 
     #[test]
     fn two_sqlite_libraries_merge_independent_fields_over_tls() {

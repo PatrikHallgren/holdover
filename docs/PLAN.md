@@ -862,7 +862,7 @@ The phases are ordered by dependency. Effort is estimated after M0.
 | **Phase 2: M10, LAN sync** | QR pairing, mDNS, mutual TLS, field-level merge | Pair, sync and conflict flows tested; no internet needed |
 | **Later / not planned** | Swedish UI (low priority); iOS companion (out of scope for now); altitude-varying atmosphere; Monte-Carlo hit probability. *Not planned:* imports from other apps/devices (Strelok, chronographs, Kestrel), bundled maker data or reticles | — |
 
-M10 is implemented in 1.5.2, desktop package revision 1 (`versionCode` 1005002). The pairing picture is in the main pane. Pairing on the phone shows progress or a persistent error. Automated tests run two libraries on one machine over TLS, render the picture at desktop and narrow widths, and drive the pair button and the photograph button. A physical desktop-to-phone session, including a real bundle round-trip on the phone, has not been run. The manual steps are in `docs/M10-LAN.md`. The `.holdover` bundle remains the fallback.
+M10 is implemented in 1.5.3, desktop package revision 1 (`versionCode` 1005003). Pairing on 1.5.2 passed between the Omarchy desktop and the OnePlus 13. The first sync on that pair did not. 1.5.3 keeps one listen port, tries the LAN address before a Tailscale address, and leaves a sync or search failure on screen. Automated tests run two libraries on one machine over TLS, including a dead address beside the listener, and drive Start sync with an empty port field. A physical sync has not passed. The manual steps are in `docs/M10-LAN.md`. The `.holdover` bundle remains the fallback.
 
 ---
 

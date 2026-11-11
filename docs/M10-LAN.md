@@ -1,8 +1,8 @@
 # Milestone 10 checklist
 
-Version 1.5.2, desktop package revision 1. `versionCode` is 1005002. The 1.5.0-1 sideload was 1005000 and the 1.5.0 revision 2 sideload was 1005001. The usual formula for 1.5.1 is also 1005001, which is already installed, so this build is 1.5.2. No tag and no release are created here.
+Version 1.5.3, desktop package revision 1. `versionCode` is 1005003. Pairing was confirmed on 1.5.2 (`versionCode` 1005002, desktop package 1.5.2-1). The first sync on that pair did not show a preview or an error. 1.5.0-1 was 1005000 and 1.5.0 revision 2 was 1005001. The usual formula for 1.5.1 is also 1005001, which is already installed, so that number was skipped. No tag and no release are created here.
 
-This checklist is for a person with the desktop and the phone on the same network. The automated tests do not do these steps. They run two libraries on one machine. A physical desktop-to-phone sync has not been done, and a real `.holdover` round-trip on the phone has not been done either.
+This checklist is for a person with the desktop and the phone on the same network. The automated tests do not do these steps. They run two libraries on one machine. Pairing on the OnePlus 13 and the Omarchy desktop passed on 1.5.2. A physical sync has not passed, and a real `.holdover` round-trip on the phone has not been done either.
 
 The phone install has to be signed with the same key as the 1.4.0 sideload (`versionCode` 1004001). That key stays on the omawork computer. CI signs with `packaging/android/ci-test.keystore` only. A CI APK will not update the phone.
 
@@ -15,17 +15,18 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 
 ## Sync, with the network discovery working
 
-1. On one device, Ready for a sync. Leave that screen open.
-2. On the other, Find on this network. The paired device should appear. Press Start sync on that row.
+1. On one device, Ready for a sync. The phone panel names this device and the port it is listening on. The usual port is 43720. Leave that screen open.
+2. On the other, Find on this network. The paired device should appear. Press Start sync on that row. The screen says it is reaching the paired Holdover.
 3. The preview lists records that would change. Nothing is written yet.
 4. Apply sync. Open a record that was edited on only one side and confirm it arrived. Edit a different field on each side, sync again, and confirm both edits are present. Edit the same field on both sides and confirm the preview asks you to choose. Archive a record on one side and confirm the other side archives it after Apply.
 5. Sync again with nothing new. The preview says nothing changes.
 
 ## Sync, with discovery blocked
 
-1. Ready for a sync on one device. Note the address and port, from the pairing code or from the port on that screen.
-2. On the other device, leave Find on this network unused, or confirm it reports that discovery did not answer.
-3. Type the address and port. Start sync. The preview and Apply behave as above. An address for a device that was not paired is refused and writes nothing.
+1. Ready for a sync on one device. Read the port on the line that starts with "This device". It stays the same across restarts unless that port is already taken.
+2. On the other device, Start sync on the paired row. Leave the address and port fields blank. The sync tries each saved address, the LAN address before a Tailscale address, at the saved port and at 43720.
+3. Find on this network can stay empty when an always-on VPN has the multicast. The phone still says that no other Holdover answered. Start sync does not depend on that search. A failure stays on screen. A log line `lan action=sync-begin` is written with a host kind and a port, not the address itself. On the phone that line is logcat tag `Holdover`. On the desktop it is `journalctl -t holdover`.
+4. The preview and Apply behave as above. An address for a device that was not paired is refused and writes nothing.
 
 ## Offline and failure
 
@@ -35,8 +36,7 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 
 ## What this pass did not do
 
-- Install 1.5.2 (`versionCode` 1005002) on the OnePlus 13 and on the Omarchy desktop. 1.5.0 revision 2 is installed, and its pairing picture does appear in the main pane. A pairing attempt on that install changed nothing on screen and showed no error.
-- Pair the phone with the Omarchy desktop, or finish a sync. That has not passed.
-- Photograph the desktop picture with the OnePlus camera, or choose one from the gallery, on 1.5.2. An automated test decodes a JPEG made from the same picture and drives the Choose photograph button in desktop Chrome. That is not the phone's WebView.
-- Confirm mDNS on that home network.
+- Install 1.5.3 (`versionCode` 1005003) on the OnePlus 13 and on the Omarchy desktop. 1.5.2 is installed on both. Pairing on that pair passed. The first sync did not: the phone still had the old random port, the desktop was listening on a new port, and the screen went back to the introduction.
+- Finish a sync between the phone and the Omarchy desktop. That has not passed.
+- Confirm mDNS while Tailscale is always on. Find on this network can stay empty in that case. The saved addresses and port 43720 are the path that does not need discovery.
 - Confirm a `.holdover` file copied onto the phone and back.

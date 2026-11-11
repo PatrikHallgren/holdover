@@ -15,20 +15,35 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.Inet4Address
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 object PhoneBridge {
   private const val REQUEST_SENSORS = 4401
   private const val REQUEST_CAMERA = 4402
+  private const val TAG = "Holdover"
+  private const val SERVICE_TYPE = "_holdover._tcp."
   private var attached: MainActivity? = null
   private var multicast: WifiManager.MulticastLock? = null
+  private var nsd: NsdManager? = null
+  private var registration: NsdManager.RegistrationListener? = null
+  // Callbacks stay off the main looper. A blocked command thread must not
+  // swallow discovery. An always-on VPN can still hide multicast.
+  private val nsdExecutor = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "holdover-nsd")
+  }
 
   fun attach(activity: MainActivity) {
     attached = activity
@@ -59,6 +74,151 @@ object PhoneBridge {
     } catch (err: Exception) {
       fail("multicast", err.message ?: "multicast lock failed")
     }
+  }
+
+  @JvmStatic
+  fun logLine(context: Context, line: String): String {
+    Log.i(TAG, line.take(300))
+    return JSONObject().put("ok", true).toString()
+  }
+
+  @JvmStatic
+  fun advertiseMdns(context: Context, payload: String): String {
+    return try {
+      holdMulticast(context)
+      stopMdns(context, "")
+      val body = JSONObject(payload)
+      val info = NsdServiceInfo()
+      val id = body.optString("id")
+      info.serviceName = "holdover-" + id.take(8)
+      info.serviceType = SERVICE_TYPE
+      info.port = body.optInt("port")
+      info.setAttribute("id", id)
+      info.setAttribute("fp", body.optString("fp"))
+      info.setAttribute("name", body.optString("name").take(40))
+      info.setAttribute("schema", "1")
+      val manager = context.applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+      val listener = object : NsdManager.RegistrationListener {
+        override fun onServiceRegistered(service: NsdServiceInfo) {
+          Log.i(TAG, "lan action=advertise result=ok port=" + service.port)
+        }
+        override fun onRegistrationFailed(service: NsdServiceInfo, code: Int) {
+          Log.i(TAG, "lan action=advertise result=mdns-unavailable port=" + service.port)
+        }
+        override fun onServiceUnregistered(service: NsdServiceInfo) {}
+        override fun onUnregistrationFailed(service: NsdServiceInfo, code: Int) {}
+      }
+      manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
+      nsd = manager
+      registration = listener
+      JSONObject().put("ok", true).toString()
+    } catch (err: Exception) {
+      Log.i(TAG, "lan action=advertise result=mdns-unavailable port=0")
+      fail("mdns", "discovery did not start")
+    }
+  }
+
+  @JvmStatic
+  fun stopMdns(context: Context, ignored: String): String {
+    val listener = registration
+    val manager = nsd ?: context.applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+    if (listener != null) {
+      try {
+        manager.unregisterService(listener)
+      } catch (_: Exception) {
+      }
+    }
+    registration = null
+    nsd = null
+    return JSONObject().put("ok", true).toString()
+  }
+
+  @JvmStatic
+  fun discoverMdns(context: Context, waitMs: String): String {
+    val found = JSONArray()
+    val manager = context.applicationContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+    val latch = CountDownLatch(1)
+    val listener = object : NsdManager.DiscoveryListener {
+      override fun onDiscoveryStarted(serviceType: String) {}
+      override fun onStartDiscoveryFailed(serviceType: String, code: Int) {
+        Log.i(TAG, "lan action=discover result=mdns-unavailable port=0")
+        latch.countDown()
+      }
+      override fun onStopDiscoveryFailed(serviceType: String, code: Int) {}
+      override fun onDiscoveryStopped(serviceType: String) {
+        latch.countDown()
+      }
+      override fun onServiceLost(service: NsdServiceInfo) {}
+      override fun onServiceFound(service: NsdServiceInfo) {
+        if (!service.serviceType.contains("_holdover._tcp")) return
+        resolve(manager, service, found)
+      }
+    }
+    return try {
+      holdMulticast(context)
+      if (Build.VERSION.SDK_INT >= 34) {
+        manager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, nsdExecutor, listener)
+      } else {
+        manager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
+      }
+      val wait = waitMs.toLongOrNull() ?: 2000L
+      latch.await(wait.coerceIn(500L, 5000L), TimeUnit.MILLISECONDS)
+      try {
+        manager.stopServiceDiscovery(listener)
+      } catch (_: Exception) {
+      }
+      Thread.sleep(800)
+      synchronized(found) { found.toString() }
+    } catch (err: Exception) {
+      Log.i(TAG, "lan action=discover result=mdns-unavailable port=0")
+      found.toString()
+    }
+  }
+
+  private fun holdMulticast(context: Context) {
+    try {
+      setMulticast(context, "1")
+    } catch (_: Exception) {
+    }
+  }
+
+  private fun resolve(manager: NsdManager, service: NsdServiceInfo, found: JSONArray) {
+    val listener = object : NsdManager.ResolveListener {
+      override fun onResolveFailed(info: NsdServiceInfo, code: Int) {}
+      override fun onServiceResolved(info: NsdServiceInfo) {
+        val host = serviceHost(info) ?: return
+        val row = JSONObject()
+        row.put("host", host)
+        row.put("port", info.port)
+        row.put("name", textAttr(info, "name"))
+        row.put("id", textAttr(info, "id"))
+        row.put("fp", textAttr(info, "fp"))
+        synchronized(found) { found.put(row) }
+      }
+    }
+    try {
+      if (Build.VERSION.SDK_INT >= 34) {
+        manager.resolveService(service, nsdExecutor, listener)
+      } else {
+        manager.resolveService(service, listener)
+      }
+    } catch (_: Exception) {
+    }
+  }
+
+  private fun serviceHost(info: NsdServiceInfo): String? {
+    if (Build.VERSION.SDK_INT >= 34) {
+      val addresses = info.hostAddresses
+      val v4 = addresses.firstOrNull { it is Inet4Address }
+      val chosen = v4 ?: addresses.firstOrNull()
+      if (chosen != null) return chosen.hostAddress
+    }
+    return info.host?.hostAddress
+  }
+
+  private fun textAttr(info: NsdServiceInfo, key: String): String {
+    val bytes = info.attributes?.get(key) ?: return ""
+    return String(bytes, Charsets.UTF_8)
   }
 
   @JvmStatic
