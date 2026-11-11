@@ -15,6 +15,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
+import android.net.Network
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -156,8 +157,14 @@ object PhoneBridge {
     }
     return try {
       holdMulticast(context)
-      if (Build.VERSION.SDK_INT >= 34) {
-        manager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, nsdExecutor, listener)
+      if (Build.VERSION.SDK_INT >= 33) {
+        manager.discoverServices(
+          SERVICE_TYPE,
+          NsdManager.PROTOCOL_DNS_SD,
+          null as Network?,
+          nsdExecutor,
+          listener
+        )
       } else {
         manager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
       }
