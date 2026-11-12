@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -16,7 +16,7 @@ use holdover_core::{
 };
 use serde_json::{json, Map, Value};
 
-use crate::discover::{bind_listener, local_hosts};
+use crate::discover::bind_listener;
 use crate::identity::{make_offer, pin_from_hex, Identity, Offer};
 use crate::tls::{
     accept_tls, connect_tls, ct_eq, hex_encode, peer_spki_of, read_json, server_config, sha256_hex,
@@ -62,6 +62,7 @@ pub struct PairWait {
     offer: Offer,
     consumed: Arc<AtomicBool>,
     config: Arc<rustls::ServerConfig>,
+    tailscale_only: bool,
 }
 
 pub struct Pending {
@@ -99,9 +100,15 @@ impl PairWait {
                 offer: offer.clone(),
                 consumed: Arc::new(AtomicBool::new(false)),
                 config,
+                tailscale_only: false,
             },
             offer,
         ))
+    }
+
+    /// Drop TCP connections that are not from 100.64.0.0/10 before the handshake.
+    pub fn accept_tailscale_only(&mut self) {
+        self.tailscale_only = true;
     }
 
     pub fn offer(&self) -> &Offer {
@@ -122,6 +129,10 @@ impl PairWait {
 
     pub fn next(&mut self, now: u64, timeout: Duration) -> Result<Pending, LanError> {
         let stream = accept_one(&self.listener, timeout)?;
+        if self.tailscale_only && !stream_is_tailscale(&stream) {
+            drop(stream);
+            return Err(LanError::new("not-tailscale"));
+        }
         // A socket that never starts TLS must not sit here for the whole
         // accept wait. The phone may have another address connected.
         stream
@@ -384,7 +395,7 @@ fn pair_on_stream(
             "schema": LAN_SCHEMA,
             "device_id": identity.device_id,
             "name": identity.name,
-            "hosts": local_hosts(),
+            "hosts": crate::discover::tailscale_hosts(),
         }),
     )?;
     let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
@@ -439,6 +450,7 @@ pub struct SyncListener {
     pins: Vec<[u8; 32]>,
     config: Arc<rustls::ServerConfig>,
     pub port: u16,
+    tailscale_only: bool,
 }
 
 impl SyncListener {
@@ -459,7 +471,13 @@ impl SyncListener {
             pins,
             config,
             port,
+            tailscale_only: false,
         })
+    }
+
+    /// Drop TCP connections that are not from 100.64.0.0/10 before the handshake.
+    pub fn accept_tailscale_only(&mut self) {
+        self.tailscale_only = true;
     }
 
     pub fn serve_one<C: Catalog>(
@@ -468,6 +486,10 @@ impl SyncListener {
         timeout: Duration,
     ) -> Result<(), LanError> {
         let tcp = accept_one(&self.listener, timeout)?;
+        if self.tailscale_only && !stream_is_tailscale(&tcp) {
+            drop(tcp);
+            return Err(LanError::new("not-tailscale"));
+        }
         let mut tls = match accept_tls(tcp, self.config.clone()) {
             Ok(tls) => tls,
             Err(_) => return Err(LanError::new("tls")),
@@ -970,6 +992,16 @@ fn attachment_ok(bytes: &[u8]) -> bool {
 
 fn refuse(stream: &mut ServerStream, code: &str) -> Result<(), LanError> {
     write_json(stream, &json!({"t": "pair-reject", "code": code}))
+}
+
+fn stream_is_tailscale(stream: &TcpStream) -> bool {
+    match stream.peer_addr() {
+        Ok(addr) => match addr.ip() {
+            IpAddr::V4(ip) => crate::discover::is_tailscale(&ip.to_string()),
+            IpAddr::V6(_) => false,
+        },
+        Err(_) => false,
+    }
 }
 
 fn accept_one(listener: &TcpListener, timeout: Duration) -> Result<TcpStream, LanError> {

@@ -1,6 +1,8 @@
-//! Desktop and phone LAN sync. The listener runs only after the person asks.
+//! Desktop and phone sync over Tailscale. The listener stays on port 43720
+//! while the app is open and accepts only 100.64.0.0/10 from a paired key.
 
 use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -10,10 +12,9 @@ use holdover_core::{field_values, merge_private, FieldStamp, LanChoice, LanCommi
 #[cfg(test)]
 use holdover_lan::open_sync;
 use holdover_lan::{
-    advertise, browse, decode_qr_image, host_kind, host_rank, join_pair_with, local_hosts,
-    new_identity, offer_qr, open_sync_many, parse_offer, preview_value, sort_hosts, unix_now,
-    Advertisement, Catalog, ClientSync, Identity, Library, PairWait, Peer, SyncListener,
-    DEFAULT_PORT, PREVIEW_WAIT,
+    decode_qr_image, host_kind, is_tailscale, join_pair_with, new_identity, offer_qr,
+    open_sync_many, parse_offer, preview_value, sort_hosts, tailscale_hosts, unix_now, Catalog,
+    ClientSync, Identity, Library, PairWait, Peer, SyncListener, DEFAULT_PORT, PREVIEW_WAIT,
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -26,7 +27,6 @@ pub struct LanHub {
     shared: Arc<Mutex<LanView>>,
     session: Option<ClientSync>,
     decision: Arc<Mutex<Option<bool>>>,
-    _advertise: Option<Advertisement>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -41,7 +41,6 @@ struct LanView {
     message: String,
     code: String,
     detail: String,
-    firewall: bool,
     preview: Option<Value>,
     found: Vec<Value>,
 }
@@ -59,7 +58,6 @@ impl Default for LanView {
             message: String::new(),
             code: String::new(),
             detail: String::new(),
-            firewall: false,
             preview: None,
             found: Vec::new(),
         }
@@ -73,7 +71,6 @@ impl Default for LanHub {
             shared: Arc::new(Mutex::new(LanView::default())),
             session: None,
             decision: Arc::new(Mutex::new(None)),
-            _advertise: None,
             worker: None,
         }
     }
@@ -97,14 +94,13 @@ impl LanHub {
             "message": view.message,
             "code": view.code,
             "detail": view.detail,
-            "firewall": view.firewall,
             "preview": view.preview,
             "found": view.found,
             "name": store.lan_name()?,
             "peers": peers,
-            "hosts": local_hosts(),
-            "listen_port": if view.port != 0 { view.port } else { DEFAULT_PORT },
-            "listening": view.mode == "listen" || view.mode == "pair",
+            "tailscale": tailscale_hosts(),
+            "listen_port": DEFAULT_PORT,
+            "listening": view.mode == "listen" && view.port == DEFAULT_PORT,
         }))
     }
 
@@ -114,20 +110,69 @@ impl LanHub {
         }
     }
 
-    pub fn stop(&mut self) {
+    fn shutdown_worker(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         // The accept loop notices the flag within a second and drops the
-        // socket. Joining here is what lets the next Ready bind 43720 again.
+        // socket. Joining here is what frees 43720 for the next bind.
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
-        self.session.take();
-        self._advertise.take();
         crate::phone::mdns_stop();
+    }
+
+    pub fn stop(&mut self) {
+        self.shutdown_worker();
+        self.session.take();
         if let Ok(mut view) = self.shared.lock() {
             *view = LanView::default();
         }
-        multicast(false);
+    }
+
+    /// Keep a sync listener on 43720 unless a pairing code is on screen.
+    pub fn ensure_listener(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
+        let mode = self
+            .shared
+            .lock()
+            .map(|view| view.mode.clone())
+            .unwrap_or_else(|_| "idle".into());
+        if mode == "pair" || mode == "joining" {
+            return Ok(());
+        }
+        if self.worker_alive() {
+            return Ok(());
+        }
+        match self.listen(store) {
+            Ok(()) => Ok(()),
+            Err(err) if err == "port-busy" => Ok(()),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn cancel(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
+        self.session.take();
+        let mode = self
+            .shared
+            .lock()
+            .map(|view| view.mode.clone())
+            .unwrap_or_else(|_| "idle".into());
+        if mode == "pair" || mode == "joining" {
+            self.shutdown_worker();
+            if let Ok(mut view) = self.shared.lock() {
+                view.mode = "idle".into();
+                view.offer_svg.clear();
+                view.offer_url.clear();
+                view.pending_name.clear();
+                view.pending_fp.clear();
+                view.code.clear();
+                view.detail.clear();
+            }
+        } else if mode == "preview" {
+            if let Ok(mut view) = self.shared.lock() {
+                view.preview = None;
+                view.mode = "idle".into();
+            }
+        }
+        self.ensure_listener(store)
     }
 
     fn worker_alive(&self) -> bool {
@@ -145,17 +190,31 @@ impl LanHub {
     }
 
     pub fn pair_start(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
+        let hosts = tailscale_hosts();
+        if hosts.is_empty() {
+            self.fail_visible("no-tailscale", "no tailscale");
+            lan_log_detail("pair-start", "no-tailscale", "host=none port=43720");
+            return Err("no-tailscale".into());
+        }
         self.stop();
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
-        let (identity, hosts) = {
+        let identity = {
             let guard = store
                 .lock()
                 .map_err(|_| "the library is busy".to_string())?;
-            (guard.lan_identity()?, local_hosts())
+            guard.lan_identity()?
         };
-        let (wait, offer) = PairWait::start_on(identity.clone(), hosts, unix_now(), DEFAULT_PORT)
-            .map_err(|err| err.code)?;
+        let (mut wait, offer) =
+            PairWait::start_on(identity.clone(), hosts.clone(), unix_now(), DEFAULT_PORT)
+                .map_err(|err| err.code)?;
+        if offer.port != DEFAULT_PORT {
+            drop(wait);
+            self.fail_visible("port-busy", "43720");
+            lan_log_detail("pair-start", "port-busy", "port=43720");
+            return Err("port-busy".into());
+        }
+        wait.accept_tailscale_only();
         let svg = offer_qr(&offer).map_err(|err| err.code)?;
         {
             let mut view = self
@@ -170,7 +229,6 @@ impl LanHub {
             view.message = String::new();
             view.code = String::new();
             view.detail.clear();
-            view.firewall = false;
         }
         if let Ok(guard) = store.lock() {
             self.remember_port(&guard, offer.port);
@@ -178,7 +236,7 @@ impl LanHub {
         lan_log(
             "pair-start",
             "ok",
-            &local_hosts().first().cloned().unwrap_or_default(),
+            hosts.first().map(String::as_str).unwrap_or(""),
             offer.port,
         );
         let shared = self.shared.clone();
@@ -186,17 +244,6 @@ impl LanHub {
         *decision
             .lock()
             .map_err(|_| "the sync state is busy".to_string())? = None;
-        self._advertise = publish(
-            offer.port,
-            &identity.device_id,
-            &identity.name,
-            &identity.spki_hex,
-            &local_hosts()
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "127.0.0.1".into()),
-        );
-        multicast(true);
         self.worker = Some(thread::spawn(move || {
             pair_loop(store, wait, shared, decision, stop, identity)
         }));
@@ -204,8 +251,7 @@ impl LanHub {
     }
 
     pub fn pair_join(&mut self, store: Arc<Mutex<Store>>, code: &str) -> Result<(), String> {
-        self.stop();
-        let offer = match parse_offer(code.trim()) {
+        let mut offer = match parse_offer(code.trim()) {
             Ok(offer) => offer,
             Err(err) => {
                 self.note(&err.code, "");
@@ -216,6 +262,14 @@ impl LanHub {
             self.note("pair-expired", "");
             return Err("pair-expired".into());
         }
+        offer.port = DEFAULT_PORT;
+        offer.hosts.retain(|host| is_tailscale(host));
+        if offer.hosts.is_empty() {
+            self.fail_visible("need-tailscale", "no tailscale");
+            lan_log_detail("pair-join", "need-tailscale", "host=none port=43720");
+            return Err("need-tailscale".into());
+        }
+        self.stop();
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
         let identity = {
@@ -258,22 +312,28 @@ impl LanHub {
             match result {
                 Ok(mut peer) => {
                     let mut hosts = offer.hosts.clone();
-                    if !hosts.iter().any(|host| host == &peer.host) {
+                    if is_tailscale(&peer.host) && !hosts.iter().any(|host| host == &peer.host) {
                         hosts.push(peer.host.clone());
                     }
+                    hosts.retain(|host| is_tailscale(host));
                     sort_hosts(&mut hosts);
                     peer.host = hosts.join(",");
+                    peer.port = DEFAULT_PORT;
                     if let Ok(guard) = store.lock() {
                         let _ = guard.save_peer(&peer);
                     }
                     view.mode = "paired".into();
                     view.message = peer.name;
                     view.code.clear();
+                    view.detail.clear();
+                    lan_log("pair-join", "ok", &peer.host, DEFAULT_PORT);
                 }
                 Err(err) => {
                     view.mode = "idle".into();
                     view.message.clear();
-                    view.code = err.code;
+                    view.code = err.code.clone();
+                    view.detail = pair_detail(&offer.hosts, &err.code);
+                    lan_log_detail("pair-join", &err.code, &view.detail);
                 }
             }
         });
@@ -311,10 +371,10 @@ impl LanHub {
     }
 
     pub fn listen(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
-        if self.reuse_listen(&store)? {
+        if self.listener_up() {
             return Ok(());
         }
-        self.stop();
+        self.shutdown_worker();
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = stop.clone();
         let (identity, pins) = {
@@ -323,42 +383,36 @@ impl LanHub {
                 .map_err(|_| "the library is busy".to_string())?;
             (guard.lan_identity()?, guard.lan_pins()?)
         };
-        if pins.is_empty() {
-            self.fail_visible("lan-no-peer", "", false);
-            lan_log_detail("listen", "lan-no-peer", "host=none");
-            return Err("lan-no-peer".into());
+        let mut listener =
+            SyncListener::bind_on(identity, pins, DEFAULT_PORT).map_err(|err| err.code)?;
+        if listener.port != DEFAULT_PORT {
+            drop(listener);
+            self.fail_visible("port-busy", "43720");
+            lan_log_detail("listen", "port-busy", "port=43720");
+            return Err("port-busy".into());
         }
-        let listener =
-            SyncListener::bind_on(identity.clone(), pins, DEFAULT_PORT).map_err(|err| err.code)?;
-        let port = listener.port;
+        listener.accept_tailscale_only();
+        let tails = tailscale_hosts();
         {
             let mut view = self
                 .shared
                 .lock()
                 .map_err(|_| "the sync state is busy".to_string())?;
             view.mode = "listen".into();
-            view.port = port;
-            view.code = String::new();
-            view.detail.clear();
-            view.firewall = false;
-            view.message.clear();
+            view.port = DEFAULT_PORT;
+            if view.code == "port-busy" {
+                view.code.clear();
+                view.detail.clear();
+            }
         }
         if let Ok(guard) = store.lock() {
-            self.remember_port(&guard, port);
+            self.remember_port(&guard, DEFAULT_PORT);
         }
-        let host = local_hosts()
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "127.0.0.1".into());
-        lan_log("listen", "ok", &host, port);
-        self._advertise = publish(
-            port,
-            &identity.device_id,
-            &identity.name,
-            &identity.spki_hex,
-            &host,
-        );
-        multicast(true);
+        if let Some(host) = tails.first() {
+            lan_log("listen", "ok", host, DEFAULT_PORT);
+        } else {
+            lan_log_detail("listen", "no-tailscale", "host=none port=43720");
+        }
         let shared = self.shared.clone();
         self.worker = Some(thread::spawn(move || {
             listen_loop(store, listener, shared, stop)
@@ -366,114 +420,21 @@ impl LanHub {
         Ok(())
     }
 
-    /// A second Ready keeps the socket that is already accepting. Rebinding
-    /// while that socket was still open is what moved the port off 43720.
-    fn reuse_listen(&mut self, store: &Arc<Mutex<Store>>) -> Result<bool, String> {
+    fn listener_up(&self) -> bool {
         if !self.worker_alive() {
-            return Ok(false);
+            return false;
         }
-        let port = {
-            let view = self
-                .shared
-                .lock()
-                .map_err(|_| "the sync state is busy".to_string())?;
-            if view.mode != "listen" || view.port == 0 {
-                return Ok(false);
-            }
-            view.port
-        };
-        let identity = store
+        self.shared
             .lock()
-            .map_err(|_| "the library is busy".to_string())?
-            .lan_identity()?;
-        let host = local_hosts()
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| "127.0.0.1".into());
-        self._advertise = publish(
-            port,
-            &identity.device_id,
-            &identity.name,
-            &identity.spki_hex,
-            &host,
-        );
-        lan_log("listen", "ok", &host, port);
-        Ok(true)
-    }
-
-    pub fn discover(&mut self, store: &Store) -> Result<(), String> {
-        let peers = store.lan_peers()?;
-        multicast(true);
-        let found = match crate::phone::mdns_browse(Duration::from_secs(2)) {
-            Some(rows) => rows,
-            None => match browse(Duration::from_secs(2)) {
-                Ok(rows) => rows,
-                Err(err) => {
-                    self.release_multicast();
-                    lan_log("discover", &err.code, "", 0);
-                    if let Ok(mut view) = self.shared.lock() {
-                        view.found.clear();
-                        view.message.clear();
-                        view.code = err.code.clone();
-                    }
-                    return Err(err.code);
-                }
-            },
-        };
-        self.release_multicast();
-        let found: Vec<Value> = found
-            .into_iter()
-            .map(|row| {
-                let paired = peers
-                    .as_array()
-                    .map(|items| items.iter().any(|peer| peer["spki"] == row.spki_hex))
-                    .unwrap_or(false);
-                json!({
-                    "name": row.name,
-                    "host": row.host,
-                    "port": row.port,
-                    "device_id": row.device_id,
-                    "spki": row.spki_hex,
-                    "paired": paired,
-                })
-            })
-            .collect();
-        lan_log(
-            "discover",
-            if found.is_empty() { "mdns-none" } else { "ok" },
-            "",
-            found.len() as u16,
-        );
-        let mut view = self
-            .shared
-            .lock()
-            .map_err(|_| "the sync state is busy".to_string())?;
-        view.found = found;
-        view.message.clear();
-        view.code = if view.found.is_empty() {
-            "mdns-none".into()
-        } else {
-            String::new()
-        };
-        Ok(())
-    }
-
-    fn release_multicast(&self) {
-        let listening = self
-            .shared
-            .lock()
-            .map(|view| view.mode == "listen" || view.mode == "pair")
-            .unwrap_or(false);
-        if !listening {
-            multicast(false);
-        }
+            .map(|view| view.mode == "listen" && view.port == DEFAULT_PORT)
+            .unwrap_or(false)
     }
 
     pub fn sync_begin(
         &mut self,
         store: Arc<Mutex<Store>>,
         host: &str,
-        port: u16,
+        _port: u16,
         spki: &str,
         include_location: bool,
     ) -> Result<(), String> {
@@ -487,17 +448,17 @@ impl LanHub {
         let saved = peers
             .as_array()
             .and_then(|items| items.iter().find(|peer| peer["spki"] == spki));
-        let found = self
-            .shared
-            .lock()
-            .map(|view| view.found.clone())
-            .unwrap_or_default();
-        let addresses = sync_addresses(host, port, saved, &found, spki);
+        let addresses = sync_addresses(host, saved);
         if addresses.is_empty() || spki_pin(spki).is_err() {
-            let detail = "no port";
-            self.fail_visible("sync-unreachable", detail, false);
-            lan_log_detail("sync-begin", "sync-unreachable", detail);
-            return Err("sync-unreachable".into());
+            let typed = host.trim();
+            let (code, detail) = if typed.is_empty() {
+                ("need-tailscale", "no tailscale".to_string())
+            } else {
+                ("no-tailscale", format!("tried {typed}:43720 no tailscale"))
+            };
+            self.fail_visible(code, &detail);
+            lan_log_detail("sync-begin", code, &detail);
+            return Err(code.into());
         }
         let pin = spki_pin(spki)?;
         if let Ok(mut view) = self.shared.lock() {
@@ -523,9 +484,9 @@ impl LanHub {
                 } else {
                     err.code.as_str()
                 };
-                let firewall = lan_timed_out(&err.detail);
-                self.fail_visible(code, &err.detail, firewall);
-                lan_log_detail("sync-begin", code, &err.detail);
+                let detail = err.detail.replace("unauthorized", "auth failed");
+                self.fail_visible(code, &detail);
+                lan_log_detail("sync-begin", code, &detail);
                 return Err(code.to_string());
             }
         };
@@ -542,7 +503,6 @@ impl LanHub {
         view.message.clear();
         view.code.clear();
         view.detail.clear();
-        view.firewall = false;
         if let Ok(guard) = store.lock() {
             let _ = guard.remember_peer_addr(spki, &used_host, used_port);
         }
@@ -550,7 +510,7 @@ impl LanHub {
         Ok(())
     }
 
-    fn fail_visible(&self, code: &str, detail: &str, firewall: bool) {
+    fn fail_visible(&self, code: &str, detail: &str) {
         if let Ok(mut view) = self.shared.lock() {
             if view.mode != "listen" && view.mode != "pair" {
                 view.mode = "idle".into();
@@ -559,7 +519,6 @@ impl LanHub {
             view.preview = None;
             view.code = code.to_string();
             view.detail = detail.to_string();
-            view.firewall = firewall;
         }
     }
 
@@ -640,15 +599,15 @@ fn pair_loop(
                             .accept_with(identity.name.as_str(), identity.device_id.as_str())
                         {
                             Ok(mut peer) => {
-                                if !peer.host.is_empty()
+                                if is_tailscale(&peer.host)
                                     && !hosts.iter().any(|item| item == &peer.host)
                                 {
                                     hosts.push(peer.host.clone());
                                 }
+                                hosts.retain(|item| is_tailscale(item));
                                 sort_hosts(&mut hosts);
-                                if !hosts.is_empty() {
-                                    peer.host = hosts.join(",");
-                                }
+                                peer.host = hosts.join(",");
+                                peer.port = DEFAULT_PORT;
                                 if let Ok(guard) = store.lock() {
                                     let _ = guard.save_peer(&peer);
                                 }
@@ -676,7 +635,7 @@ fn pair_loop(
                     }
                 }
             }
-            Err(err) if err.code == "disconnected" || err.code == "tls" => {}
+            Err(err) if matches!(err.code.as_str(), "disconnected" | "tls" | "not-tailscale") => {}
             Err(err) => {
                 if let Ok(mut view) = shared.lock() {
                     view.code = err.code;
@@ -730,7 +689,11 @@ fn listen_loop(
                     view.code = String::new();
                 }
             }
-            Err(err) if err.code == "disconnected" => {}
+            Err(err) if err.code == "disconnected" || err.code == "not-tailscale" => {
+                if err.code == "not-tailscale" {
+                    lan_log_detail("listen", "not-tailscale", "host=other port=43720");
+                }
+            }
             Err(err) => {
                 if let Ok(mut view) = shared.lock() {
                     view.code = err.code;
@@ -809,10 +772,6 @@ impl Catalog for ArcCatalog {
     }
 }
 
-fn multicast(on: bool) {
-    crate::phone::multicast(on);
-}
-
 fn peer_hosts(value: &str) -> Vec<String> {
     let mut hosts: Vec<String> = value
         .split(',')
@@ -823,109 +782,64 @@ fn peer_hosts(value: &str) -> Vec<String> {
     hosts
 }
 
-fn parse_socket(host: &str, port: u16) -> Option<std::net::SocketAddr> {
-    if port == 0 || host.is_empty() {
-        return None;
-    }
-    let text = if host.contains(':') {
-        format!("[{host}]:{port}")
+fn pair_detail(hosts: &[String], code: &str) -> String {
+    let why = if code == "pair-pin" || code == "unauthorized" {
+        "auth failed"
+    } else if code == "pair-unreachable" {
+        "timeout"
     } else {
-        format!("{host}:{port}")
+        code
     };
-    text.parse().ok()
+    hosts
+        .iter()
+        .map(|host| format!("tried {host}:{DEFAULT_PORT} {why}"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
-fn sync_addresses(
-    explicit_host: &str,
-    explicit_port: u16,
-    saved: Option<&Value>,
-    found: &[Value],
-    spki: &str,
-) -> Vec<std::net::SocketAddr> {
-    let mut raw = Vec::new();
-    let saved_hosts = saved
-        .map(|peer| peer_hosts(peer["host"].as_str().unwrap_or("")))
-        .unwrap_or_default();
-    let saved_port = saved.and_then(|peer| peer["port"].as_u64()).unwrap_or(0) as u16;
-    if !explicit_host.trim().is_empty() && explicit_port != 0 {
-        raw.push((explicit_host.trim().to_string(), explicit_port));
-    }
-    let mut ports = Vec::new();
-    if saved_port != 0 {
-        ports.push(saved_port);
-    }
-    if !ports.contains(&DEFAULT_PORT) {
-        ports.push(DEFAULT_PORT);
-    }
-    for host in &saved_hosts {
-        for port in &ports {
-            raw.push((host.clone(), *port));
+/// A typed address wins. Otherwise the saved Tailscale addresses are used.
+/// Wi-Fi addresses and port 0 are never dialed. A MagicDNS name is kept only
+/// when it resolves inside 100.64.0.0/10.
+fn sync_addresses(explicit_host: &str, saved: Option<&Value>) -> Vec<SocketAddr> {
+    let typed = explicit_host.trim();
+    let mut hosts = Vec::new();
+    if !typed.is_empty() {
+        hosts.extend(tailscale_targets(typed));
+    } else if let Some(peer) = saved {
+        for host in peer_hosts(peer["host"].as_str().unwrap_or("")) {
+            hosts.extend(tailscale_targets(&host));
         }
     }
-    for row in found {
-        if !spki.is_empty() && row["spki"].as_str() != Some(spki) {
-            continue;
-        }
-        let host = row["host"].as_str().unwrap_or("").trim().to_string();
-        let port = row["port"].as_u64().unwrap_or(0) as u16;
-        if !host.is_empty() && port != 0 {
-            raw.push((host, port));
-        }
-    }
-    raw.sort_by(|left, right| {
-        host_rank(&left.0)
-            .cmp(&host_rank(&right.0))
-            .then_with(|| left.0.cmp(&right.0))
-            .then_with(|| left.1.cmp(&right.1))
-    });
     let mut out = Vec::new();
-    for (host, port) in raw {
-        if let Some(addr) = parse_socket(&host, port) {
-            if !out.contains(&addr) {
-                out.push(addr);
-            }
-        }
-        if out.len() == 12 {
-            break;
+    for ip in hosts {
+        let addr = SocketAddr::new(ip, DEFAULT_PORT);
+        if addr.port() != 0 && !out.contains(&addr) {
+            out.push(addr);
         }
     }
-    out.retain(|addr| addr.port() != 0);
     out
 }
 
-fn lan_timed_out(detail: &str) -> bool {
-    detail.split(';').any(|part| {
-        let part = part.trim();
-        if !part.ends_with(" timeout") {
-            return false;
-        }
-        let Some(addr) = part.split_whitespace().nth(1) else {
-            return false;
+fn tailscale_targets(host: &str) -> Vec<IpAddr> {
+    if let Ok(ip) = host.parse::<Ipv4Addr>() {
+        return if is_tailscale(host) {
+            vec![IpAddr::V4(ip)]
+        } else {
+            Vec::new()
         };
-        let host = addr.rsplit_once(':').map(|(host, _)| host).unwrap_or(addr);
-        let host = host.trim_matches(|ch| ch == '[' || ch == ']');
-        host_rank(host) == 0
-    })
-}
-
-fn publish(
-    port: u16,
-    device_id: &str,
-    name: &str,
-    spki_hex: &str,
-    host: &str,
-) -> Option<Advertisement> {
-    #[cfg(target_os = "android")]
-    {
-        let _ = host;
-        let _ = advertise;
-        crate::phone::mdns_advertise(port, device_id, name, spki_hex);
-        None
     }
-    #[cfg(not(target_os = "android"))]
-    {
-        advertise(port, device_id, name, spki_hex, host).ok()
+    let Ok(found) = (host, DEFAULT_PORT).to_socket_addrs() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for addr in found {
+        if let IpAddr::V4(ip) = addr.ip() {
+            if is_tailscale(&ip.to_string()) && !out.contains(&IpAddr::V4(ip)) {
+                out.push(IpAddr::V4(ip));
+            }
+        }
     }
+    out
 }
 
 fn lan_log(action: &str, result: &str, host: &str, port: u16) {
@@ -1071,19 +985,21 @@ impl Store {
             })
             .unwrap_or_default();
         let mut hosts = peer_hosts(&existing);
-        if !host.is_empty() && !hosts.iter().any(|item| item == host) {
+        hosts.retain(|item| is_tailscale(item));
+        if is_tailscale(host) && !hosts.iter().any(|item| item == host) {
             hosts.push(host.to_string());
         }
         sort_hosts(&mut hosts);
         let joined = if hosts.is_empty() {
-            host.to_string()
+            existing
         } else {
             hosts.join(",")
         };
+        let stored_port = if port == 0 { DEFAULT_PORT } else { port };
         self.conn
             .execute(
-                "UPDATE lan_peer SET host = ?1, port = CASE WHEN ?2 = 0 THEN port ELSE ?2 END WHERE spki = ?3",
-                params![joined, port, spki],
+                "UPDATE lan_peer SET host = ?1, port = ?2 WHERE spki = ?3",
+                params![joined, stored_port, spki],
             )
             .map_err(|err| err.to_string())?;
         Ok(())
@@ -1198,52 +1114,22 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn sync_tries_the_saved_port_and_the_stable_port_with_lan_first() {
+    fn sync_dials_only_the_tailscale_address_on_the_fixed_port() {
         let saved = json!({
-            "host": "100.64.0.2,192.168.1.9",
-            "port": 34351,
-            "spki": "abc",
-        });
-        let addrs = sync_addresses("", 0, Some(&saved), &[], "abc");
-        let text: Vec<String> = addrs.iter().map(|addr| addr.to_string()).collect();
-        assert!(text.contains(&"192.168.1.9:34351".to_string()));
-        assert!(text.contains(&"192.168.1.9:43720".to_string()));
-        assert!(text.contains(&"100.64.0.2:34351".to_string()));
-        assert!(text.contains(&"100.64.0.2:43720".to_string()));
-        let lan = text
-            .iter()
-            .position(|addr| addr.starts_with("192.168"))
-            .unwrap();
-        let tail = text
-            .iter()
-            .position(|addr| addr.starts_with("100."))
-            .unwrap();
-        assert!(lan < tail);
-        assert!(sync_addresses("", 0, None, &[], "abc").is_empty());
-    }
-
-    #[test]
-    fn a_blank_port_never_dials_zero_and_keeps_a_discovered_port() {
-        let saved = json!({
-            "host": "100.64.0.2,192.168.1.9",
+            "host": "192.168.1.9,100.64.0.2",
             "port": 0,
             "spki": "abc",
         });
-        let found = vec![json!({
-            "host": "192.168.1.9",
-            "port": 36333,
-            "spki": "abc",
-        })];
-        let addrs = sync_addresses("100.64.0.2", 0, Some(&saved), &found, "abc");
-        assert!(addrs.iter().all(|addr| addr.port() != 0));
-        assert!(addrs.iter().any(|addr| addr.port() == 43720));
-        assert!(addrs.iter().any(|addr| addr.port() == 36333));
-        assert!(addrs[0].ip().to_string().starts_with("192.168"));
-        assert!(lan_timed_out(
-            "tried 192.168.1.9:43720 timeout; tried 100.64.0.2:43720 refused"
-        ));
-        assert!(!lan_timed_out("tried 100.64.0.2:43720 timeout"));
-        assert!(!lan_timed_out("tried 192.168.1.9:43720 refused"));
+        let addrs = sync_addresses("", Some(&saved));
+        assert_eq!(addrs.len(), 1);
+        assert_eq!(addrs[0].to_string(), "100.64.0.2:43720");
+        assert!(sync_addresses("192.168.1.9", Some(&saved)).is_empty());
+        assert_eq!(
+            sync_addresses("100.127.1.4", Some(&saved))[0].to_string(),
+            "100.127.1.4:43720"
+        );
+        assert!(sync_addresses("localhost", None).is_empty());
+        assert!(sync_addresses("", None).is_empty());
     }
 
     #[test]
@@ -1291,15 +1177,19 @@ mod tests {
         let second = hub.status(&store.lock().unwrap()).unwrap()["port"]
             .as_u64()
             .unwrap();
-        assert_eq!(second, first, "the second Ready opened a new port");
-        hub.pair_start(store.clone()).unwrap();
-        let paired = hub.status(&store.lock().unwrap()).unwrap()["port"]
-            .as_u64()
-            .unwrap();
-        if stable_free {
-            assert_eq!(paired, 43720);
+        assert_eq!(second, first, "the second listen opened a new port");
+        if tailscale_hosts().is_empty() {
+            let err = hub.pair_start(store.clone()).unwrap_err();
+            assert_eq!(err, "no-tailscale");
+            assert!(hub.status(&store.lock().unwrap()).unwrap()["listening"]
+                .as_bool()
+                .unwrap());
         } else {
-            assert_ne!(paired, 0);
+            hub.pair_start(store.clone()).unwrap();
+            let paired = hub.status(&store.lock().unwrap()).unwrap()["port"]
+                .as_u64()
+                .unwrap();
+            assert_eq!(paired, 43720);
         }
         hub.stop();
         if stable_free {

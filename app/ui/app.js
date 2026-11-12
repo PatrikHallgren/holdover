@@ -3082,7 +3082,6 @@ function lanMessageFor(view) {
   let message = text === key ? String(code) : text;
   const detail = view && view.detail ? String(view.detail) : "";
   if (detail) message += " " + detail;
-  if (view && view.firewall) message += " " + t("lan-firewall");
   return message;
 }
 
@@ -3098,19 +3097,22 @@ function lanStatusText(view) {
   if (current.mode === "joining") return t(current.message === "awaiting" ? "lan-awaiting" : "lan-reaching");
   if (current.mode === "paired") return tf("lan-paired", { name: current.message || "" });
   if (current.message === "sync-reaching") return t("lan-sync-reaching");
-  if (current.message === "discovering") return t("lan-discovering");
-  if (current.mode === "listen") return t("lan-listening");
+  if (current.mode === "listen") return "";
   if (current.message === "reading") return t("lan-reading");
   if (current.message === "photo-ready") return t("lan-photo-ready");
   return "";
 }
 
 function lanSelf(view) {
-  const port = Number(view && view.listen_port) || 0;
-  if (!port) return "";
-  const hosts = ((view && view.hosts) || []).join(", ");
-  const text = tf(view && view.listening ? "lan-self-listening" : "lan-self", { hosts, port: String(port) });
-  return `<p class="ho-hint" data-lan-self>${esc(text)}</p>`;
+  const tails = (view && view.tailscale) || [];
+  const port = String((view && view.listen_port) || 43720);
+  if (!tails.length) {
+    return `<p class="error" role="alert" data-lan-self>${esc(t("lan-no-tailscale"))}</p>`;
+  }
+  if (!(view && view.listening)) return "";
+  const name = (view && view.name) || "";
+  const where = name ? name + "/" + tails.join(", ") : tails.join(", ");
+  return `<p class="ho-hint" data-lan-self>${esc(tf("lan-ready", { where, port }))}</p>`;
 }
 
 function lanErrorCode(text) {
@@ -3167,7 +3169,7 @@ function lanPairCard(view, nowSec) {
 
 function lanRail() {
   const view = lan || {};
-  const peers = (view.peers || []).map((peer) => `<li><span>${esc(peer.name || peer.device_id || "")}</span> <button type="button" class="ho-btn" data-lan-use="${esc(peer.spki)}" data-host="${esc(String(peer.host || "").split(",")[0])}" data-port="${esc(peer.port || "")}">${esc(t("lan-sync"))}</button> <button type="button" class="ho-btn" data-lan-forget="${esc(peer.spki)}">${esc(t("lan-forget"))}</button></li>`).join("");
+  const peers = (view.peers || []).map((peer) => `<li><span>${esc(peer.name || peer.device_id || "")}</span> <button type="button" class="ho-btn" data-lan-use="${esc(peer.spki)}">${esc(t("lan-sync"))}</button> <button type="button" class="ho-btn" data-lan-forget="${esc(peer.spki)}">${esc(t("lan-forget"))}</button></li>`).join("");
   const pending = view.pending_name
     ? `<p>${esc(t("lan-pending"))}: ${esc(view.pending_name)}</p>
        <p class="ho-hint">${esc(t("lan-fingerprint"))}: ${esc(view.pending_fingerprint || "")}</p>
@@ -3198,21 +3200,11 @@ function lanRail() {
       <input id="lan-photo" class="ho-file-hidden" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" aria-labelledby="lan-photo-label" />
       <input id="lan-photo-capture" class="ho-file-hidden" type="file" accept="image/*" capture="environment" aria-label="${esc(t("lan-photo-camera"))}" />
     </div>
-    <button type="button" class="ho-btn" id="lan-listen" title="${esc(t("lan-listen-tip"))}">${esc(t("lan-listen"))}</button>
-    <button type="button" class="ho-btn" id="lan-discover" title="${esc(t("lan-discover-tip"))}">${esc(t("lan-discover"))}</button>
-    <div class="ho-fields">
-      <div class="ho-field"><div class="head"><label for="lan-host">${esc(t("lan-address"))}</label></div>
-        <input id="lan-host" value="${esc(lanHost)}" inputmode="decimal" title="${esc(t("lan-address-tip"))}" />
-      </div>
-      <div class="ho-field"><div class="head"><label for="lan-port">${esc(t("lan-port"))}</label></div>
-        <input id="lan-port" value="${esc(lanPort)}" inputmode="numeric" title="${esc(t("lan-address-tip"))}" />
-      </div>
+    <div class="ho-field"><div class="head"><label for="lan-host">${esc(t("lan-address"))}</label></div>
+      <input id="lan-host" value="${esc(lanHost)}" title="${esc(t("lan-address-tip"))}" />
     </div>
     <label class="ho-check"><input type="checkbox" id="lan-include" title="${esc(t("lan-include-tip"))}" ${lanInclude ? "checked" : ""} /> ${esc(t("lan-include"))}</label>
-    <div class="btnrow">
-      <button type="button" class="ho-btn primary" id="lan-sync" title="${esc(t("lan-sync-tip"))}">${esc(t("lan-sync"))}</button>
-      <button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>
-    </div>
+    <button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>
     ${peers ? `<h3>${esc(t("lan-peers"))}</h3><ul class="ho-list">${peers}</ul>` : ""}`;
 }
 
@@ -3275,7 +3267,6 @@ function bindLan() {
   remember("lan-name", (value) => { lanName = value; });
   remember("lan-code", (value) => { lanCode = value; });
   remember("lan-host", (value) => { lanHost = value; });
-  remember("lan-port", (value) => { lanPort = value; });
   remember("lan-include", (value) => { lanInclude = !!value; });
   const click = (id, action) => {
     const node = document.getElementById(id);
@@ -3293,13 +3284,6 @@ function bindLan() {
   });
   click("lan-accept", () => lanAct({ action: "pair-accept" }));
   click("lan-reject", () => lanAct({ action: "pair-reject" }));
-  click("lan-listen", () => lanAct({ action: "listen" }));
-  click("lan-discover", () => {
-    lanHold = null;
-    lan = Object.assign({}, lan || {}, { message: "discovering", code: "" });
-    render();
-    lanAct({ action: "discover" });
-  });
   click("lan-stop", () => lanAct({ action: "stop" }));
   click("lan-copy-code", async () => {
     const node = document.getElementById("lan-offer-text");
@@ -3313,13 +3297,6 @@ function bindLan() {
       node.focus();
       node.select();
     }
-  });
-  click("lan-sync", () => {
-    const peer = selectedLanPeer();
-    lanHold = null;
-    lan = Object.assign({}, lan || {}, { message: "sync-reaching", code: "" });
-    render();
-    lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort) || 0, spki: peer, include_location: lanInclude });
   });
   click("lan-apply", () => lanAct({ action: "sync-apply", choices: lanChoices }));
   const watchPhoto = (buttonId, inputId, camera) => {
@@ -3360,12 +3337,10 @@ function bindLan() {
   watchPhoto("lan-photo-camera", "lan-photo-capture", true);
   document.querySelectorAll("[data-lan-use]").forEach((button) => {
     button.addEventListener("click", () => {
-      lanHost = button.dataset.host || lanHost;
-      lanPort = button.dataset.port || lanPort;
       lanHold = null;
       lan = Object.assign({}, lan || {}, { message: "sync-reaching", code: "" });
       render();
-      lanAct({ action: "sync-begin", host: lanHost, port: Number(lanPort) || 0, spki: button.dataset.lanUse, include_location: lanInclude });
+      lanAct({ action: "sync-begin", host: lanHost, port: 43720, spki: button.dataset.lanUse, include_location: lanInclude });
     });
   });
   document.querySelectorAll("[data-lan-forget]").forEach((button) => {
@@ -3392,15 +3367,6 @@ function bindLan() {
     lanTimer = window.setInterval(pollLan, 1000);
     pollLan();
   }
-}
-
-function selectedLanPeer() {
-  const peers = (lan && lan.peers) || [];
-  const found = (lan && lan.found) || [];
-  const match = peers.concat(found).find((peer) => peer.host === lanHost && String(peer.port) === String(lanPort) && peer.spki);
-  if (match) return match.spki;
-  const paired = peers.find((peer) => peer.spki);
-  return paired ? paired.spki : "";
 }
 
 async function pollLan() {

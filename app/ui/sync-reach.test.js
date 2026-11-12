@@ -62,9 +62,9 @@ const hub = {
   message: "",
   peers: [{ name: "Omawork", spki: "aa", host: "192.168.1.20,100.64.0.2", port: 34351 }],
   found: [],
-  hosts: ["192.168.1.10", "100.64.0.1"],
+  tailscale: ["100.64.0.1"],
   listen_port: 43720,
-  listening: false,
+  listening: true,
   name: "Oneplus13",
   port: 0,
 };
@@ -102,9 +102,6 @@ function page() {
       const action = args && args.body && args.body.action;
       if (command === "lan_act" && action === "sync-begin") {
         throw new Error("lan-sync-unreachable");
-      }
-      if (command === "lan_act" && action === "discover") {
-        return Object.assign({}, window.__hub, { code: "mdns-none", message: "" });
       }
       if (command === "lan_status") return window.__hub;
       return window.__hub;
@@ -149,9 +146,11 @@ function page() {
       const self = document.querySelector("[data-lan-self]");
       const shown = {
         text: self ? self.textContent : "",
-        portField: document.getElementById("lan-port").value,
+        readyButton: !!document.getElementById("lan-listen"),
+        findButton: !!document.getElementById("lan-discover"),
+        portField: !!document.getElementById("lan-port"),
       };
-      document.getElementById("lan-sync").click();
+      document.querySelector("[data-lan-use]").click();
       const reaching = statusIn(document.getElementById("main"));
       await settle();
       const failed = {
@@ -166,16 +165,9 @@ function page() {
         rail: statusIn(document.getElementById("inputs")),
         main: statusIn(document.getElementById("main")),
       };
-      document.getElementById("lan-discover").click();
-      await settle();
-      const foundNone = statusIn(document.getElementById("main"));
-      window.__hub = Object.assign({}, window.__hub, { code: "mdns-none", message: "", mode: "idle" });
-      lanStamp = "";
-      await pollLan();
-      const heldNone = statusIn(document.getElementById("main"));
       const sync = sent.find((row) => row.action === "sync-begin");
       document.getElementById("probe").textContent = JSON.stringify({
-        shown, reaching, failed, held, foundNone, heldNone, sync,
+        shown, reaching, failed, held, sync,
       });
     }
     run().catch((error) => {
@@ -261,12 +253,14 @@ function render(html) {
 
 test("sync status strings name the port, the miss, and an empty search", () => {
   assert.match(app, /data-lan-self/);
-  assert.match(app, /listen_port/);
+  assert.match(app, /tailscale/);
   assert.match(app, /function lanErrorCode/);
   assert.match(ftl, /lan-sync-unreachable = /);
-  assert.match(ftl, /lan-firewall = .*ufw allow 43720\/tcp/);
+  assert.match(ftl, /lan-ready = Sync ready over Tailscale/);
+  assert.match(ftl, /lan-need-tailscale = /);
+  assert.doesNotMatch(app, /lan-firewall/);
+  assert.doesNotMatch(ftl, /ufw allow/);
   assert.match(app, /view\.detail/);
-  assert.match(app, /t\("lan-firewall"\)/);
   const messages = stringsFromFtl(ftl);
   const t = (key) => messages[key] || key;
   const lanMessageFor = new Function(
@@ -275,14 +269,10 @@ test("sync status strings name the port, the miss, and an empty search", () => {
   )(t);
   const shown = lanMessageFor({
     code: "sync-unreachable",
-    detail: "tried 192.168.1.20:43720 timeout; tried 100.64.0.2:43720 refused",
-    firewall: true,
+    detail: "tried 100.64.0.2:43720 refused",
   });
-  assert.match(shown, /192\.168\.1\.20:43720 timeout/);
   assert.match(shown, /100\.64\.0\.2:43720 refused/);
-  assert.match(shown, /ufw allow 5353\/udp/);
-  assert.match(ftl, /lan-mdns-none = /);
-  assert.match(ftl, /lan-self = /);
+  assert.match(shown, /Could not reach that Holdover over Tailscale/);
   assert.match(ftl, /lan-sync-reaching = /);
   assert.match(bridge, /MulticastLock/);
   assert.match(bridge, /fun discoverMdns/);
@@ -290,23 +280,22 @@ test("sync status strings name the port, the miss, and an empty search", () => {
   assert.match(bridge, /NsdManager/);
 });
 
-test("an empty port still starts a sync and the error stays on screen", { timeout: 180000 }, async () => {
+test("sync now dials port 43720 and the error stays on screen", { timeout: 180000 }, async () => {
   const report = await render(page());
   if (!report.shown) assert.fail(JSON.stringify(report).slice(0, 2000));
-  assert.match(report.shown.text, /43720/);
-  assert.equal(report.shown.portField, "");
+  assert.match(report.shown.text, /Sync ready over Tailscale at Oneplus13\/100\.64\.0\.1:43720/);
+  assert.equal(report.shown.readyButton, false);
+  assert.equal(report.shown.findButton, false);
+  assert.equal(report.shown.portField, false);
   assert.equal(report.reaching.role, "status");
-  assert.match(report.reaching.text, /Reaching the paired Holdover/);
+  assert.match(report.reaching.text, /Reaching the paired Holdover over Tailscale/);
   assert.equal(report.sync.action, "sync-begin");
-  assert.equal(report.sync.port, 0);
+  assert.equal(report.sync.port, 43720);
   assert.equal(report.sync.host, "");
   assert.equal(report.sync.spki, "aa");
   assert.equal(report.failed.main.role, "alert");
-  assert.match(report.failed.main.text, /Could not reach the paired Holdover/);
+  assert.match(report.failed.main.text, /Could not reach that Holdover over Tailscale/);
   assert.ok(report.failed.main.h >= 8, JSON.stringify(report.failed.main));
-  assert.match(report.held.main.text, /Could not reach the paired Holdover/);
-  assert.match(report.held.rail.text, /Could not reach the paired Holdover/);
-  assert.equal(report.foundNone.role, "alert");
-  assert.match(report.foundNone.text, /No other Holdover answered/);
-  assert.match(report.heldNone.text, /No other Holdover answered/);
+  assert.match(report.held.main.text, /Could not reach that Holdover over Tailscale/);
+  assert.match(report.held.rail.text, /Could not reach that Holdover over Tailscale/);
 });

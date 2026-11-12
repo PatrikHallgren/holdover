@@ -720,6 +720,25 @@ fn a_dead_sync_address_does_not_hide_the_listener() {
 }
 
 #[test]
+fn a_non_tailscale_connection_is_dropped_before_the_handshake() {
+    let desk = new_identity("desk", "Bench").unwrap();
+    let mut listener = SyncListener::bind(desk, Vec::new()).unwrap();
+    listener.accept_tailscale_only();
+    let port = listener.port;
+    let client = thread::spawn(move || {
+        TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_secs(2),
+        )
+    });
+    let err = listener
+        .serve_one(&mut Mem::new("desk"), Duration::from_secs(2))
+        .unwrap_err();
+    assert_eq!(err.code, "not-tailscale");
+    let _ = client.join().unwrap();
+}
+
+#[test]
 fn a_closed_port_names_the_address_and_port_zero_is_not_dialed() {
     let phone_key = new_identity("phone", "Pocket").unwrap();
     let desk_key = new_identity("desk", "Bench").unwrap();

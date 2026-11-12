@@ -616,15 +616,16 @@ fn import_bundle(
 
 #[tauri::command]
 fn lan_status(state: tauri::State<'_, AppState>) -> Result<Value, String> {
-    let hub = state
+    let store = state.store.clone();
+    let mut hub = state
         .lan
         .lock()
         .map_err(|_| "the sync state is busy".to_string())?;
-    let store = state
-        .store
+    hub.ensure_listener(store.clone())?;
+    let guard = store
         .lock()
         .map_err(|_| "the library is busy".to_string())?;
-    hub.status(&store)
+    hub.status(&guard)
 }
 
 #[tauri::command]
@@ -636,7 +637,7 @@ fn lan_act(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, Stri
         .lock()
         .map_err(|_| "the sync state is busy".to_string())?;
     match action {
-        "stop" => hub.stop(),
+        "stop" => hub.cancel(store.clone())?,
         "set-name" => {
             let name = body.get("name").and_then(Value::as_str).unwrap_or("");
             let guard = store
@@ -651,13 +652,7 @@ fn lan_act(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, Stri
         }
         "pair-accept" => hub.pair_decide(true)?,
         "pair-reject" => hub.pair_decide(false)?,
-        "listen" => hub.listen(store.clone())?,
-        "discover" => {
-            let guard = store
-                .lock()
-                .map_err(|_| "the library is busy".to_string())?;
-            hub.discover(&guard)?;
-        }
+        "listen" => hub.ensure_listener(store.clone())?,
         "sync-begin" => {
             let host = body.get("host").and_then(Value::as_str).unwrap_or("");
             let port = body.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
@@ -693,6 +688,7 @@ fn lan_act(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, Stri
         }
         _ => return Err("lan-action".into()),
     }
+    hub.ensure_listener(store.clone())?;
     let guard = store
         .lock()
         .map_err(|_| "the library is busy".to_string())?;

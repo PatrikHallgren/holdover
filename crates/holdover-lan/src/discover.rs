@@ -89,6 +89,18 @@ fn is_cgnat(addr: Ipv4Addr) -> bool {
     a == 100 && (64..=127).contains(&b)
 }
 
+/// Tailscale uses the carrier-grade NAT range 100.64.0.0/10.
+pub fn is_tailscale(host: &str) -> bool {
+    host.parse::<Ipv4Addr>().ok().is_some_and(is_cgnat)
+}
+
+pub fn tailscale_hosts() -> Vec<String> {
+    local_hosts()
+        .into_iter()
+        .filter(|host| is_tailscale(host))
+        .collect()
+}
+
 fn default_route_v4() -> Option<Ipv4Addr> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("192.0.2.1:9").ok()?;
@@ -232,7 +244,7 @@ fn bind_one(port: u16) -> Option<TcpListener> {
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_listener, host_rank, sort_hosts};
+    use super::{bind_listener, host_rank, is_tailscale, sort_hosts};
 
     #[test]
     fn lan_addresses_sort_before_tailscale() {
@@ -260,6 +272,11 @@ mod tests {
         assert_eq!(host_rank("10.1.2.3"), 0);
         assert_eq!(host_rank("100.127.0.1"), 1);
         assert_eq!(host_rank("100.63.0.1"), 2);
+        assert!(is_tailscale("100.64.0.1"));
+        assert!(is_tailscale("100.127.255.255"));
+        assert!(!is_tailscale("100.63.0.1"));
+        assert!(!is_tailscale("192.168.1.9"));
+        assert!(!is_tailscale("omawork.tail.ts.net"));
     }
 
     #[test]

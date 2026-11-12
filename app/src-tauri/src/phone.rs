@@ -137,18 +137,6 @@ pub fn open_target(target: &str, mime: &str) -> Result<Value, String> {
     }
 }
 
-/// `Some("dark")` or `Some("light")` when the phone reports a night mode.
-pub fn multicast(on: bool) {
-    #[cfg(target_os = "android")]
-    {
-        let _ = android::call("setMulticast", if on { "1" } else { "0" });
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = on;
-    }
-}
-
 pub fn log_line(line: &str) {
     #[cfg(target_os = "android")]
     {
@@ -180,48 +168,6 @@ extern "C" {
         tag: *const std::ffi::c_char,
         text: *const std::ffi::c_char,
     ) -> i32;
-}
-
-pub fn mdns_browse(wait: std::time::Duration) -> Option<Vec<holdover_lan::Found>> {
-    #[cfg(target_os = "android")]
-    {
-        let millis = wait.as_millis().min(5000).to_string();
-        let value = android::call("discoverMdns", &millis).unwrap_or_else(|_| json!([]));
-        let rows = value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|row| {
-                let host = row.get("host")?.as_str()?.trim().to_string();
-                let port = row.get("port")?.as_u64()? as u16;
-                let spki = row.get("fp")?.as_str()?.trim().to_string();
-                if host.is_empty() || port == 0 || spki.len() != 64 {
-                    return None;
-                }
-                Some(holdover_lan::Found {
-                    name: row
-                        .get("name")
-                        .and_then(|item| item.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    host,
-                    port,
-                    device_id: row
-                        .get("id")
-                        .and_then(|item| item.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    spki_hex: spki,
-                })
-            })
-            .collect();
-        Some(rows)
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = wait;
-        None
-    }
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
