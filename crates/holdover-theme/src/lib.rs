@@ -933,6 +933,27 @@ bright_foreground = "#c0caf5"
         assert_eq!(light.ok, "#476f50");
         assert_eq!(light.accent_text, "#355baf");
         assert_eq!(light.control_border, "#7c7f92");
+        // A selected list row tints the rail with 18% accent. Warning text was
+        // lifted for the page, the card, and the raised fill, not for that tint.
+        // On this light theme the warning falls to about 4.00:1. The row uses
+        // the foreground colour instead, which stays above 4.5:1. Dark stays
+        // above it as well. The Targets list marks the row with aria-selected.
+        let light_selected = mix_hex(&light.rail, &light.accent, 0.18);
+        assert!(
+            contrast_ratio(&light.warning, &light_selected) < 4.5,
+            "warning {} on selected {} should be the known miss",
+            light.warning,
+            light_selected
+        );
+        assert!(
+            contrast_ratio(&light.text, &light_selected) >= 4.5,
+            "text {} on selected {}",
+            light.text,
+            light_selected
+        );
+        let dark_selected = mix_hex(&night.rail, &night.accent, 0.18);
+        assert!(contrast_ratio(&night.text, &dark_selected) >= 4.5);
+        assert!(contrast_ratio(&night.warning, &night.background) >= 4.5);
         for tokens in [&night, &light] {
             for background in [&tokens.background, &tokens.surface] {
                 assert!(contrast_ratio(&tokens.ok, background) >= 4.5);

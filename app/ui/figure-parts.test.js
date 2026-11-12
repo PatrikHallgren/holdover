@@ -120,3 +120,12 @@ test("no other UI character class uses an unescaped +-− range", () => {
   assert.deepEqual(bad, []);
   assert.match(app, /\[\+\\-\\u2212\]/);
 });
+
+test("a selected target row uses aria-selected and the badge uses the text colour", () => {
+  const css = fs.readFileSync(path.join(here, "holdover-b.css"), "utf8");
+  assert.match(app, /data-target-list=.*aria-selected/);
+  assert.match(app, /ho-badge warn/);
+  assert.doesNotMatch(css, /\.ho-list \[aria-selected="true"\] \.ho-badge[^{]*\{[^}]*var\(--warning\)/);
+  assert.match(css, /\.ho-list \[aria-selected="true"\] \.ho-badge[^{]*\{[^}]*color:\s*var\(--text\)/);
+  assert.match(css, /\.ho-badge\.warn \{[^}]*color:\s*var\(--warning\)/);
+});

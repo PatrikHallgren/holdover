@@ -4,11 +4,12 @@ members = [
     "crates/holdover-core",
     "crates/holdover-cli",
     "crates/holdover-theme",
+    "crates/holdover-lan",
     "app/src-tauri",
 ]
 
 [workspace.package]
-version = "1.4.0"
+version = "1.5.5"
 edition = "2021"
 license = "MIT"
 authors = ["Patrik Hallgren"]

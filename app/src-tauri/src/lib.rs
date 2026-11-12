@@ -8,6 +8,7 @@ mod bundle;
 mod group;
 #[cfg(test)]
 mod invoke_args;
+mod lan;
 mod library;
 mod phone;
 mod photo;
@@ -21,7 +22,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(not(target_os = "android"))]
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[cfg(not(target_os = "android"))]
@@ -33,8 +34,9 @@ use tauri::Emitter;
 use tauri::Manager;
 
 struct AppState {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
     db_path: PathBuf,
+    lan: Mutex<lan::LanHub>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -86,14 +88,17 @@ pub fn run() {
             group_photo,
             phone_sensors,
             phone_prepare,
-            share_file
+            share_file,
+            lan_status,
+            lan_act
         ])
         .setup(|app| {
             let path = database_path(app.handle()).map_err(boot_error)?;
             let store = Store::open(&path).map_err(boot_error)?;
             app.manage(AppState {
-                store: Mutex::new(store),
+                store: Arc::new(Mutex::new(store)),
                 db_path: path,
+                lan: Mutex::new(lan::LanHub::default()),
             });
             let handle = app.handle().clone();
             std::thread::spawn(move || theme_loop(handle));
@@ -607,6 +612,87 @@ fn import_bundle(
         let chosen = bundle::resolutions_from_value(&resolutions.unwrap_or_else(|| json!({})))?;
         store.import_bundle_bytes(&bytes, &chosen, true, None)
     })
+}
+
+#[tauri::command]
+fn lan_status(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let store = state.store.clone();
+    let mut hub = state
+        .lan
+        .lock()
+        .map_err(|_| "the sync state is busy".to_string())?;
+    hub.ensure_listener(store.clone())?;
+    let guard = store
+        .lock()
+        .map_err(|_| "the library is busy".to_string())?;
+    hub.status(&guard)
+}
+
+#[tauri::command]
+fn lan_act(state: tauri::State<'_, AppState>, body: Value) -> Result<Value, String> {
+    let action = body.get("action").and_then(Value::as_str).unwrap_or("");
+    let store = state.store.clone();
+    let mut hub = state
+        .lan
+        .lock()
+        .map_err(|_| "the sync state is busy".to_string())?;
+    match action {
+        "stop" => hub.cancel(store.clone())?,
+        "set-name" => {
+            let name = body.get("name").and_then(Value::as_str).unwrap_or("");
+            let guard = store
+                .lock()
+                .map_err(|_| "the library is busy".to_string())?;
+            hub.set_name(&guard, name)?;
+        }
+        "pair-start" => hub.pair_start(store.clone())?,
+        "pair-join" => {
+            let code = body.get("code").and_then(Value::as_str).unwrap_or("");
+            hub.pair_join(store.clone(), code)?;
+        }
+        "pair-accept" => hub.pair_decide(true)?,
+        "pair-reject" => hub.pair_decide(false)?,
+        "listen" => hub.ensure_listener(store.clone())?,
+        "sync-begin" => {
+            let host = body.get("host").and_then(Value::as_str).unwrap_or("");
+            let port = body.get("port").and_then(Value::as_u64).unwrap_or(0) as u16;
+            let spki = body.get("spki").and_then(Value::as_str).unwrap_or("");
+            let include = body
+                .get("include_location")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            hub.sync_begin(store.clone(), host, port, spki, include)?;
+        }
+        "sync-apply" => {
+            let choices = body.get("choices").cloned().unwrap_or_else(|| json!({}));
+            hub.sync_apply(store.clone(), &choices)?;
+        }
+        "sync-cancel" => {
+            hub.session_cancel();
+        }
+        "forget" => {
+            let spki = body.get("spki").and_then(Value::as_str).unwrap_or("");
+            let guard = store
+                .lock()
+                .map_err(|_| "the library is busy".to_string())?;
+            guard.forget_peer(spki)?;
+        }
+        "decode-qr" => {
+            let bytes = body
+                .get("bytes_base64")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let raw = crate::bundle::decode_bundle_bytes(bytes)?;
+            let code = hub.decode(&raw)?;
+            return Ok(json!({"code": code}));
+        }
+        _ => return Err("lan-action".into()),
+    }
+    hub.ensure_listener(store.clone())?;
+    let guard = store
+        .lock()
+        .map_err(|_| "the library is busy".to_string())?;
+    hub.status(&guard)
 }
 
 #[tauri::command]
