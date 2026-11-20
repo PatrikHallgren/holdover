@@ -5,6 +5,8 @@
 //! [`classify_pair`] is the field-level rule, and [`classify`] applies it to a
 //! whole record using the sync base from the last export or import.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Map, Value};
 
 pub const BUNDLE_FORMAT: &str = "holdover-bundle";
@@ -82,6 +84,16 @@ pub struct SeenRevision {
     pub deleted: bool,
 }
 
+/// Who last wrote one field. LAN sync merges with these stamps.
+/// A bundle that never recorded them leaves the map empty and keeps the
+/// whole-record rule.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldStamp {
+    pub updated_at: String,
+    pub device_id: String,
+    pub revision: i64,
+}
+
 /// Last reconciled sync identity for one record, plus versions the user rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncBase {
@@ -93,6 +105,8 @@ pub struct SyncBase {
     pub devices: Vec<String>,
     /// Exact remote revisions already resolved, so the same bundle is unchanged.
     pub seen: Vec<SeenRevision>,
+    /// Per-field ancestor. Empty means this base is record-level only.
+    pub fields: BTreeMap<String, FieldStamp>,
 }
 
 impl SyncBase {
@@ -104,6 +118,7 @@ impl SyncBase {
             deleted: is_deleted(record),
             devices: Vec::new(),
             seen: Vec::new(),
+            fields: BTreeMap::new(),
         }
     }
 }
@@ -753,6 +768,11 @@ fn time_before(left: &str, right: &str) -> bool {
 }
 
 fn time_after(left: &str, right: &str) -> bool {
+    later_time(left, right)
+}
+
+/// True when `left` is a strictly later Holdover timestamp than `right`.
+pub fn later_time(left: &str, right: &str) -> bool {
     clock_key(left) > clock_key(right)
 }
 

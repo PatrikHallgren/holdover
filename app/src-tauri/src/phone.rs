@@ -137,7 +137,67 @@ pub fn open_target(target: &str, mime: &str) -> Result<Value, String> {
     }
 }
 
-/// `Some("dark")` or `Some("light")` when the phone reports a night mode.
+pub fn log_line(line: &str) {
+    #[cfg(target_os = "android")]
+    {
+        // liblog does not need the activity or the class loader. The JNI
+        // path was not showing up in `adb logcat -s Holdover`.
+        android_log(line);
+        let _ = android::call("logLine", line);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = line;
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_log(line: &str) {
+    let tag = std::ffi::CString::new("Holdover").unwrap_or_default();
+    let text = std::ffi::CString::new(line.replace('\0', " ")).unwrap_or_default();
+    unsafe {
+        __android_log_write(4, tag.as_ptr(), text.as_ptr());
+    }
+}
+
+#[cfg(target_os = "android")]
+#[link(name = "log")]
+extern "C" {
+    fn __android_log_write(
+        priority: i32,
+        tag: *const std::ffi::c_char,
+        text: *const std::ffi::c_char,
+    ) -> i32;
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn mdns_advertise(port: u16, device_id: &str, name: &str, spki_hex: &str) {
+    #[cfg(target_os = "android")]
+    {
+        let payload = json!({
+            "port": port,
+            "id": device_id,
+            "name": name,
+            "fp": spki_hex,
+        })
+        .to_string();
+        let _ = android::call("advertiseMdns", &payload);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (port, device_id, name, spki_hex);
+    }
+}
+
+pub fn mdns_stop() {
+    #[cfg(target_os = "android")]
+    {
+        let _ = android::call("stopMdns", "");
+    }
+    #[cfg(not(target_os = "android"))]
+    {}
+}
+
 pub fn system_mode() -> Option<&'static str> {
     #[cfg(target_os = "android")]
     {

@@ -158,6 +158,13 @@ pub struct Store {
     db_path: PathBuf,
 }
 
+struct PriorRow {
+    body: String,
+    updated_at: String,
+    device_id: String,
+    revision: i64,
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
@@ -197,6 +204,22 @@ impl Store {
                 updated_at TEXT NOT NULL,
                 deleted INTEGER NOT NULL,
                 suppress TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS field_rev (
+                record_id TEXT NOT NULL,
+                field TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                revision INTEGER NOT NULL,
+                PRIMARY KEY (record_id, field)
+            );
+            CREATE TABLE IF NOT EXISTS lan_peer (
+                spki TEXT PRIMARY KEY,
+                device_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                paired_at TEXT NOT NULL
             );",
         )
         .map_err(|err| err.to_string())?;
@@ -1290,6 +1313,7 @@ impl Store {
                 self.snapshot_previous(kind, id, &body)?;
             }
             let device = self.device_id()?;
+            let prior = self.prior_row(id)?;
             let changed = self
                 .conn
                 .execute(
@@ -1302,6 +1326,8 @@ impl Store {
             if changed == 0 {
                 return Err(format!("{kind} was not found"));
             }
+            let revision = prior.as_ref().map(|row| row.revision + 1).unwrap_or(1);
+            self.restamp(id, prior.as_ref(), &body, &now, &device, revision)?;
             return Ok(id.to_string());
         }
         self.insert_record(kind, &body)
@@ -1318,7 +1344,116 @@ impl Store {
                 params![id, kind, now, device, body.to_string()],
             )
             .map_err(|err| err.to_string())?;
+        self.restamp(&id, None, body, &now, &device, 1)?;
         Ok(id)
+    }
+
+    fn prior_row(&self, id: &str) -> Result<Option<PriorRow>, String> {
+        self.conn
+            .query_row(
+                "SELECT body, updated_at, device_id, revision FROM records WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(PriorRow {
+                        body: row.get(0)?,
+                        updated_at: row.get(1)?,
+                        device_id: row.get(2)?,
+                        revision: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|err| err.to_string())
+    }
+
+    /// Keep a stamp on each field that did not change, and a new stamp on each
+    /// field that did. LAN sync uses that to merge independent edits.
+    fn restamp(
+        &self,
+        id: &str,
+        prior: Option<&PriorRow>,
+        new_body: &Value,
+        now: &str,
+        device: &str,
+        revision: i64,
+    ) -> Result<(), String> {
+        use holdover_core::{field_values, FieldStamp};
+        let parsed_prior = prior.and_then(|row| serde_json::from_str::<Value>(&row.body).ok());
+        let old_values = parsed_prior.as_ref().map(field_values).unwrap_or_default();
+        let new_values = field_values(new_body);
+        let mut stamps = self.field_stamps(id)?;
+        if stamps.is_empty() {
+            if let Some(row) = prior {
+                let inherited = FieldStamp {
+                    updated_at: row.updated_at.clone(),
+                    device_id: row.device_id.clone(),
+                    revision: row.revision,
+                };
+                for key in old_values.keys() {
+                    stamps.insert(key.clone(), inherited.clone());
+                }
+            }
+        }
+        let fresh = FieldStamp {
+            updated_at: now.to_string(),
+            device_id: device.to_string(),
+            revision,
+        };
+        for key in old_values.keys().chain(new_values.keys()) {
+            if old_values.get(key) != new_values.get(key) {
+                if new_values.contains_key(key) {
+                    stamps.insert(key.clone(), fresh.clone());
+                } else {
+                    stamps.remove(key);
+                }
+            } else if new_values.contains_key(key) && !stamps.contains_key(key) {
+                stamps.insert(key.clone(), fresh.clone());
+            }
+        }
+        stamps.retain(|key, _| new_values.contains_key(key));
+        self.conn
+            .execute("DELETE FROM field_rev WHERE record_id = ?1", params![id])
+            .map_err(|err| err.to_string())?;
+        for (field, stamp) in stamps {
+            self.conn
+                .execute(
+                    "INSERT INTO field_rev (record_id, field, updated_at, device_id, revision)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![id, field, stamp.updated_at, stamp.device_id, stamp.revision],
+                )
+                .map_err(|err| err.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn field_stamps(
+        &self,
+        id: &str,
+    ) -> Result<std::collections::BTreeMap<String, holdover_core::FieldStamp>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT field, updated_at, device_id, revision FROM field_rev WHERE record_id = ?1",
+            )
+            .map_err(|err| err.to_string())?;
+        let rows = stmt
+            .query_map(params![id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    holdover_core::FieldStamp {
+                        updated_at: row.get(1)?,
+                        device_id: row.get(2)?,
+                        revision: row.get(3)?,
+                    },
+                ))
+            })
+            .map_err(|err| err.to_string())?;
+        let mut out = std::collections::BTreeMap::new();
+        for row in rows {
+            let (field, stamp) = row.map_err(|err| err.to_string())?;
+            out.insert(field, stamp);
+        }
+        Ok(out)
     }
 
     fn snapshot_previous(&self, kind: &str, id: &str, incoming: &Value) -> Result<(), String> {
@@ -1954,7 +2089,7 @@ impl Store {
         Ok(())
     }
 
-    fn meta_get(&self, key: &str) -> Result<Option<String>, String> {
+    pub(crate) fn meta_get(&self, key: &str) -> Result<Option<String>, String> {
         self.conn
             .query_row(
                 "SELECT value FROM meta WHERE key = ?1",
@@ -1965,7 +2100,7 @@ impl Store {
             .map_err(|err| err.to_string())
     }
 
-    fn meta_put(&self, key: &str, value: &str) -> Result<(), String> {
+    pub(crate) fn meta_put(&self, key: &str, value: &str) -> Result<(), String> {
         self.conn
             .execute(
                 "INSERT INTO meta (key, value) VALUES (?1, ?2)

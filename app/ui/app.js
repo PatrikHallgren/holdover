@@ -34,6 +34,16 @@ let restoreDoc = null;
 let restorePreview = null;
 let syncTab = "export";
 let syncFilter = "all";
+let lan = null;
+let lanStamp = "";
+let lanHold = null;
+let lanCode = "";
+let lanHost = "";
+let lanPort = "";
+let lanName = "";
+let lanInclude = false;
+let lanChoices = {};
+let lanTimer = 0;
 let bundlePreview = null;
 let bundleBytes = "";
 let bundleChoices = {};
@@ -2736,14 +2746,16 @@ async function commitLibrary(policy) {
 function syncHtml() {
   const exportOn = syncTab === "export";
   const importOn = syncTab === "import";
-  const facts = bundlePreview
+  const phoneOn = syncTab === "phone";
+  const facts = bundlePreview && !phoneOn
     ? `<dl class="ho-kv mini"><dt>${esc(t("sync-schema"))}</dt><dd>${esc(bundlePreview.schema_version)}</dd><span class="ho-unit"></span><dt>${esc(t("sync-local-only"))}</dt><dd>${esc(bundlePreview.local_only || 0)}</dd><span class="ho-unit"></span></dl>`
     : "";
   const rail = `<h2>${esc(t("sync-bundle"))}</h2>
-    <p class="ho-hint">${esc(t("sync-intro"))}</p>
+    <p class="ho-hint">${esc(phoneOn ? t("lan-intro") : t("sync-intro"))}</p>
     <div class="ho-seg" id="sync-tabs" role="tablist" aria-label="${esc(t("sync-tabs"))}">
       ${syncModeButton("export", "sync-export", exportOn)}
       ${syncModeButton("import", "sync-import", importOn)}
+      ${syncModeButton("phone", "sync-phone", phoneOn)}
     </div>
     <div role="tabpanel" data-sync-panel="export" ${exportOn ? "" : "hidden"}>
       <p class="ho-hint">${esc(t("sync-export-intro"))}</p>
@@ -2753,10 +2765,13 @@ function syncHtml() {
     <div role="tabpanel" data-sync-panel="import" ${importOn ? "" : "hidden"}>
       ${syncImportControls()}
     </div>
+    <div role="tabpanel" data-sync-panel="phone" ${phoneOn ? "" : "hidden"}>
+      ${phoneOn ? lanRail() : ""}
+    </div>
     ${facts}
-    <p id="bundle-message" class="${bundleError ? "error" : "meta"}">${esc(bundleMessage)}</p>
-    ${bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}`;
-  const main = importOn ? syncImportTable() : `<p class="ho-hint">${esc(t("sync-export-intro"))}</p>`;
+    <p id="bundle-message" class="${(phoneOn && lan && lan.mode !== "done" && lanMessageFor(lan)) || bundleError ? "error" : "meta"}">${esc(phoneOn ? lanMessage() : bundleMessage)}</p>
+    ${!phoneOn && bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}`;
+  const main = phoneOn ? lanMain() : importOn ? syncImportTable() : `<p class="ho-hint">${esc(t("sync-export-intro"))}</p>`;
   return frame({ rail, main, body: "with-list", railLabel: t("nav-sync") });
 }
 
@@ -2918,6 +2933,7 @@ function bindSync() {
   });
   const apply = document.getElementById("bundle-apply");
   if (apply) apply.addEventListener("click", applyBundle);
+  if (syncTab === "phone") bindLan();
 }
 
 function bindTablist(selector, datasetKey, onSelect) {
@@ -3022,6 +3038,390 @@ async function applyBundle() {
     render();
   } catch (error) {
     setBundleError(error);
+    render();
+  }
+}
+
+// qrcode 0.14 starts the picture with <?xml ...?>. A check for "<svg" at the
+// first character drops the picture and leaves only the text.
+function pairingSvg(raw) {
+  let text = String(raw || "").replace(/^\uFEFF/, "").trim();
+  text = text.replace(/^<\?xml\b[^?]*\?>\s*/i, "");
+  text = text.replace(/^<!doctype\b[^>]*>\s*/i, "");
+  if (!/^<svg\b[^>]*>[\s\S]*<\/svg>$/i.test(text)) return "";
+  if ((text.match(/<svg\b/gi) || []).length !== 1) return "";
+  if (/<script\b|<\/script|foreignObject|<\?|<!|javascript:|on[a-z]+\s*=/i.test(text)) return "";
+  const tags = text.match(/<\/?[a-zA-Z0-9:-]+/g) || [];
+  const names = tags.map((tag) => tag.replace(/^<\/?/, "").toLowerCase());
+  if (names.some((name) => name !== "svg" && name !== "rect" && name !== "path")) return "";
+  return text;
+}
+
+function lanNow() {
+  return Math.floor(Date.now() / 1000);
+}
+
+function lanClock(unix) {
+  const date = new Date(Number(unix) * 1000);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function lanExpiryLine(expires, nowSec) {
+  const left = Number(expires) - Number(nowSec);
+  if (!(Number(expires) > 0) || left <= 0) return t("lan-pair-expired");
+  const minutes = Math.max(1, Math.ceil(left / 60));
+  return tf("lan-expires", { time: lanClock(expires), minutes });
+}
+
+function lanMessageFor(view) {
+  const code = view && view.code;
+  if (!code) return (view && view.mode === "done") ? t("lan-applied") : "";
+  const key = "lan-" + String(code).replace(/_/g, "-");
+  const text = t(key);
+  let message = text === key ? String(code) : text;
+  const detail = view && view.detail ? String(view.detail) : "";
+  if (detail) message += " " + detail;
+  return message;
+}
+
+function lanMessage() {
+  return lanStatusText(lan);
+}
+
+function lanStatusText(view) {
+  const current = view || {};
+  if (current.mode === "done" && !current.code) return t("lan-applied");
+  const failure = lanMessageFor(current);
+  if (failure) return failure;
+  if (current.mode === "joining") return t(current.message === "awaiting" ? "lan-awaiting" : "lan-reaching");
+  if (current.mode === "paired") return tf("lan-paired", { name: current.message || "" });
+  if (current.message === "sync-reaching") return t("lan-sync-reaching");
+  if (current.mode === "listen") return "";
+  if (current.message === "reading") return t("lan-reading");
+  if (current.message === "photo-ready") return t("lan-photo-ready");
+  return "";
+}
+
+function lanSelf(view) {
+  const tails = (view && view.tailscale) || [];
+  const port = String((view && view.listen_port) || 43720);
+  if (!tails.length) {
+    return `<p class="error" role="alert" data-lan-self>${esc(t("lan-no-tailscale"))}</p>`;
+  }
+  if (!(view && view.listening)) return "";
+  const name = (view && view.name) || "";
+  const where = name ? name + "/" + tails.join(", ") : tails.join(", ");
+  return `<p class="ho-hint" data-lan-self>${esc(tf("lan-ready", { where, port }))}</p>`;
+}
+
+function lanErrorCode(text) {
+  const raw = String(text || "");
+  const match = raw.match(/[a-z0-9-]+/);
+  return (match ? match[0] : raw).replace(/^lan-/, "");
+}
+
+function lanStatusBlock(view) {
+  const text = lanStatusText(view);
+  if (!text) return "";
+  const failure = view && view.mode !== "done" && lanMessageFor(view);
+  const role = failure ? "alert" : "status";
+  return `<p class="${failure ? "error" : "ho-hint"}" data-lan-status="${role}" role="${role}">${esc(text)}</p>`;
+}
+
+function lanLiveCode(fieldValue) {
+  return String(fieldValue == null ? "" : fieldValue).trim();
+}
+
+function lanMergeStatus(hub, hold) {
+  const next = Object.assign({}, hub || {});
+  if (!hold || !hold.token) return next;
+  if (next.code || next.message || next.mode === "joining" || next.mode === "paired") return next;
+  if (hold.kind === "code") next.code = hold.token;
+  else next.message = hold.token;
+  return next;
+}
+
+function lanPairCard(view, nowSec) {
+  const current = view || {};
+  const url = String(current.offer_url || "");
+  const svg = pairingSvg(current.offer_svg);
+  const expires = Number(current.expires) || 0;
+  const now = Number(nowSec) || 0;
+  const failure = current.mode === "done" ? "" : lanMessageFor(current);
+  const expired = current.code === "pair-expired" || (url && expires > 0 && now >= expires);
+  if (expired) {
+    return `<section class="ho-pair" aria-labelledby="lan-qr-title"><h2 id="lan-qr-title">${esc(t("lan-qr"))}</h2><p class="error" role="alert">${esc(failure || t("lan-pair-expired"))}</p></section>`;
+  }
+  if (!url && !svg) return "";
+  const picture = svg
+    ? `<div class="ho-qr" role="img" aria-label="${esc(t("lan-qr"))}">${svg}</div>`
+    : `<p class="error" role="alert">${esc(t("lan-qr-failed"))}</p>`;
+  const alert = failure ? `<p class="error" role="alert">${esc(failure)}</p>` : "";
+  const expiry = expires
+    ? `<p class="ho-hint" id="lan-expiry">${esc(lanExpiryLine(expires, now))}</p>`
+    : `<p class="ho-hint" id="lan-expiry">${esc(t("lan-pair-tip"))}</p>`;
+  const fallback = url
+    ? `<div class="ho-field"><div class="head"><label for="lan-offer-text">${esc(t("lan-text-code"))}</label></div><p class="ho-hint">${esc(t("lan-text-fallback"))}</p><textarea id="lan-offer-text" class="ho-pair-fallback" readonly rows="3" spellcheck="false" autocomplete="off">${esc(url)}</textarea></div><button type="button" class="ho-btn" id="lan-copy-code">${esc(t("lan-copy"))}</button>`
+    : "";
+  return `<section class="ho-pair" aria-labelledby="lan-qr-title"><h2 id="lan-qr-title">${esc(t("lan-qr"))}</h2>${expiry}${alert}${picture}${fallback}</section>`;
+}
+
+function lanRail() {
+  const view = lan || {};
+  const peers = (view.peers || []).map((peer) => `<li><span>${esc(peer.name || peer.device_id || "")}</span> <button type="button" class="ho-btn" data-lan-use="${esc(peer.spki)}">${esc(t("lan-sync"))}</button> <button type="button" class="ho-btn" data-lan-forget="${esc(peer.spki)}">${esc(t("lan-forget"))}</button></li>`).join("");
+  const pending = view.pending_name
+    ? `<p>${esc(t("lan-pending"))}: ${esc(view.pending_name)}</p>
+       <p class="ho-hint">${esc(t("lan-fingerprint"))}: ${esc(view.pending_fingerprint || "")}</p>
+       <div class="btnrow">
+         <button type="button" class="ho-btn primary" id="lan-accept">${esc(t("lan-accept"))}</button>
+         <button type="button" class="ho-btn" id="lan-reject">${esc(t("lan-reject"))}</button>
+       </div>`
+    : "";
+  return `${pending}
+    ${lanSelf(view)}
+    ${lanStatusBlock(view)}
+    <div class="ho-field"><div class="head"><label for="lan-name">${esc(t("lan-name"))}</label></div>
+      <input id="lan-name" value="${esc(lanName || view.name || "")}" maxlength="40" title="${esc(t("lan-name-tip"))}" />
+    </div>
+    <button type="button" class="ho-btn" id="lan-save-name" title="${esc(t("lan-name-tip"))}">${esc(t("lan-save-name"))}</button>
+    <button type="button" class="ho-btn primary" id="lan-pair" title="${esc(t("lan-pair-tip"))}">${esc(t("lan-pair"))}</button>
+    ${view.offer_url && pairingSvg(view.offer_svg) ? `<p class="ho-hint">${esc(t("lan-code-shown"))}</p>` : ""}
+    <div class="ho-field"><div class="head"><label for="lan-code">${esc(t("lan-code"))}</label></div>
+      <input id="lan-code" value="${esc(lanCode)}" title="${esc(t("lan-code-tip"))}" />
+    </div>
+    <button type="button" class="ho-btn" id="lan-join">${esc(t("lan-join"))}</button>
+    <div class="ho-field" title="${esc(t("lan-photo-tip"))}"><div class="head"><label id="lan-photo-label">${esc(t("lan-photo"))}</label></div>
+      <p class="ho-hint">${esc(t("lan-photo-tip"))}</p>
+      <div class="btnrow">
+        <button type="button" class="ho-btn" id="lan-photo-open">${esc(t("lan-photo-choose"))}</button>
+        <button type="button" class="ho-btn" id="lan-photo-camera">${esc(t("lan-photo-camera"))}</button>
+      </div>
+      <input id="lan-photo" class="ho-file-hidden" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" aria-labelledby="lan-photo-label" />
+      <input id="lan-photo-capture" class="ho-file-hidden" type="file" accept="image/*" capture="environment" aria-label="${esc(t("lan-photo-camera"))}" />
+    </div>
+    <div class="ho-field"><div class="head"><label for="lan-host">${esc(t("lan-address"))}</label></div>
+      <input id="lan-host" value="${esc(lanHost)}" title="${esc(t("lan-address-tip"))}" />
+    </div>
+    <label class="ho-check"><input type="checkbox" id="lan-include" title="${esc(t("lan-include-tip"))}" ${lanInclude ? "checked" : ""} /> ${esc(t("lan-include"))}</label>
+    <button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>
+    ${peers ? `<h3>${esc(t("lan-peers"))}</h3><ul class="ho-list">${peers}</ul>` : ""}`;
+}
+
+function lanMain() {
+  const rows = (lan && lan.preview && lan.preview.rows) || [];
+  if (!rows.length) {
+    const card = lanPairCard(lan || {}, lanNow());
+    const status = lanStatusBlock(lan);
+    if (card) {
+      if (status && !card.includes("role=\"alert\"") && !card.includes("role=\"status\"")) return status + card;
+      return card;
+    }
+    return status || `<p class="ho-hint">${esc(t("lan-intro"))}</p>`;
+  }
+  const body = rows.map((row) => {
+    const conflicts = row.conflicts || [];
+    const choice = lanChoices[row.id] || {};
+    let controls = "";
+    if (row.status === "conflict" && conflicts.length) {
+      controls = conflicts.map((field) => {
+        const picked = choice.fields && choice.fields[field.field];
+        return `<div><span>${esc(field.field)}</span>
+          <button type="button" data-lan-field="${esc(field.field)}" data-id="${esc(row.id)}" data-side="mine" aria-pressed="${picked === "mine"}">${esc(t("sync-keep-mine"))}: ${esc(field.local)}</button>
+          <button type="button" data-lan-field="${esc(field.field)}" data-id="${esc(row.id)}" data-side="theirs" aria-pressed="${picked === "theirs"}">${esc(t("sync-take-theirs"))}: ${esc(field.remote)}</button>
+        </div>`;
+      }).join("");
+    } else if (row.status === "conflict") {
+      controls = ["keep-mine", "take-theirs"].concat(row.keep_both ? ["keep-both"] : []).map((id) => {
+        return `<button type="button" data-lan-choice="${esc(id)}" data-id="${esc(row.id)}" aria-pressed="${choice.choice === id}">${esc(t("sync-" + id))}</button>`;
+      }).join("");
+    } else if (row.push) {
+      controls = esc(t("lan-send"));
+    } else if (row.status === "new") {
+      controls = esc(t("lan-receive"));
+    }
+    return `<tr><td class="text">${esc(t("equip-" + row.kind) === "equip-" + row.kind ? row.kind : t("equip-" + row.kind))}</td><td class="text">${esc(t("sync-status-" + row.status))}</td><td class="text">${esc(row.label || "")}</td><td class="text">${controls}</td></tr>`;
+  }).join("");
+  const unresolved = rows.some((row) => row.status === "conflict" && !lanChoiceReady(row));
+  return `<table class="ho-table"><thead><tr><th class="text">${esc(t("archive-kind"))}</th><th class="text">${esc(t("sync-filter"))}</th><th class="text">${esc(t("label"))}</th><th class="text"></th></tr></thead><tbody>${body}</tbody></table>
+    ${unresolved ? `<p class="ho-hint">${esc(t("lan-unresolved"))}</p>` : rows.length ? "" : `<p class="ho-hint">${esc(t("lan-nothing"))}</p>`}
+    <button type="button" class="ho-btn primary" id="lan-apply" title="${esc(t("lan-apply-tip"))}" ${unresolved ? "disabled" : ""}>${esc(t("lan-apply"))}</button>`;
+}
+
+function lanChoiceReady(row) {
+  const choice = lanChoices[row.id];
+  if (!choice) return false;
+  if ((row.conflicts || []).length) {
+    return (row.conflicts || []).every((field) => choice.fields && choice.fields[field.field]);
+  }
+  return !!choice.choice;
+}
+
+function bindLan() {
+  const remember = (id, assign) => {
+    const node = document.getElementById(id);
+    if (!node) return;
+    node.addEventListener("input", () => assign(node.value));
+    node.addEventListener("change", () => assign(node.type === "checkbox" ? node.checked : node.value));
+  };
+  remember("lan-name", (value) => { lanName = value; });
+  remember("lan-code", (value) => { lanCode = value; });
+  remember("lan-host", (value) => { lanHost = value; });
+  remember("lan-include", (value) => { lanInclude = !!value; });
+  const click = (id, action) => {
+    const node = document.getElementById(id);
+    if (node) node.addEventListener("click", action);
+  };
+  click("lan-save-name", () => lanAct({ action: "set-name", name: lanName }));
+  click("lan-pair", () => lanAct({ action: "pair-start" }));
+  click("lan-join", () => {
+    const node = document.getElementById("lan-code");
+    lanCode = lanLiveCode(node ? node.value : lanCode);
+    lanHold = null;
+    lan = Object.assign({}, lan || {}, { mode: "joining", message: "reaching", code: "" });
+    render();
+    lanAct({ action: "pair-join", code: lanCode });
+  });
+  click("lan-accept", () => lanAct({ action: "pair-accept" }));
+  click("lan-reject", () => lanAct({ action: "pair-reject" }));
+  click("lan-stop", () => lanAct({ action: "stop" }));
+  click("lan-copy-code", async () => {
+    const node = document.getElementById("lan-offer-text");
+    if (!node) return;
+    const value = node.value;
+    node.focus();
+    node.select();
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(value);
+    } catch (_error) {
+      node.focus();
+      node.select();
+    }
+  });
+  click("lan-apply", () => lanAct({ action: "sync-apply", choices: lanChoices }));
+  const watchPhoto = (buttonId, inputId, camera) => {
+    const button = document.getElementById(buttonId);
+    const input = document.getElementById(inputId);
+    if (!button || !input) return;
+    button.addEventListener("click", async () => {
+      if (camera) {
+        try {
+          const ready = await call("phone_prepare", { kind: "camera" });
+          if (!ready || !ready.ok) {
+            lanHold = { kind: "code", token: "photo-failed" };
+            lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-failed", message: "" });
+            render();
+            return;
+          }
+        } catch (_error) {
+          lanHold = { kind: "code", token: "photo-failed" };
+          lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-failed", message: "" });
+          render();
+          return;
+        }
+      }
+      input.click();
+    });
+    input.addEventListener("change", () => {
+      const file = input.files && input.files[0];
+      if (!file) {
+        lanHold = { kind: "code", token: "photo-empty" };
+        lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-empty", message: "" });
+        render();
+        return;
+      }
+      lanUsePhoto(file);
+    });
+  };
+  watchPhoto("lan-photo-open", "lan-photo", false);
+  watchPhoto("lan-photo-camera", "lan-photo-capture", true);
+  document.querySelectorAll("[data-lan-use]").forEach((button) => {
+    button.addEventListener("click", () => {
+      lanHold = null;
+      lan = Object.assign({}, lan || {}, { message: "sync-reaching", code: "" });
+      render();
+      lanAct({ action: "sync-begin", host: lanHost, port: 43720, spki: button.dataset.lanUse, include_location: lanInclude });
+    });
+  });
+  document.querySelectorAll("[data-lan-forget]").forEach((button) => {
+    button.addEventListener("click", () => lanAct({ action: "forget", spki: button.dataset.lanForget }));
+  });
+  document.querySelectorAll("[data-lan-field]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      const current = lanChoices[id] || { choice: "fields", fields: {} };
+      current.choice = "fields";
+      current.fields = current.fields || {};
+      current.fields[button.dataset.lanField] = button.dataset.side;
+      lanChoices[id] = current;
+      render();
+    });
+  });
+  document.querySelectorAll("[data-lan-choice]").forEach((button) => {
+    button.addEventListener("click", () => {
+      lanChoices[button.dataset.id] = { choice: button.dataset.lanChoice };
+      render();
+    });
+  });
+  if (!lanTimer) {
+    lanTimer = window.setInterval(pollLan, 1000);
+    pollLan();
+  }
+}
+
+async function pollLan() {
+  if (page !== "sync" || syncTab !== "phone") return;
+  try {
+    const next = await call("lan_status");
+    const stamp = JSON.stringify(next);
+    if (stamp === lanStamp) return;
+    lanStamp = stamp;
+    if (next.code || next.message || next.mode === "joining" || next.mode === "paired") lanHold = null;
+    lan = lanMergeStatus(next, lanHold);
+    if (!lanName) lanName = next.name || "";
+    render();
+  } catch (error) {
+    lanHold = { kind: "code", token: "disconnected" };
+    lan = Object.assign({}, lan || {}, { mode: "idle", code: "disconnected", message: "" });
+    render();
+  }
+}
+
+async function lanUsePhoto(file) {
+  lanHold = { kind: "message", token: "reading" };
+  lan = Object.assign({}, lan || {}, { mode: "idle", code: "", message: "reading" });
+  render();
+  try {
+    const bytesBase64 = await readFileBase64(file);
+    const result = await call("lan_act", { body: { action: "decode-qr", bytes_base64: bytesBase64 } });
+    const code = result && result.code ? String(result.code).trim() : "";
+    if (!code) throw new Error("photo-failed");
+    lanCode = code;
+    lanHold = { kind: "message", token: "photo-ready" };
+    lan = Object.assign({}, lan || {}, { mode: "idle", code: "", message: "photo-ready" });
+    render();
+  } catch (_error) {
+    lanHold = { kind: "code", token: "photo-failed" };
+    lan = Object.assign({}, lan || {}, { mode: "idle", code: "photo-failed", message: "" });
+    lanStamp = "";
+    render();
+  }
+}
+
+async function lanAct(body) {
+  try {
+    if (body.action === "sync-begin" || body.action === "sync-apply") lanChoices = body.action === "sync-begin" ? {} : lanChoices;
+    const next = await call("lan_act", { body });
+    if (next && next.code && body.action === "decode-qr") return;
+    if (next && (next.code || next.message || next.mode === "joining" || next.mode === "paired")) lanHold = null;
+    lan = lanMergeStatus(next, lanHold);
+    lanStamp = JSON.stringify(next);
+    render();
+  } catch (error) {
+    const code = lanErrorCode(error && error.message ? error.message : error);
+    lanHold = { kind: "code", token: code };
+    lan = Object.assign({}, lan || {}, { code, message: "" });
+    lanStamp = "";
     render();
   }
 }
