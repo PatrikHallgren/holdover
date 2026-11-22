@@ -49,7 +49,7 @@ fn install_panic_hook() {
 struct AppState {
     store: Arc<Mutex<Store>>,
     db_path: PathBuf,
-    lan: Mutex<lan::LanHub>,
+    lan: Arc<Mutex<lan::LanHub>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -108,11 +108,15 @@ pub fn run() {
         ])
         .setup(|app| {
             let path = database_path(app.handle()).map_err(boot_error)?;
-            let store = Store::open(&path).map_err(boot_error)?;
+            let store = Arc::new(Mutex::new(Store::open(&path).map_err(boot_error)?));
+            let lan = Arc::new(Mutex::new(lan::LanHub::default()));
+            // The desktop listens on 43720 for the whole time the app is open.
+            // This does not wait for the Sync tab, and it retries while Tailscale is down.
+            lan::arm_listener(lan.clone(), store.clone());
             app.manage(AppState {
-                store: Arc::new(Mutex::new(store)),
+                store,
                 db_path: path,
-                lan: Mutex::new(lan::LanHub::default()),
+                lan,
             });
             let handle = app.handle().clone();
             std::thread::spawn(move || theme_loop(handle));
@@ -635,6 +639,8 @@ fn lan_status(state: tauri::State<'_, AppState>) -> Result<Value, String> {
         .lan
         .lock()
         .map_err(|_| "the sync state is busy".to_string())?;
+    // Startup already armed the listener. This replaces it only if that
+    // thread has died, and a live accept thread is left alone.
     hub.ensure_listener(store.clone())?;
     let guard = store
         .lock()

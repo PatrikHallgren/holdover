@@ -33,6 +33,10 @@ pub struct LanHub {
     serving: Arc<AtomicUsize>,
     decision: Arc<Mutex<Option<bool>>>,
     worker: Option<thread::JoinHandle<()>>,
+    /// Accept-thread binds. A second listen while one is alive does not increment this.
+    binds: Arc<AtomicU64>,
+    keeper_stop: Arc<AtomicBool>,
+    keeper: Option<thread::JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -79,8 +83,83 @@ impl Default for LanHub {
             serving: Arc::new(AtomicUsize::new(0)),
             decision: Arc::new(Mutex::new(None)),
             worker: None,
+            binds: Arc::new(AtomicU64::new(0)),
+            keeper_stop: Arc::new(AtomicBool::new(false)),
+            keeper: None,
         }
     }
+}
+
+/// How often startup retries the listener while Tailscale has no 100.x address.
+const LISTEN_RETRY: Duration = Duration::from_secs(2);
+
+/// Listen on 43720 for the life of the process. The Phone tab is not involved.
+/// If Tailscale is not up yet, the same thread keeps trying until a 100.x
+/// address appears. A later `ensure_listener` does not open a second socket.
+pub fn arm_listener(hub: Arc<Mutex<LanHub>>, store: Arc<Mutex<Store>>) {
+    let mut guard = hub.lock().unwrap_or_else(|err| err.into_inner());
+    if guard
+        .keeper
+        .as_ref()
+        .is_some_and(|handle| !handle.is_finished())
+    {
+        return;
+    }
+    guard.keeper_stop.store(false, Ordering::SeqCst);
+    let thread_hub = hub.clone();
+    let thread_store = store.clone();
+    guard.keeper = Some(thread::spawn(move || {
+        keep_listener(thread_hub, thread_store)
+    }));
+}
+
+fn keep_listener(hub: Arc<Mutex<LanHub>>, store: Arc<Mutex<Store>>) {
+    let mut saw_tailscale = !tailscale_hosts().is_empty();
+    loop {
+        if keeper_stopped(&hub) {
+            break;
+        }
+        let tails = tailscale_hosts();
+        let up = {
+            let mut guard = hub.lock().unwrap_or_else(|err| err.into_inner());
+            if guard.keeper_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            if !guard.worker_alive() {
+                let _ = guard.ensure_listener(store.clone());
+            }
+            guard.listener_up()
+        };
+        if !saw_tailscale && up {
+            if let Some(host) = tails.first() {
+                lan_log("listen", "ok", host, DEFAULT_PORT);
+                saw_tailscale = true;
+            }
+        }
+        if !sleep_or_stop(&hub, LISTEN_RETRY) {
+            break;
+        }
+    }
+}
+
+fn keeper_stopped(hub: &Mutex<LanHub>) -> bool {
+    hub.lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .keeper_stop
+        .load(Ordering::SeqCst)
+}
+
+/// Sleep in short slices so a test can stop the retry without waiting the
+/// whole period. Returns false when the keeper was asked to stop.
+fn sleep_or_stop(hub: &Mutex<LanHub>, total: Duration) -> bool {
+    let slice = total / 20;
+    for _ in 0..20 {
+        if keeper_stopped(hub) {
+            return false;
+        }
+        thread::sleep(slice);
+    }
+    true
 }
 
 struct SyncStart {
@@ -474,8 +553,15 @@ impl LanHub {
             SyncListener::bind_on(identity, pins, DEFAULT_PORT).map_err(|err| err.code)?;
         if listener.port != DEFAULT_PORT {
             drop(listener);
+            let already = self
+                .shared
+                .lock()
+                .map(|view| view.code == "port-busy")
+                .unwrap_or(false);
             self.fail_visible("port-busy", "43720");
-            lan_log_detail("listen", "port-busy", "port=43720");
+            if !already {
+                lan_log_detail("listen", "port-busy", "port=43720");
+            }
             return Err("port-busy".into());
         }
         listener.accept_tailscale_only();
@@ -505,10 +591,18 @@ impl LanHub {
         let shared = self.shared.clone();
         let dialing = self.dialing.clone();
         let serving = self.serving.clone();
+        self.binds.fetch_add(1, Ordering::SeqCst);
         self.worker = Some(thread::spawn(move || {
             listen_loop(store, listener, shared, stop, dialing, serving)
         }));
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn disarm_keeper(&mut self) -> Option<thread::JoinHandle<()>> {
+        self.keeper_stop.store(true, Ordering::SeqCst);
+        self.shutdown_worker();
+        self.keeper.take()
     }
 
     fn listener_up(&self) -> bool {
@@ -1442,6 +1536,12 @@ mod tests {
     use holdover_core::{MergeStatus, SyncBase};
     use serde_json::json;
 
+    /// Tests that bind 43720 take this so they do not steal the port from each other.
+    fn listen_port_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
     #[test]
     fn sync_dials_only_the_tailscale_address_on_the_fixed_port() {
         let saved = json!({
@@ -1556,6 +1656,7 @@ mod tests {
 
     #[test]
     fn ready_reuses_the_listener_and_a_new_pair_uses_that_port() {
+        let _port = listen_port_lock();
         let dir = std::env::temp_dir().join(format!(
             "holdover-lan-port-{}-{}",
             std::process::id(),
@@ -2048,7 +2149,67 @@ mod tests {
     }
 
     #[test]
+    fn the_listener_is_up_after_launch_without_a_status_poll() {
+        let _port = listen_port_lock();
+        let probe = std::net::TcpListener::bind("0.0.0.0:43720");
+        if probe.is_err() {
+            return;
+        }
+        drop(probe);
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-launch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Arc::new(Mutex::new(Store::open(&dir.join("desk.db")).unwrap()));
+        let hub = Arc::new(Mutex::new(LanHub::default()));
+        arm_listener(hub.clone(), store.clone());
+        let mut up = false;
+        for _ in 0..50 {
+            let guard = hub.lock().unwrap_or_else(|err| err.into_inner());
+            let view = guard.status(&store.lock().unwrap()).unwrap();
+            if view["listening"] == true && view["port"] == 43720 {
+                assert_eq!(
+                    guard.binds.load(Ordering::SeqCst),
+                    1,
+                    "launch bound 43720 more than once"
+                );
+                up = true;
+                break;
+            }
+            drop(guard);
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(up, "the listener was not up without a status poll");
+        let keeper = {
+            let mut guard = hub.lock().unwrap_or_else(|err| err.into_inner());
+            guard.ensure_listener(store.clone()).unwrap();
+            let view = guard.status(&store.lock().unwrap()).unwrap();
+            assert_eq!(view["listening"], true);
+            assert_eq!(view["port"], 43720);
+            assert_eq!(
+                guard.binds.load(Ordering::SeqCst),
+                1,
+                "a status poll opened a second listener"
+            );
+            guard.disarm_keeper()
+        };
+        if let Some(keeper) = keeper {
+            keeper.join().unwrap();
+        }
+        let closed = std::net::TcpListener::bind("0.0.0.0:43720");
+        assert!(closed.is_ok(), "launch left 43720 open");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn cancel_during_a_handshake_returns_immediately() {
+        let _port = listen_port_lock();
         let dir = std::env::temp_dir().join(format!(
             "holdover-lan-cancel-{}-{}",
             std::process::id(),
