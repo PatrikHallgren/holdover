@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -830,6 +831,121 @@ fn copy_log(from: &mut TcpStream, to: &mut TcpStream, log: &Mutex<Vec<u8>>) {
             }
         }
     }
+}
+
+fn join_within<T>(handle: thread::JoinHandle<T>, limit: Duration) -> T {
+    let start = Instant::now();
+    loop {
+        if handle.is_finished() {
+            return handle.join().expect("sync thread");
+        }
+        if start.elapsed() > limit {
+            panic!("sync did not finish within {limit:?}");
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn both_devices_pressing_sync_finish_with_one_preview() {
+    let desk_key = new_identity("desk", "Bench").unwrap();
+    let phone_key = new_identity("phone", "Pocket").unwrap();
+    let desk_listener = SyncListener::bind(desk_key.clone(), vec![phone_key.spki]).unwrap();
+    let phone_listener = SyncListener::bind(phone_key.clone(), vec![desk_key.spki]).unwrap();
+    let desk_port = desk_listener.port;
+    let phone_port = phone_listener.port;
+    let started = Instant::now();
+
+    let desk_serve = thread::spawn(move || {
+        let dialing = AtomicU64::new(1);
+        let serving = AtomicUsize::new(0);
+        let mut library = Mem::new("desk");
+        let mut listener = desk_listener;
+        let limit = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < limit {
+            match listener.accept_sync(Duration::from_millis(200)) {
+                Ok(accepted) => {
+                    return accepted
+                        .serve(&mut library, &dialing, &serving)
+                        .map(|_| "served".to_string())
+                        .map_err(|err| err.code);
+                }
+                Err(err) if err.code == "disconnected" => {}
+                Err(err) => return Err(err.code),
+            }
+        }
+        Err("timed-out".into())
+    });
+    let phone_serve = thread::spawn(move || {
+        let dialing = AtomicU64::new(1);
+        let serving = AtomicUsize::new(0);
+        let mut library = Mem::new("phone");
+        let mut listener = phone_listener;
+        let limit = Instant::now() + Duration::from_secs(6);
+        while Instant::now() < limit {
+            match listener.accept_sync(Duration::from_millis(200)) {
+                Ok(accepted) => {
+                    return accepted
+                        .serve(&mut library, &dialing, &serving)
+                        .map(|_| "served".to_string())
+                        .map_err(|err| err.code);
+                }
+                Err(err) if err.code == "disconnected" => {}
+                Err(err) => return Err(err.code),
+            }
+        }
+        Err("timed-out".into())
+    });
+
+    let desk_dial_key = desk_key.clone();
+    let phone_pin = phone_key.spki;
+    let desk_dial = thread::spawn(move || {
+        let mut library = Mem::new("desk");
+        let addr = format!("127.0.0.1:{phone_port}").parse().unwrap();
+        match open_sync(
+            &mut library,
+            &desk_dial_key,
+            addr,
+            phone_pin,
+            false,
+            Duration::from_secs(4),
+        ) {
+            Ok(session) => session
+                .finish(&mut library, &BTreeMap::new())
+                .map(|_| "preview".to_string())
+                .map_err(|err| err.code),
+            Err(err) => Err(err.code),
+        }
+    });
+    let phone_dial_key = phone_key.clone();
+    let desk_pin = desk_key.spki;
+    let phone_dial = thread::spawn(move || {
+        let mut library = Mem::new("phone");
+        let addr = format!("127.0.0.1:{desk_port}").parse().unwrap();
+        open_sync(
+            &mut library,
+            &phone_dial_key,
+            addr,
+            desk_pin,
+            false,
+            Duration::from_secs(4),
+        )
+        .map(|_| "preview".to_string())
+        .map_err(|err| err.code)
+    });
+
+    let desk_out = join_within(desk_dial, Duration::from_secs(8));
+    let phone_out = join_within(phone_dial, Duration::from_secs(8));
+    let desk_in = join_within(desk_serve, Duration::from_secs(8));
+    let phone_in = join_within(phone_serve, Duration::from_secs(8));
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "both-sides sync did not settle"
+    );
+    assert_eq!(desk_out.unwrap(), "preview");
+    assert_eq!(phone_out.unwrap_err(), "sync-yield");
+    assert_eq!(desk_in.unwrap_err(), "sync-yield");
+    assert_eq!(phone_in.unwrap(), "served");
 }
 
 #[test]

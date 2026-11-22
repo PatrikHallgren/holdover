@@ -3097,6 +3097,8 @@ function lanStatusText(view) {
   if (current.mode === "joining") return t(current.message === "awaiting" ? "lan-awaiting" : "lan-reaching");
   if (current.mode === "paired") return tf("lan-paired", { name: current.message || "" });
   if (current.message === "sync-reaching") return t("lan-sync-reaching");
+  if (current.message === "sync-serving") return t("lan-sync-serving");
+  if (current.message === "sync-applying") return t("lan-sync-applying");
   if (current.mode === "listen") return "";
   if (current.message === "reading") return t("lan-reading");
   if (current.message === "photo-ready") return t("lan-photo-ready");
@@ -3211,7 +3213,7 @@ function lanRail() {
 
 function lanMain() {
   const rows = (lan && lan.preview && lan.preview.rows) || [];
-  if (!rows.length) {
+  if (!rows.length && !(lan && lan.mode === "preview")) {
     const card = lanPairCard(lan || {}, lanNow());
     const status = lanStatusBlock(lan);
     if (card) {

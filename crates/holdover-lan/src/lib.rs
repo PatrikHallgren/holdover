@@ -20,8 +20,8 @@ pub use identity::{
     pin_from_hex, unix_now, Identity, Offer,
 };
 pub use session::{
-    join_pair, join_pair_with, open_sync, open_sync_many, preview_value, Catalog, ClientSync,
-    Library, PairWait, Peer, SyncListener, PREVIEW_WAIT,
+    join_pair, join_pair_with, open_sync, open_sync_many, preview_value, AcceptedSync, Catalog,
+    ClientSync, Library, PairWait, Peer, SyncListener, PREVIEW_WAIT, SYNC_HANDSHAKE,
 };
 pub use tls::LanError;
 

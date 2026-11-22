@@ -33,6 +33,19 @@ use store::Store;
 use tauri::Emitter;
 use tauri::Manager;
 
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let place = info
+            .location()
+            .map(|place| format!(" at {}:{}", place.file(), place.line()))
+            .unwrap_or_default();
+        let text = format!("{}{place}", lan::panic_text(info.payload()));
+        lan::report_panic_text(&text);
+        previous(info);
+    }));
+}
+
 struct AppState {
     store: Arc<Mutex<Store>>,
     db_path: PathBuf,
@@ -41,6 +54,7 @@ struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             bootstrap,

@@ -3,7 +3,8 @@
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -14,8 +15,8 @@ use holdover_lan::open_sync;
 use holdover_lan::{
     decode_qr_image, host_kind, is_tailscale, is_tailscale_ipv6, join_pair_with, new_identity,
     offer_qr, open_sync_many, parse_offer, pin_from_hex, preview_value, sort_hosts,
-    tailscale_hosts, tailscale_ipv6_only, unix_now, Catalog, ClientSync, Identity, Library,
-    PairWait, Peer, SyncListener, DEFAULT_PORT, PREVIEW_WAIT,
+    tailscale_hosts, tailscale_ipv6_only, unix_now, Catalog, ClientSync, Identity, LanError,
+    Library, PairWait, Peer, SyncListener, DEFAULT_PORT, PREVIEW_WAIT, SYNC_HANDSHAKE,
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -26,7 +27,10 @@ use crate::store::Store;
 pub struct LanHub {
     stop: Arc<AtomicBool>,
     shared: Arc<Mutex<LanView>>,
-    session: Option<ClientSync>,
+    session: Arc<Mutex<Option<ClientSync>>>,
+    sync_gen: Arc<AtomicU64>,
+    dialing: Arc<AtomicU64>,
+    serving: Arc<AtomicUsize>,
     decision: Arc<Mutex<Option<bool>>>,
     worker: Option<thread::JoinHandle<()>>,
 }
@@ -68,11 +72,24 @@ impl Default for LanHub {
         Self {
             stop: Arc::new(AtomicBool::new(false)),
             shared: Arc::new(Mutex::new(LanView::default())),
-            session: None,
+            session: Arc::new(Mutex::new(None)),
+            sync_gen: Arc::new(AtomicU64::new(0)),
+            dialing: Arc::new(AtomicU64::new(0)),
+            serving: Arc::new(AtomicUsize::new(0)),
             decision: Arc::new(Mutex::new(None)),
             worker: None,
         }
     }
+}
+
+struct SyncStart {
+    store: Arc<Mutex<Store>>,
+    addresses: Vec<SocketAddr>,
+    identity: Identity,
+    pin: [u8; 32],
+    spki: String,
+    include_location: bool,
+    bound: Duration,
 }
 
 impl LanHub {
@@ -119,9 +136,19 @@ impl LanHub {
         crate::phone::mdns_stop();
     }
 
+    fn take_session(&self) -> Option<ClientSync> {
+        self.session.lock().ok().and_then(|mut slot| slot.take())
+    }
+
+    fn abandon_sync(&self) {
+        self.sync_gen.fetch_add(1, Ordering::SeqCst);
+        self.dialing.store(0, Ordering::SeqCst);
+        let _ = self.take_session();
+    }
+
     pub fn stop(&mut self) {
         self.shutdown_worker();
-        self.session.take();
+        self.abandon_sync();
         if let Ok(mut view) = self.shared.lock() {
             *view = LanView::default();
         }
@@ -148,7 +175,7 @@ impl LanHub {
     }
 
     pub fn cancel(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
-        self.session.take();
+        self.abandon_sync();
         let mode = self
             .shared
             .lock()
@@ -425,8 +452,10 @@ impl LanHub {
             lan_log_detail("listen", "no-tailscale", "host=none port=43720");
         }
         let shared = self.shared.clone();
+        let dialing = self.dialing.clone();
+        let serving = self.serving.clone();
         self.worker = Some(thread::spawn(move || {
-            listen_loop(store, listener, shared, stop)
+            listen_loop(store, listener, shared, stop, dialing, serving)
         }));
         Ok(())
     }
@@ -449,7 +478,6 @@ impl LanHub {
         spki: &str,
         include_location: bool,
     ) -> Result<(), String> {
-        self.session.take();
         let (identity, peers) = {
             let guard = store
                 .lock()
@@ -467,53 +495,130 @@ impl LanHub {
             return Err(code.into());
         }
         let pin = spki_pin(spki)?;
+        self.begin_sync(SyncStart {
+            store,
+            addresses,
+            identity,
+            pin,
+            spki: spki.to_string(),
+            include_location,
+            bound: SYNC_HANDSHAKE,
+        });
+        Ok(())
+    }
+
+    fn begin_sync(&mut self, start: SyncStart) {
+        let SyncStart {
+            store,
+            addresses,
+            identity,
+            pin,
+            spki,
+            include_location,
+            bound,
+        } = start;
+        self.abandon_sync();
+        let generation = self.sync_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        self.dialing.store(generation, Ordering::SeqCst);
         if let Ok(mut view) = self.shared.lock() {
             view.message = "sync-reaching".into();
             view.code.clear();
+            view.detail.clear();
+            view.preview = None;
         }
-        let mut catalog = ArcCatalog::new(store.clone())?;
-        let session = match open_sync_many(
-            &mut catalog,
-            &identity,
-            &addresses,
-            pin,
-            include_location,
-            Duration::from_secs(4),
-        ) {
-            Ok(session) => session,
-            Err(err) => {
-                let code = if matches!(
-                    err.code.as_str(),
-                    "sync-unreachable" | "disconnected" | "tls"
-                ) {
-                    "sync-unreachable"
-                } else {
-                    err.code.as_str()
-                };
-                let detail = err.detail.replace("unauthorized", "auth failed");
-                self.fail_visible(code, &detail);
-                lan_log_detail("sync-begin", code, &detail);
-                return Err(code.to_string());
+        let shared = self.shared.clone();
+        let session_slot = self.session.clone();
+        let sync_gen = self.sync_gen.clone();
+        let dialing = self.dialing.clone();
+        thread::spawn(move || {
+            let store_for_peer = store.clone();
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut catalog =
+                    ArcCatalog::new(store.clone()).map_err(|_| LanError::new("busy"))?;
+                open_sync_many(
+                    &mut catalog,
+                    &identity,
+                    &addresses,
+                    pin,
+                    include_location,
+                    bound,
+                )
+            }));
+            if dialing
+                .compare_exchange(generation, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return;
             }
-        };
-        let used_host = session.peer().host.clone();
-        let used_port = session.peer().port;
-        let preview = preview_value(&session.preview);
-        self.session = Some(session);
-        let mut view = self
-            .shared
+            if sync_gen.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            match outcome {
+                Ok(Ok(session)) => {
+                    let used_host = session.peer().host.clone();
+                    let used_port = session.peer().port;
+                    let preview = preview_value(&session.preview);
+                    if let Ok(mut slot) = session_slot.lock() {
+                        *slot = Some(session);
+                    }
+                    if let Ok(mut view) = shared.lock() {
+                        view.mode = "preview".into();
+                        view.preview = Some(preview);
+                        view.message.clear();
+                        view.code.clear();
+                        view.detail.clear();
+                    }
+                    if let Ok(guard) = store_for_peer.lock() {
+                        let _ = guard.remember_peer_addr(&spki, &used_host, used_port);
+                    }
+                    lan_log("sync-begin", "ok", &used_host, used_port);
+                }
+                Ok(Err(err)) => {
+                    let code = if matches!(
+                        err.code.as_str(),
+                        "sync-unreachable" | "disconnected" | "tls"
+                    ) {
+                        "sync-unreachable"
+                    } else {
+                        err.code.as_str()
+                    };
+                    let detail = err.detail.replace("unauthorized", "auth failed");
+                    show_sync_error(&shared, code, &detail);
+                    lan_log_detail("sync-begin", code, &detail);
+                }
+                Err(payload) => {
+                    let text = panic_text(&payload);
+                    report_panic_text(&text);
+                    show_sync_error(&shared, "sync-failed", &text);
+                    lan_log_detail("sync-begin", "sync-failed", &text);
+                }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    fn begin_sync_for_test(
+        &mut self,
+        store: Arc<Mutex<Store>>,
+        address: SocketAddr,
+        pin: [u8; 32],
+        spki: &str,
+        bound: Duration,
+    ) {
+        let identity = store
             .lock()
-            .map_err(|_| "the sync state is busy".to_string())?;
-        view.mode = "preview".into();
-        view.preview = Some(preview);
-        view.message.clear();
-        view.code.clear();
-        view.detail.clear();
-        if let Ok(guard) = store.lock() {
-            let _ = guard.remember_peer_addr(spki, &used_host, used_port);
-        }
-        lan_log("sync-begin", "ok", &used_host, used_port);
-        Ok(())
+            .expect("library")
+            .lan_identity()
+            .expect("identity");
+        self.begin_sync(SyncStart {
+            store,
+            addresses: vec![address],
+            identity,
+            pin,
+            spki: spki.to_string(),
+            include_location: false,
+            bound,
+        });
     }
 
     fn fail_visible(&self, code: &str, detail: &str) {
@@ -529,25 +634,48 @@ impl LanHub {
     }
 
     pub fn sync_apply(&mut self, store: Arc<Mutex<Store>>, choices: &Value) -> Result<(), String> {
-        let session = self.session.take().ok_or("lan-no-preview")?;
+        let session = self.take_session().ok_or("lan-no-preview")?;
         let parsed = parse_choice_map(choices)?;
-        let mut catalog = ArcCatalog::new(store)?;
-        session
-            .finish(&mut catalog, &parsed)
-            .map_err(|err| err.code)?;
-        let mut view = self
-            .shared
-            .lock()
-            .map_err(|_| "the sync state is busy".to_string())?;
-        view.mode = "done".into();
-        view.preview = None;
-        view.code = String::new();
-        view.message = "applied".into();
+        if let Ok(mut view) = self.shared.lock() {
+            view.message = "sync-applying".into();
+            view.code.clear();
+        }
+        let shared = self.shared.clone();
+        thread::spawn(move || {
+            let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+                let mut catalog = ArcCatalog::new(store)?;
+                session
+                    .finish(&mut catalog, &parsed)
+                    .map_err(|err| err.code)
+            }));
+            match outcome {
+                Ok(Ok(())) => {
+                    if let Ok(mut view) = shared.lock() {
+                        view.mode = "done".into();
+                        view.preview = None;
+                        view.code.clear();
+                        view.detail.clear();
+                        view.message = "applied".into();
+                    }
+                    lan_log_detail("sync-apply", "ok", "host=none port=0");
+                }
+                Ok(Err(code)) => {
+                    show_sync_error(&shared, &code, "");
+                    lan_log_detail("sync-apply", &code, "host=none port=0");
+                }
+                Err(payload) => {
+                    let text = panic_text(&payload);
+                    report_panic_text(&text);
+                    show_sync_error(&shared, "sync-failed", &text);
+                    lan_log_detail("sync-apply", "sync-failed", &text);
+                }
+            }
+        });
         Ok(())
     }
 
     pub fn session_cancel(&mut self) {
-        self.session.take();
+        self.abandon_sync();
         if let Ok(mut view) = self.shared.lock() {
             view.preview = None;
             if view.mode == "preview" {
@@ -683,27 +811,22 @@ fn listen_loop(
     mut listener: SyncListener,
     shared: Arc<Mutex<LanView>>,
     stop: Arc<AtomicBool>,
+    dialing: Arc<AtomicU64>,
+    serving: Arc<AtomicUsize>,
 ) {
-    let mut catalog = match ArcCatalog::new(store) {
-        Ok(catalog) => catalog,
-        Err(_) => return,
-    };
     while !stop.load(Ordering::SeqCst) {
-        match listener.serve_one(&mut catalog, Duration::from_secs(1)) {
-            Ok(()) => {
-                if let Ok(mut view) = shared.lock() {
-                    view.message = "applied".into();
-                    view.code = String::new();
-                }
+        match listener.accept_sync(Duration::from_secs(1)) {
+            Ok(accepted) => {
+                let store = store.clone();
+                let shared = shared.clone();
+                let dialing = dialing.clone();
+                let serving = serving.clone();
+                thread::spawn(move || serve_inbound(store, shared, dialing, serving, accepted));
             }
-            Err(err) if err.code == "disconnected" || err.code == "not-tailscale" => {
+            Err(err) if err.code == "disconnected" => {}
+            Err(err) => {
                 if err.code == "not-tailscale" {
                     lan_log_detail("listen", "not-tailscale", "host=other port=43720");
-                }
-            }
-            Err(err) => {
-                if let Ok(mut view) = shared.lock() {
-                    view.code = err.code;
                 }
             }
         }
@@ -713,6 +836,98 @@ fn listen_loop(
             view.mode = "idle".into();
         }
     }
+}
+
+fn serve_inbound(
+    store: Arc<Mutex<Store>>,
+    shared: Arc<Mutex<LanView>>,
+    dialing: Arc<AtomicU64>,
+    serving: Arc<AtomicUsize>,
+    accepted: holdover_lan::AcceptedSync,
+) {
+    if dialing.load(Ordering::SeqCst) == 0 {
+        if let Ok(mut view) = shared.lock() {
+            if view.mode != "preview" && view.message != "sync-reaching" {
+                view.message = "sync-serving".into();
+                view.code.clear();
+            }
+        }
+    }
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut catalog = ArcCatalog::new(store)?;
+        accepted
+            .serve(&mut catalog, &dialing, &serving)
+            .map_err(|err| err.code)
+    }));
+    match outcome {
+        Ok(Ok(())) => {
+            if let Ok(mut view) = shared.lock() {
+                if view.mode != "preview" && view.message != "sync-reaching" {
+                    view.message = "applied".into();
+                    view.code.clear();
+                    view.detail.clear();
+                }
+            }
+        }
+        Ok(Err(code))
+            if matches!(
+                code.as_str(),
+                "disconnected" | "not-tailscale" | "sync-yield" | "sync-busy"
+            ) =>
+        {
+            if code == "not-tailscale" {
+                lan_log_detail("listen", "not-tailscale", "host=other port=43720");
+            }
+        }
+        Ok(Err(code)) => {
+            if let Ok(mut view) = shared.lock() {
+                if view.mode != "preview" && view.message != "sync-reaching" {
+                    view.code = code;
+                }
+            }
+        }
+        Err(payload) => {
+            let text = panic_text(&payload);
+            report_panic_text(&text);
+            show_sync_error(&shared, "sync-failed", &text);
+        }
+    }
+}
+
+fn show_sync_error(shared: &Mutex<LanView>, code: &str, detail: &str) {
+    if let Ok(mut view) = shared.lock() {
+        if view.mode == "preview" {
+            return;
+        }
+        if view.mode != "listen" && view.mode != "pair" {
+            view.mode = "idle".into();
+        }
+        view.message.clear();
+        view.preview = None;
+        view.code = code.to_string();
+        view.detail = detail.chars().take(200).collect();
+    }
+}
+
+pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    let raw = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic");
+    let flat = raw.replace(['\n', '\r'], " ");
+    let text: String = flat.chars().take(200).collect();
+    if text.is_empty() {
+        "unknown panic".into()
+    } else {
+        text
+    }
+}
+
+pub(crate) fn report_panic_text(text: &str) {
+    let flat = text.replace(['\n', '\r'], " ");
+    let shown: String = flat.chars().take(200).collect();
+    syslog_line(&format!("panic {shown}"));
 }
 
 struct ArcCatalog {
@@ -860,9 +1075,12 @@ fn lan_log(action: &str, result: &str, host: &str, port: u16) {
 
 fn lan_log_detail(action: &str, result: &str, detail: &str) {
     let detail = detail.replace(['\n', '\r'], " ");
-    let line = format!("lan action={action} result={result} {detail}");
+    syslog_line(&format!("lan action={action} result={result} {detail}"));
+}
+
+fn syslog_line(line: &str) {
     eprintln!("holdover: {line}");
-    crate::phone::log_line(&line);
+    crate::phone::log_line(line);
     #[cfg(not(target_os = "android"))]
     {
         let message = std::ffi::CString::new(line)
@@ -1483,6 +1701,131 @@ mod tests {
                 )
                 .unwrap();
         }
+    }
+
+    fn wait_view(hub: &LanHub, store: &Arc<Mutex<Store>>, ready: impl Fn(&Value) -> bool) -> Value {
+        let start = std::time::Instant::now();
+        loop {
+            let view = {
+                let guard = store.lock().unwrap();
+                hub.status(&guard).unwrap()
+            };
+            if ready(&view) || start.elapsed() > Duration::from_secs(6) {
+                return view;
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+    }
+
+    #[test]
+    fn sync_begin_returns_before_the_peer_answers_and_then_shows_a_preview() {
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-now-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let desk = Store::open(&dir.join("desk.db")).unwrap();
+        let phone = Store::open(&dir.join("phone.db")).unwrap();
+        let desk_key = desk.lan_identity().unwrap();
+        let phone_key = phone.lan_identity().unwrap();
+        let phone_store = Arc::new(Mutex::new(phone));
+        let listener = SyncListener::bind(desk_key.clone(), vec![phone_key.spki]).unwrap();
+        let port = listener.port;
+        let server = thread::spawn(move || {
+            let mut listener = listener;
+            let mut catalog = ArcCatalog::new(Arc::new(Mutex::new(desk))).unwrap();
+            listener
+                .serve_one(&mut catalog, Duration::from_secs(5))
+                .map_err(|err| err.code)
+        });
+        let addr = format!("127.0.0.1:{port}").parse().unwrap();
+        let mut hub = LanHub::default();
+        let started = std::time::Instant::now();
+        hub.begin_sync_for_test(
+            phone_store.clone(),
+            addr,
+            desk_key.spki,
+            &desk_key.spki_hex,
+            Duration::from_secs(4),
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "sync begin waited for the peer"
+        );
+        let reaching = hub.status(&phone_store.lock().unwrap()).unwrap();
+        assert_eq!(reaching["message"], "sync-reaching");
+        let view = wait_view(&hub, &phone_store, |view| {
+            view["mode"] == "preview" || !view["code"].as_str().unwrap_or("").is_empty()
+        });
+        assert_eq!(view["mode"], "preview", "{view}");
+        let _ = hub.take_session();
+        let _ = server.join();
+        hub.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stalled_peer_becomes_a_visible_error_inside_the_handshake_bound() {
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-stall-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let phone = Store::open(&dir.join("phone.db")).unwrap();
+        let desk_key = holdover_lan::new_identity("desk", "Bench").unwrap();
+        let phone_store = Arc::new(Mutex::new(phone));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = thread::spawn(move || {
+            let _socket = listener.accept();
+            thread::sleep(Duration::from_secs(3));
+        });
+        let mut hub = LanHub::default();
+        let started = std::time::Instant::now();
+        hub.begin_sync_for_test(
+            phone_store.clone(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+            desk_key.spki,
+            &desk_key.spki_hex,
+            Duration::from_secs(1),
+        );
+        assert!(started.elapsed() < Duration::from_millis(300));
+        let view = wait_view(&hub, &phone_store, |view| {
+            !view["code"].as_str().unwrap_or("").is_empty()
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "the stalled sync was still open after {:?}",
+            started.elapsed()
+        );
+        assert_eq!(view["code"], "sync-unreachable", "{view}");
+        assert_ne!(view["mode"], "preview");
+        hub.stop();
+        let _ = held.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sync_panic_becomes_an_on_screen_error() {
+        let shared = Arc::new(Mutex::new(LanView::default()));
+        let payload = std::panic::catch_unwind(|| panic!("sync boom\nline")).unwrap_err();
+        let text = panic_text(payload.as_ref());
+        report_panic_text(&text);
+        show_sync_error(&shared, "sync-failed", &text);
+        let view = shared.lock().unwrap();
+        assert_eq!(view.code, "sync-failed");
+        assert!(view.detail.contains("sync boom"));
+        assert!(!view.detail.contains('\n'));
     }
 
     fn body_of(store: &Store, id: &str) -> Value {

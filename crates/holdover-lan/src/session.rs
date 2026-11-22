@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +24,9 @@ use crate::tls::{
 };
 
 pub const PREVIEW_WAIT: Duration = Duration::from_secs(600);
+
+/// How long a sync may take to reach a preview or a visible error.
+pub const SYNC_HANDSHAKE: Duration = Duration::from_secs(12);
 
 pub trait Catalog {
     fn schema(&self) -> i64 {
@@ -480,12 +483,48 @@ impl SyncListener {
         self.tailscale_only = true;
     }
 
+    pub fn accept_sync(&mut self, timeout: Duration) -> Result<AcceptedSync, LanError> {
+        let tcp = accept_one(&self.listener, timeout)?;
+        let _ = tcp.set_read_timeout(Some(SYNC_HANDSHAKE));
+        let _ = tcp.set_write_timeout(Some(SYNC_HANDSHAKE));
+        Ok(AcceptedSync {
+            tcp,
+            identity: self.identity.clone(),
+            pins: self.pins.clone(),
+            config: self.config.clone(),
+            tailscale_only: self.tailscale_only,
+        })
+    }
+
     pub fn serve_one<C: Catalog>(
         &mut self,
         catalog: &mut C,
         timeout: Duration,
     ) -> Result<(), LanError> {
-        let tcp = accept_one(&self.listener, timeout)?;
+        let accepted = self.accept_sync(timeout)?;
+        let dialing = AtomicU64::new(0);
+        let serving = AtomicUsize::new(0);
+        accepted.serve(catalog, &dialing, &serving)
+    }
+}
+
+/// One accepted TCP connection, served off the accept thread.
+pub struct AcceptedSync {
+    tcp: TcpStream,
+    identity: Identity,
+    pins: Vec<[u8; 32]>,
+    config: Arc<rustls::ServerConfig>,
+    tailscale_only: bool,
+}
+
+impl AcceptedSync {
+    pub fn serve<C: Catalog>(
+        self,
+        catalog: &mut C,
+        dialing: &AtomicU64,
+        serving: &AtomicUsize,
+    ) -> Result<(), LanError> {
+        let tcp = self.tcp;
         if self.tailscale_only && !stream_is_tailscale(&tcp) {
             drop(tcp);
             return Err(LanError::new("not-tailscale"));
@@ -513,6 +552,20 @@ impl SyncListener {
             )?;
             return Err(LanError::new("unauthorized"));
         }
+        let remote_id = hello.get("device_id").and_then(Value::as_str).unwrap_or("");
+        let local_id = catalog.device_id();
+        // When both sides dial, the smaller device id stays the initiator.
+        // The other side closes its outbound attempt and only serves this one.
+        if dialing.load(Ordering::SeqCst) != 0 && !remote_id.is_empty() && remote_id > local_id {
+            write_json(&mut tls, &json!({"t": "sync-refuse", "code": "sync-yield"}))?;
+            return Err(LanError::new("sync-yield"));
+        }
+        if serving.fetch_add(1, Ordering::SeqCst) > 0 {
+            serving.fetch_sub(1, Ordering::SeqCst);
+            write_json(&mut tls, &json!({"t": "sync-refuse", "code": "sync-busy"}))?;
+            return Err(LanError::new("sync-busy"));
+        }
+        let _serving = Serving(serving);
         let schema = hello.get("schema").and_then(Value::as_i64).unwrap_or(0);
         if schema > LAN_SCHEMA {
             write_json(
@@ -552,6 +605,8 @@ impl SyncListener {
             &mut tls,
             &json!({"t": "snapshot", "library": library_value(&local)}),
         )?;
+        let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
+        let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
         let choice_msg = read_json(&mut tls)?;
         if choice_msg.get("t").and_then(Value::as_str) == Some("abort") {
             return Err(LanError::new(
@@ -585,6 +640,14 @@ impl SyncListener {
         }
         write_json(&mut tls, &json!({"t": "committed"}))?;
         Ok(())
+    }
+}
+
+struct Serving<'a>(&'a AtomicUsize);
+
+impl Drop for Serving<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -670,6 +733,8 @@ pub fn open_sync<C: Catalog>(
     timeout: Duration,
 ) -> Result<ClientSync, LanError> {
     let tcp = dial(address, timeout)?;
+    let _ = tcp.set_read_timeout(Some(timeout));
+    let _ = tcp.set_write_timeout(Some(timeout));
     open_sync_connected(
         catalog,
         identity,
@@ -731,8 +796,8 @@ pub fn open_sync_many<C: Catalog>(
         match outcome {
             Ok((address, stream)) => {
                 pending.retain(|item| *item != address);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+                let _ = stream.set_read_timeout(Some(timeout));
+                let _ = stream.set_write_timeout(Some(timeout));
                 match open_sync_connected(
                     catalog,
                     identity,
@@ -843,6 +908,8 @@ fn open_sync_connected<C: Catalog>(
     let remote = parse_library(remote_msg.get("library").unwrap_or(&Value::Null))?;
     // The initiator's copy is "local" in the preview the person resolves.
     let preview = lan_preview(&local.records, &remote.records, &local.bases, &remote.bases);
+    let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
+    let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
     let peer_spki = server_pin;
     Ok(ClientSync {
         stream: Some(tls),
@@ -1320,7 +1387,7 @@ mod tests {
     #[test]
     fn serve_one_previews_the_initiator_library_first() {
         let source = include_str!("session.rs");
-        let serve = source.split("pub fn serve_one").nth(1).expect("serve_one");
+        let serve = source.split("fn serve<C: Catalog>").nth(1).expect("serve");
         let body = serve
             .split("fn open_sync_connected")
             .next()
