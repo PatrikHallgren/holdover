@@ -1,7 +1,7 @@
 //! LAN addresses and mDNS. The token never goes in a discovery record.
 //! If multicast is blocked, the person types the address from the pairing code.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket};
 use std::time::Duration;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -94,11 +94,43 @@ pub fn is_tailscale(host: &str) -> bool {
     host.parse::<Ipv4Addr>().ok().is_some_and(is_cgnat)
 }
 
+/// Tailscale IPv6 addresses sit in `fd7a:115c:a1e0::/48`. Holdover does not dial them.
+pub fn is_tailscale_ipv6(host: &str) -> bool {
+    let trimmed = host.trim().trim_matches(|ch| ch == '[' || ch == ']');
+    let Ok(addr) = trimmed.parse::<Ipv6Addr>() else {
+        return false;
+    };
+    let octets = addr.octets();
+    octets[0] == 0xfd
+        && octets[1] == 0x7a
+        && octets[2] == 0x11
+        && octets[3] == 0x5c
+        && octets[4] == 0xa1
+        && octets[5] == 0xe0
+}
+
 pub fn tailscale_hosts() -> Vec<String> {
     local_hosts()
         .into_iter()
         .filter(|host| is_tailscale(host))
         .collect()
+}
+
+/// True when this device has a Tailscale IPv6 address and no 100.x address.
+pub fn tailscale_ipv6_only() -> bool {
+    if !tailscale_hosts().is_empty() {
+        return false;
+    }
+    let Ok(list) = if_addrs::get_if_addrs() else {
+        return false;
+    };
+    list.iter().any(|iface| {
+        !iface.is_loopback()
+            && match iface.ip() {
+                IpAddr::V6(addr) => is_tailscale_ipv6(&addr.to_string()),
+                IpAddr::V4(_) => false,
+            }
+    })
 }
 
 fn default_route_v4() -> Option<Ipv4Addr> {

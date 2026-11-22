@@ -308,6 +308,17 @@ test("the phone manifest can see a photograph picker and the camera", () => {
   assert.match(ftl, /lan-photo-failed = /);
 });
 
+test("forget asks before it deletes a paired device", () => {
+  const start = app.indexOf('querySelectorAll("[data-lan-forget]")');
+  assert.ok(start > 0);
+  const chunk = app.slice(start, start + 700);
+  const confirmAt = chunk.indexOf("window.confirm");
+  const actAt = chunk.indexOf('action: "forget"');
+  assert.ok(confirmAt >= 0 && actAt > confirmAt, chunk);
+  assert.match(chunk, /if \(!window\.confirm\(tf\("lan-forget-confirm"/);
+  assert.match(ftl, /lan-forget-confirm = Forget \{\s*\$name\s*\}\?/);
+});
+
 test("pairing and photograph controls change the screen and keep the result", { timeout: 180000 }, async () => {
   const report = await render(page());
   if (!report.reaching) assert.fail(JSON.stringify(report).slice(0, 2000));

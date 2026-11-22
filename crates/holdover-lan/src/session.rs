@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,9 @@ use crate::tls::{
 };
 
 pub const PREVIEW_WAIT: Duration = Duration::from_secs(600);
+
+/// How long a sync may take to reach a preview or a visible error.
+pub const SYNC_HANDSHAKE: Duration = Duration::from_secs(12);
 
 pub trait Catalog {
     fn schema(&self) -> i64 {
@@ -73,6 +76,7 @@ pub struct Pending {
     host: String,
     hosts: Vec<String>,
     consumed: Arc<AtomicBool>,
+    busy: Arc<AtomicBool>,
 }
 
 impl PairWait {
@@ -211,6 +215,7 @@ impl PairWait {
             host,
             hosts,
             consumed: self.consumed.clone(),
+            busy: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -254,11 +259,11 @@ impl Pending {
         }
         self.consumed.store(true, Ordering::SeqCst);
         Ok(Peer {
-            device_id: self.device_id,
-            name: self.name,
+            device_id: std::mem::take(&mut self.device_id),
+            name: std::mem::take(&mut self.name),
             spki_hex: hex_encode(&self.spki),
             spki: self.spki,
-            host: self.host,
+            host: std::mem::take(&mut self.host),
             port: 0,
         })
     }
@@ -266,6 +271,14 @@ impl Pending {
     pub fn reject(mut self) -> Result<(), LanError> {
         write_json(&mut self.stream, &json!({"t": "pair-denied"}))?;
         Ok(())
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if !self.consumed.load(Ordering::SeqCst) {
+            self.busy.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -446,11 +459,102 @@ fn pair_on_stream(
 
 pub struct SyncListener {
     listener: TcpListener,
-    identity: Identity,
-    pins: Vec<[u8; 32]>,
-    config: Arc<rustls::ServerConfig>,
+    door: Arc<ListenerDoor>,
     pub port: u16,
+}
+
+/// Shared TLS identity, pin list, and pairing token for the one listener.
+/// `pair-start` updates this while the socket stays bound.
+pub struct ListenerDoor {
+    inner: Mutex<DoorInner>,
+}
+
+struct DoorInner {
+    identity: Identity,
+    config: Arc<rustls::ServerConfig>,
+    pins: Vec<[u8; 32]>,
+    pairing: Option<PairGate>,
     tailscale_only: bool,
+}
+
+struct PairGate {
+    token: String,
+    expires: u64,
+    consumed: Arc<AtomicBool>,
+    busy: Arc<AtomicBool>,
+}
+
+struct DoorSnap {
+    identity: Identity,
+    config: Arc<rustls::ServerConfig>,
+    pins: Vec<[u8; 32]>,
+    pairing: Option<PairGate>,
+    tailscale_only: bool,
+}
+
+impl ListenerDoor {
+    fn new(identity: Identity, config: Arc<rustls::ServerConfig>, pins: Vec<[u8; 32]>) -> Self {
+        Self {
+            inner: Mutex::new(DoorInner {
+                identity,
+                config,
+                pins,
+                pairing: None,
+                tailscale_only: false,
+            }),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, DoorInner> {
+        self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    /// Rebuild the server certificate from the saved identity before a code is shown.
+    pub fn reload(&self, identity: Identity, pins: Vec<[u8; 32]>) -> Result<(), LanError> {
+        let config = server_config(&identity)?;
+        let mut door = self.lock();
+        door.identity = identity;
+        door.config = config;
+        door.pins = pins;
+        Ok(())
+    }
+
+    /// Publish a pairing token on the listener that is already bound.
+    pub fn arm_pairing(&self, hosts: Vec<String>, port: u16, now: u64) -> Result<Offer, LanError> {
+        let mut door = self.lock();
+        let offer = make_offer(&door.identity, port, hosts, now);
+        door.pairing = Some(PairGate {
+            token: offer.token.clone(),
+            expires: offer.expires,
+            consumed: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicBool::new(false)),
+        });
+        Ok(offer)
+    }
+
+    pub fn clear_pairing(&self) {
+        self.lock().pairing = None;
+    }
+
+    pub fn set_tailscale_only(&self, on: bool) {
+        self.lock().tailscale_only = on;
+    }
+
+    fn snapshot(&self) -> DoorSnap {
+        let door = self.lock();
+        DoorSnap {
+            identity: door.identity.clone(),
+            config: door.config.clone(),
+            pins: door.pins.clone(),
+            pairing: door.pairing.as_ref().map(|gate| PairGate {
+                token: gate.token.clone(),
+                expires: gate.expires,
+                consumed: gate.consumed.clone(),
+                busy: gate.busy.clone(),
+            }),
+            tailscale_only: door.tailscale_only,
+        }
+    }
 }
 
 impl SyncListener {
@@ -465,19 +569,42 @@ impl SyncListener {
     ) -> Result<Self, LanError> {
         let (listener, port) = bind_listener(preferred_port)?;
         let config = server_config(&identity)?;
+        let door = Arc::new(ListenerDoor::new(identity, config, pins));
         Ok(Self {
             listener,
-            identity,
-            pins,
-            config,
+            door,
             port,
-            tailscale_only: false,
         })
+    }
+
+    pub fn share(&self) -> Arc<ListenerDoor> {
+        self.door.clone()
     }
 
     /// Drop TCP connections that are not from 100.64.0.0/10 before the handshake.
     pub fn accept_tailscale_only(&mut self) {
-        self.tailscale_only = true;
+        self.door.set_tailscale_only(true);
+    }
+
+    pub fn accept_sync(&mut self, timeout: Duration) -> Result<AcceptedSync, LanError> {
+        let tcp = accept_one(&self.listener, timeout)?;
+        let _ = tcp.set_read_timeout(Some(SYNC_HANDSHAKE));
+        let _ = tcp.set_write_timeout(Some(SYNC_HANDSHAKE));
+        let snap = self.door.snapshot();
+        Ok(AcceptedSync {
+            tcp,
+            identity: snap.identity,
+            pins: snap.pins,
+            config: snap.config,
+            tailscale_only: snap.tailscale_only,
+            pairing: snap.pairing.map(|gate| AcceptedPair {
+                token: gate.token,
+                expires: gate.expires,
+                consumed: gate.consumed,
+                busy: gate.busy,
+            }),
+            on_pair: None,
+        })
     }
 
     pub fn serve_one<C: Catalog>(
@@ -485,7 +612,62 @@ impl SyncListener {
         catalog: &mut C,
         timeout: Duration,
     ) -> Result<(), LanError> {
-        let tcp = accept_one(&self.listener, timeout)?;
+        let accepted = self.accept_sync(timeout)?;
+        let dialing = AtomicU64::new(0);
+        let serving = AtomicUsize::new(0);
+        accepted.serve(catalog, &dialing, &serving, |_| {})
+    }
+}
+
+struct AcceptedPair {
+    token: String,
+    expires: u64,
+    consumed: Arc<AtomicBool>,
+    busy: Arc<AtomicBool>,
+}
+
+type PairHandler = Box<dyn FnOnce(Pending) -> Result<(), LanError> + Send>;
+
+/// One accepted TCP connection, served off the accept thread.
+pub struct AcceptedSync {
+    tcp: TcpStream,
+    identity: Identity,
+    pins: Vec<[u8; 32]>,
+    config: Arc<rustls::ServerConfig>,
+    tailscale_only: bool,
+    pairing: Option<AcceptedPair>,
+    on_pair: Option<PairHandler>,
+}
+
+impl AcceptedSync {
+    pub fn set_pins(&mut self, pins: Vec<[u8; 32]>) {
+        self.pins = pins;
+    }
+
+    pub fn local_name(&self) -> &str {
+        &self.identity.name
+    }
+
+    pub fn local_device(&self) -> &str {
+        &self.identity.device_id
+    }
+
+    pub fn on_pair(
+        &mut self,
+        handler: impl FnOnce(Pending) -> Result<(), LanError> + Send + 'static,
+    ) {
+        self.on_pair = Some(Box::new(handler));
+    }
+
+    pub fn serve<C: Catalog>(
+        mut self,
+        catalog: &mut C,
+        dialing: &AtomicU64,
+        serving: &AtomicUsize,
+        stage: impl Fn(&str),
+    ) -> Result<(), LanError> {
+        stage("accept");
+        let tcp = self.tcp;
         if self.tailscale_only && !stream_is_tailscale(&tcp) {
             drop(tcp);
             return Err(LanError::new("not-tailscale"));
@@ -499,7 +681,17 @@ impl SyncListener {
             Err(_) => return Err(LanError::new("tls")),
         };
         let hello = read_json(&mut tls)?;
-        if hello.get("t").and_then(Value::as_str) != Some("sync-hello") {
+        let kind = hello.get("t").and_then(Value::as_str);
+        if kind == Some("pair-hello") {
+            return finish_accepted_pair(
+                self.pairing.take(),
+                self.on_pair.take(),
+                tls,
+                hello,
+                peer,
+            );
+        }
+        if kind != Some("sync-hello") {
             write_json(
                 &mut tls,
                 &json!({"t": "sync-refuse", "code": "unauthorized"}),
@@ -511,7 +703,16 @@ impl SyncListener {
                 &mut tls,
                 &json!({"t": "sync-refuse", "code": "unauthorized"}),
             )?;
-            return Err(LanError::new("unauthorized"));
+            return Err(LanError::with_detail("unauthorized", "pin"));
+        }
+        stage("hello");
+        let remote_id = hello.get("device_id").and_then(Value::as_str).unwrap_or("");
+        let local_id = catalog.device_id();
+        // When both sides dial, the smaller device id stays the initiator.
+        // The other side closes its outbound attempt and only serves this one.
+        if dialing.load(Ordering::SeqCst) != 0 && !remote_id.is_empty() && remote_id > local_id {
+            write_json(&mut tls, &json!({"t": "sync-refuse", "code": "sync-yield"}))?;
+            return Err(LanError::new("sync-yield"));
         }
         let schema = hello.get("schema").and_then(Value::as_i64).unwrap_or(0);
         if schema > LAN_SCHEMA {
@@ -546,13 +747,30 @@ impl SyncListener {
             &json!({"t": "sync-hello", "schema": LAN_SCHEMA, "device_id": self.identity.device_id}),
         )?;
         let remote_msg = read_json(&mut tls)?;
+        if remote_msg.get("t").and_then(Value::as_str) != Some("snapshot") {
+            return Err(LanError::new("disconnected"));
+        }
         let remote = parse_library(remote_msg.get("library").unwrap_or(&Value::Null))?;
         let local = stripped(&catalog.library()?, include_location);
+        // A connection that has not reached a preview must not hold the
+        // listener's only session. The slot is taken here, after the short
+        // handshake, so a half-open socket cannot pin the next sync.
+        if serving.fetch_add(1, Ordering::SeqCst) > 0 {
+            serving.fetch_sub(1, Ordering::SeqCst);
+            write_json(&mut tls, &json!({"t": "sync-refuse", "code": "sync-busy"}))?;
+            return Err(LanError::new("sync-busy"));
+        }
+        let _serving = Serving(serving);
         write_json(
             &mut tls,
             &json!({"t": "snapshot", "library": library_value(&local)}),
         )?;
+        stage("snapshot");
+        stage("preview");
+        let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
+        let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
         let choice_msg = read_json(&mut tls)?;
+        stage("choices");
         if choice_msg.get("t").and_then(Value::as_str) == Some("abort") {
             return Err(LanError::new(
                 choice_msg
@@ -562,6 +780,10 @@ impl SyncListener {
             ));
         }
         let choices = parse_choices(choice_msg.get("choices").unwrap_or(&json!({})))?;
+        // Swapped on purpose. `remote` is the initiator's library and `local` is
+        // this device, so the call is lan_preview(initiator, responder). That
+        // matches open_sync_connected and keeps keep-mine / take-theirs the
+        // same choice on both sides.
         let preview = lan_preview(&remote.records, &local.records, &remote.bases, &local.bases);
         let commit = match lan_commit(&preview, &choices) {
             Ok(commit) => commit,
@@ -581,6 +803,99 @@ impl SyncListener {
         }
         write_json(&mut tls, &json!({"t": "committed"}))?;
         Ok(())
+    }
+}
+
+fn finish_accepted_pair(
+    pairing: Option<AcceptedPair>,
+    on_pair: Option<PairHandler>,
+    mut tls: ServerStream,
+    hello: Value,
+    peer: [u8; 32],
+) -> Result<(), LanError> {
+    let Some(gate) = pairing else {
+        refuse(&mut tls, "pair-invalid")?;
+        return Err(LanError::with_detail("pair-invalid", "token"));
+    };
+    let schema = hello.get("schema").and_then(Value::as_i64).unwrap_or(0);
+    if schema > LAN_SCHEMA {
+        refuse(&mut tls, "schema-newer")?;
+        return Err(LanError::new("schema-newer"));
+    }
+    if schema < LAN_SCHEMA {
+        refuse(&mut tls, "schema-older")?;
+        return Err(LanError::new("schema-older"));
+    }
+    let token = hello.get("token").and_then(Value::as_str).unwrap_or("");
+    let hash = token_hash(token);
+    let expected = token_hash(&gate.token);
+    if gate.consumed.load(Ordering::SeqCst) && ct_eq(&hash, &expected) {
+        refuse(&mut tls, "pair-replayed")?;
+        return Err(LanError::new("pair-replayed"));
+    }
+    if !ct_eq(&hash, &expected) {
+        refuse(&mut tls, "pair-invalid")?;
+        return Err(LanError::with_detail("pair-invalid", "token"));
+    }
+    if crate::unix_now() >= gate.expires {
+        refuse(&mut tls, "pair-expired")?;
+        return Err(LanError::new("pair-expired"));
+    }
+    if gate
+        .busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        refuse(&mut tls, "pair-invalid")?;
+        return Err(LanError::new("pair-invalid"));
+    }
+    let device_id = hello
+        .get("device_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let name = hello
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if device_id.is_empty() {
+        gate.busy.store(false, Ordering::SeqCst);
+        refuse(&mut tls, "pair-invalid")?;
+        return Err(LanError::new("pair-invalid"));
+    }
+    let host = tls
+        .sock
+        .peer_addr()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_default();
+    let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
+    let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
+    let hosts = announced_hosts(hello.get("hosts"));
+    let pending = Pending {
+        stream: tls,
+        device_id,
+        name,
+        spki: peer,
+        host,
+        hosts,
+        consumed: gate.consumed,
+        busy: gate.busy,
+    };
+    match on_pair {
+        Some(handler) => handler(pending),
+        None => {
+            let _ = pending.reject();
+            Err(LanError::with_detail("pair-invalid", "token"))
+        }
+    }
+}
+
+struct Serving<'a>(&'a AtomicUsize);
+
+impl Drop for Serving<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -666,6 +981,8 @@ pub fn open_sync<C: Catalog>(
     timeout: Duration,
 ) -> Result<ClientSync, LanError> {
     let tcp = dial(address, timeout)?;
+    let _ = tcp.set_read_timeout(Some(timeout));
+    let _ = tcp.set_write_timeout(Some(timeout));
     open_sync_connected(
         catalog,
         identity,
@@ -727,8 +1044,8 @@ pub fn open_sync_many<C: Catalog>(
         match outcome {
             Ok((address, stream)) => {
                 pending.retain(|item| *item != address);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(4)));
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(4)));
+                let _ = stream.set_read_timeout(Some(timeout));
+                let _ = stream.set_write_timeout(Some(timeout));
                 match open_sync_connected(
                     catalog,
                     identity,
@@ -833,12 +1150,22 @@ fn open_sync_connected<C: Catalog>(
         &json!({"t": "snapshot", "library": library_value(&local)}),
     )?;
     let remote_msg = read_json(&mut tls)?;
+    if remote_msg.get("t").and_then(Value::as_str) == Some("sync-refuse") {
+        return Err(LanError::new(
+            remote_msg
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("disconnected"),
+        ));
+    }
     if remote_msg.get("t").and_then(Value::as_str) != Some("snapshot") {
         return Err(LanError::new("disconnected"));
     }
     let remote = parse_library(remote_msg.get("library").unwrap_or(&Value::Null))?;
     // The initiator's copy is "local" in the preview the person resolves.
     let preview = lan_preview(&local.records, &remote.records, &local.bases, &remote.bases);
+    let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
+    let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
     let peer_spki = server_pin;
     Ok(ClientSync {
         stream: Some(tls),
@@ -1312,6 +1639,28 @@ fn _deleted(record: &SyncRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::socket_for;
+
+    #[test]
+    fn serve_one_previews_the_initiator_library_first() {
+        let source = include_str!("session.rs");
+        let serve = source.split("fn serve<C: Catalog>").nth(1).expect("serve");
+        let body = serve
+            .split("fn open_sync_connected")
+            .next()
+            .unwrap_or(serve);
+        assert!(
+            body.contains(
+                "lan_preview(&remote.records, &local.records, &remote.bases, &local.bases)"
+            ),
+            "swapping these arguments would make keep-mine mean the other library"
+        );
+        assert!(
+            !body.contains(
+                "lan_preview(&local.records, &remote.records, &local.bases, &remote.bases)"
+            ),
+            "serve_one must not preview its own library first"
+        );
+    }
 
     #[test]
     fn an_ipv6_host_is_bracketed_before_the_port() {

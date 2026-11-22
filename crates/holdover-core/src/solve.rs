@@ -265,9 +265,13 @@ fn solve_ranges(shot: &Shot, ranges: &[f64]) -> Result<Solution> {
     let mut points = Vec::with_capacity(flight.samples.len());
     for sample in &flight.samples {
         let mut pos = sample.position;
-        let spin = if spin_ready && shot.effects.spin_drift {
-            let right = shot.twist.unwrap().hand == TwistHand::Right;
-            spin_drift_m(sg_corrected.unwrap(), sample.time_s, right)
+        let spin = if let (Some(twist), Some(sg)) = (shot.twist, sg_corrected) {
+            if spin_ready && shot.effects.spin_drift {
+                let right = twist.hand == TwistHand::Right;
+                spin_drift_m(sg, sample.time_s, right)
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
