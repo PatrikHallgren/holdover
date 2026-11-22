@@ -30,6 +30,6 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 
 ## What this pass did not do
 
-- Install 1.5.7 (`versionCode` 1005007) on the OnePlus 13 or the Omarchy desktop. 1.5.6 is the build where both devices pressing Sync now froze the desktop. 1.5.5 is the build where desktop-to-OnePlus 13 sync over Tailscale passed (2026-11-12).
+- Install 1.5.7 (`versionCode` 1005007) on the OnePlus 13 or the Omarchy desktop. 1.5.6 is the build where a phone Sync now logged `sync-begin` and then showed no preview and no error; the desktop dial was a later press. 1.5.5 is the build where desktop-to-OnePlus 13 sync over Tailscale passed (2026-11-12).
 - Run same-item conflicts, offline/cancel, or a `.holdover` round-trip on the devices. Automated tests cover those.
 - Add IPv6-only Tailscale. A device with only `fd7a:115c:a1e0::/48` gets a message that it is not supported.

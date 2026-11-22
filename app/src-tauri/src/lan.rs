@@ -35,6 +35,7 @@ pub struct LanHub {
     worker: Option<thread::JoinHandle<()>>,
 }
 
+#[derive(Clone)]
 struct LanView {
     mode: String,
     offer_url: String,
@@ -97,8 +98,15 @@ impl LanHub {
         let view = self
             .shared
             .lock()
-            .map_err(|_| "the sync state is busy".to_string())?;
+            .map_err(|_| "the sync state is busy".to_string())?
+            .clone();
         let peers = store.lan_peers()?;
+        let name = store.lan_name()?;
+        // Interface enumeration stays outside the sync lock. A phone sync
+        // publishes its preview on another thread, and this call must not
+        // hold that lock across a scan.
+        let tails = tailscale_hosts();
+        let ipv6 = tails.is_empty() && tailscale_ipv6_only();
         Ok(json!({
             "mode": view.mode,
             "offer_url": view.offer_url,
@@ -111,10 +119,10 @@ impl LanHub {
             "code": view.code,
             "detail": view.detail,
             "preview": view.preview,
-            "name": store.lan_name()?,
+            "name": name,
             "peers": peers,
-            "tailscale": tailscale_hosts(),
-            "tailscale_ipv6": tailscale_ipv6_only(),
+            "tailscale": tails,
+            "tailscale_ipv6": ipv6,
             "listen_port": DEFAULT_PORT,
             "listening": view.mode == "listen" && view.port == DEFAULT_PORT,
         }))
@@ -621,6 +629,39 @@ impl LanHub {
         });
     }
 
+    /// Listen on an ephemeral port without the Tailscale filter, for tests.
+    #[cfg(test)]
+    fn listen_for_test(&mut self, store: Arc<Mutex<Store>>) -> Result<u16, String> {
+        self.shutdown_worker();
+        let stop = Arc::new(AtomicBool::new(false));
+        self.stop = stop.clone();
+        let (identity, pins) = {
+            let guard = store
+                .lock()
+                .map_err(|_| "the library is busy".to_string())?;
+            (guard.lan_identity()?, guard.lan_pins()?)
+        };
+        let listener = SyncListener::bind(identity, pins).map_err(|err| err.code)?;
+        let port = listener.port;
+        {
+            let mut view = self
+                .shared
+                .lock()
+                .map_err(|_| "the sync state is busy".to_string())?;
+            view.mode = "listen".into();
+            view.port = port;
+            view.message.clear();
+            view.code.clear();
+        }
+        let shared = self.shared.clone();
+        let dialing = self.dialing.clone();
+        let serving = self.serving.clone();
+        self.worker = Some(thread::spawn(move || {
+            listen_loop(store, listener, shared, stop, dialing, serving);
+        }));
+        Ok(port)
+    }
+
     fn fail_visible(&self, code: &str, detail: &str) {
         if let Ok(mut view) = self.shared.lock() {
             if view.mode != "listen" && view.mode != "pair" {
@@ -875,6 +916,11 @@ fn serve_inbound(
                 "disconnected" | "not-tailscale" | "sync-yield" | "sync-busy"
             ) =>
         {
+            if let Ok(mut view) = shared.lock() {
+                if view.message == "sync-serving" && view.mode != "preview" {
+                    view.message.clear();
+                }
+            }
             if code == "not-tailscale" {
                 lan_log_detail("listen", "not-tailscale", "host=other port=43720");
             }
@@ -1766,6 +1812,104 @@ mod tests {
         let _ = hub.take_session();
         let _ = server.join();
         hub.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_phone_sync_shows_a_preview_while_the_desktop_keeps_accepting() {
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-phone-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let phone = Store::open(&dir.join("phone.db")).unwrap();
+        let desk = Store::open(&dir.join("desk.db")).unwrap();
+        phone
+            .save_rifle(&json!({
+                "label": "Pocket rifle",
+                "sight_height": "38 mm",
+                "twist": "1:8",
+            }))
+            .unwrap();
+        let phone_key = phone.lan_identity().unwrap();
+        let desk_key = desk.lan_identity().unwrap();
+        desk.save_peer(&holdover_lan::Peer {
+            device_id: phone_key.device_id.clone(),
+            name: phone_key.name.clone(),
+            spki_hex: phone_key.spki_hex.clone(),
+            spki: phone_key.spki,
+            host: "100.64.0.8".into(),
+            port: DEFAULT_PORT,
+        })
+        .unwrap();
+        let phone_store = Arc::new(Mutex::new(phone));
+        let desk_store = Arc::new(Mutex::new(desk));
+        let mut desk_hub = LanHub::default();
+        let port = desk_hub.listen_for_test(desk_store.clone()).unwrap();
+        let mut phone_hub = LanHub::default();
+        let started = std::time::Instant::now();
+        phone_hub.begin_sync_for_test(
+            phone_store.clone(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+            desk_key.spki,
+            &desk_key.spki_hex,
+            Duration::from_secs(4),
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "the phone sync waited on the window thread"
+        );
+        let phone_view = wait_view(&phone_hub, &phone_store, |view| {
+            view["mode"] == "preview" || !view["code"].as_str().unwrap_or("").is_empty()
+        });
+        assert_eq!(phone_view["mode"], "preview", "{phone_view}");
+        assert!(
+            !phone_view["preview"]["rows"].as_array().unwrap().is_empty(),
+            "the phone preview was empty: {phone_view}"
+        );
+        let desk_started = std::time::Instant::now();
+        let desk_view = desk_hub.status(&desk_store.lock().unwrap()).unwrap();
+        assert!(
+            desk_started.elapsed() < Duration::from_millis(200),
+            "desktop status blocked while a phone sync was open"
+        );
+        assert_eq!(desk_view["message"], "sync-serving", "{desk_view}");
+        let second_store = phone_store.clone();
+        let second_key = phone_key;
+        let desk_pin = desk_key.spki;
+        let second = thread::spawn(move || {
+            let mut catalog = ArcCatalog::new(second_store).unwrap();
+            open_sync(
+                &mut catalog,
+                &second_key,
+                format!("127.0.0.1:{port}").parse().unwrap(),
+                desk_pin,
+                false,
+                Duration::from_secs(2),
+            )
+            .map(|_| "preview".to_string())
+            .map_err(|err| err.code)
+        });
+        let second_started = std::time::Instant::now();
+        let mut second_result = None;
+        while second_started.elapsed() < Duration::from_secs(3) {
+            if second.is_finished() {
+                second_result = Some(second.join().unwrap());
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let second_result =
+            second_result.expect("a second sync hung while the phone preview was open");
+        assert_eq!(second_result, Err("sync-busy".to_string()));
+        phone_hub.session_cancel();
+        phone_hub.stop();
+        desk_hub.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
