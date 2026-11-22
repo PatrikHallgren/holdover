@@ -339,7 +339,9 @@ function frame(opts) {
     ? `<aside class="ho-rail" id="inputs" tabindex="-1" aria-label="${esc(opts.railLabel || t("inputs"))}">${opts.rail}</aside>`
     : "";
   const mainId = opts.rail ? "main" : "inputs";
-  return `<div class="ho-shell">${topBar()}<div class="ho-body${bodyClass}">${rail}<main class="ho-main" id="${mainId}" tabindex="-1">${opts.main}</main></div>${statusFooter(opts.keys || pageKeys())}</div>`;
+  const actions = opts.actions ? `<div class="ho-sync-actions">${opts.actions}</div>` : "";
+  const shellClass = opts.actions ? " has-sync-actions" : "";
+  return `<div class="ho-shell${shellClass}">${topBar()}<div class="ho-body${bodyClass}">${rail}<main class="ho-main" id="${mainId}" tabindex="-1">${opts.main}</main></div>${actions}${statusFooter(opts.keys || pageKeys())}</div>`;
 }
 
 function overlays() {
@@ -2772,7 +2774,8 @@ function syncHtml() {
     <p id="bundle-message" class="${(phoneOn && lan && lan.mode !== "done" && lanMessageFor(lan)) || bundleError ? "error" : "meta"}">${esc(phoneOn ? lanMessage() : bundleMessage)}</p>
     ${!phoneOn && bundleDetail ? `<p id="bundle-detail" class="meta">${esc(bundleDetail)}</p>` : ""}`;
   const main = phoneOn ? lanMain() : importOn ? syncImportTable() : `<p class="ho-hint">${esc(t("sync-export-intro"))}</p>`;
-  return frame({ rail, main, body: "with-list", railLabel: t("nav-sync") });
+  const actions = phoneOn && lan && lan.mode === "preview" ? lanPreviewActions() : "";
+  return frame({ rail, main, body: "with-list", railLabel: t("nav-sync"), actions });
 }
 
 function syncModeButton(id, key, on) {
@@ -3207,8 +3210,15 @@ function lanRail() {
       <input id="lan-host" value="${esc(lanHost)}" title="${esc(t("lan-address-tip"))}" />
     </div>
     <label class="ho-check"><input type="checkbox" id="lan-include" title="${esc(t("lan-include-tip"))}" ${lanInclude ? "checked" : ""} /> ${esc(t("lan-include"))}</label>
-    <button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>
+    ${view.mode === "preview" ? "" : `<button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>`}
     ${peers ? `<h3>${esc(t("lan-peers"))}</h3><ul class="ho-list">${peers}</ul>` : ""}`;
+}
+
+function lanPreviewActions() {
+  const rows = (lan && lan.preview && lan.preview.rows) || [];
+  const unresolved = rows.some((row) => row.status === "conflict" && !lanChoiceReady(row));
+  return `<button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>
+    <button type="button" class="ho-btn primary" id="lan-apply" title="${esc(t("lan-apply-tip"))}" ${unresolved ? "disabled" : ""}>${esc(t("lan-apply"))}</button>`;
 }
 
 function lanMain() {
@@ -3247,8 +3257,7 @@ function lanMain() {
   }).join("");
   const unresolved = rows.some((row) => row.status === "conflict" && !lanChoiceReady(row));
   return `<table class="ho-table"><thead><tr><th class="text">${esc(t("archive-kind"))}</th><th class="text">${esc(t("sync-filter"))}</th><th class="text">${esc(t("label"))}</th><th class="text"></th></tr></thead><tbody>${body}</tbody></table>
-    ${unresolved ? `<p class="ho-hint">${esc(t("lan-unresolved"))}</p>` : rows.length ? "" : `<p class="ho-hint">${esc(t("lan-nothing"))}</p>`}
-    <button type="button" class="ho-btn primary" id="lan-apply" title="${esc(t("lan-apply-tip"))}" ${unresolved ? "disabled" : ""}>${esc(t("lan-apply"))}</button>`;
+    ${unresolved ? `<p class="ho-hint">${esc(t("lan-unresolved"))}</p>` : rows.length ? "" : `<p class="ho-hint">${esc(t("lan-nothing"))}</p>`}`;
 }
 
 function lanChoiceReady(row) {
