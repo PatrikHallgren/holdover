@@ -464,9 +464,19 @@ body.field .ho-main { padding-top: 8vh; }
   :root { --hit: 44px; }
   .ho-dialog .ho-seg { flex-wrap: wrap; height: auto; overflow: visible; }
   body.fit-solve,
-  body.fit-solve #app,
+  body.fit-solve #app { height: auto; min-height: 100%; max-height: none; overflow: visible; }
+  /* minmax(0, 1fr) keeps the middle row at the viewport and clips the rail.
+     WebView then omits the clipped tail from the accessibility tree, so the
+     page ends at Cancel and scrolling never reveals what follows.
+     Content-sized rows let the document grow. */
   .ho-shell,
-  body.fit-solve .ho-shell { height: auto; min-height: 100%; max-height: none; overflow: visible; }
+  body.fit-solve .ho-shell {
+    height: auto; min-height: 100%; max-height: none; overflow: visible;
+    grid-template-rows: auto auto auto;
+  }
+  .ho-shell.has-sync-actions { grid-template-rows: auto auto auto auto; }
+  .ho-body, .ho-body.with-list { min-height: auto; height: auto; max-height: none; overflow: visible; }
+  .ho-body > .ho-rail { overflow: visible; min-height: auto; max-height: none; }
   /* The phone page scrolls as a document. Pin Apply and Cancel to the
      viewport, above the gesture bar, instead of letting them fall off the end. */
   .ho-sync-actions {

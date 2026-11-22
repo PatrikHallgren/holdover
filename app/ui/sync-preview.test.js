@@ -128,6 +128,87 @@ function page(rows) {
   </script></body></html>`;
 }
 
+function pairedPage() {
+  const listen = {
+    mode: "listen",
+    code: "",
+    message: "",
+    peers: [{ name: "Omawork", spki: "aa", host: "100.80.204.119", port: 43720 }],
+    tailscale: ["100.88.250.118"],
+    listen_port: 43720,
+    listening: true,
+    name: "Oneplus13",
+    port: 43720,
+  };
+  const preview = Object.assign({}, listen, { mode: "preview", preview: { rows: conflictRows } });
+  const applied = Object.assign({}, listen, { mode: "done", message: "applied" });
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><style>`
+    + css
+    + `</style></head><body class="platform-android ho"><div id="app"></div>
+  <script type="application/json" id="probe">{}</script>
+  <script>` + `
+    window.onerror = (message, source, line, col) => {
+      const probe = document.getElementById("probe");
+      if (probe) probe.textContent = JSON.stringify({ message: String(message), line: line, col: col });
+    };
+    ` + lets + `
+    boot = { strings: ${JSON.stringify(strings)}, platform: "android", settings: { preset: "metric", onboarded: true }, disclaimer: "personal" };
+    page = "sync";
+    syncTab = "phone";
+    lanChoices = {};
+    const listen = ${JSON.stringify(listen)};
+    const preview = ${JSON.stringify(preview)};
+    const applied = ${JSON.stringify(applied)};
+    ` + logic + `
+    function reach(selector) {
+      const node = document.querySelector(selector);
+      if (!node) return null;
+      const first = node.getBoundingClientRect();
+      const inView = first.width >= 8 && first.height >= 8 && first.top >= -1 && first.left >= -1
+        && first.bottom <= window.innerHeight + 1 && first.right <= window.innerWidth + 1;
+      node.scrollIntoView({ block: "center", inline: "nearest" });
+      const rect = node.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const onScreen = cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight;
+      const top = onScreen ? document.elementFromPoint(cx, cy) : null;
+      return {
+        inView,
+        top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right,
+        w: rect.width, h: rect.height, text: node.textContent,
+        hit: !!(top && (top === node || node.contains(top))),
+      };
+    }
+    function snap() {
+      document.getElementById("app").innerHTML = syncHtml();
+      const sync = document.querySelector("[data-lan-use]");
+      const stop = document.getElementById("lan-stop");
+      const syncTop = sync ? sync.getBoundingClientRect().top : null;
+      const stopTop = stop ? stop.getBoundingClientRect().top : null;
+      const peers = document.querySelector(".ho-peers");
+      return {
+        sync: reach("[data-lan-use]"),
+        cancel: reach("#lan-stop"),
+        apply: reach("#lan-apply"),
+        peers: peers ? peers.textContent : "",
+        above: syncTop != null && stopTop != null ? syncTop < stopTop : false,
+        bar: !!document.querySelector(".ho-shell > .ho-sync-actions"),
+      };
+    }
+    lan = listen;
+    const before = snap();
+    lan = preview;
+    const during = snap();
+    lan = applied;
+    const after = snap();
+    document.getElementById("probe").textContent = JSON.stringify({
+      before, during, after,
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+    });
+  </script></body></html>`;
+}
+
 function within(box, width, height) {
   assert.ok(box, "missing button");
   assert.ok(box.w >= 8 && box.h >= 8, JSON.stringify(box));
@@ -244,4 +325,33 @@ test("apply sync stays on a phone screen for an empty preview and a conflict", {
   within(desktop.apply, desktop.innerWidth, desktop.innerHeight);
   within(desktop.cancel, desktop.innerWidth, desktop.innerHeight);
   assert.ok(desktop.mainLeft > desktop.railLeft, JSON.stringify({ rail: desktop.railLeft, main: desktop.mainLeft }));
+});
+
+test("sync now stays on a phone screen before a sync and after apply", { timeout: 180000 }, async () => {
+  const phone = { width: 360, height: 792 };
+  const view = await render(pairedPage(), phone.width, phone.height);
+  if (view.message) assert.fail(JSON.stringify(view));
+  assert.ok(view.innerWidth <= 759, JSON.stringify({ innerWidth: view.innerWidth, innerHeight: view.innerHeight }));
+
+  function synced(state, label) {
+    assert.ok(state.sync, label + " " + JSON.stringify(state));
+    assert.match(state.sync.text, /Sync now/);
+    assert.match(state.peers, /Paired devices/);
+    assert.match(state.peers, /Omawork/);
+    assert.equal(state.above, true, label + " " + JSON.stringify(state));
+    assert.equal(state.sync.inView, true, label + " " + JSON.stringify(state.sync));
+    assert.equal(state.sync.hit, true, label + " " + JSON.stringify(state.sync));
+    within(state.sync, view.innerWidth, view.innerHeight);
+    assert.equal(state.bar, false, label);
+  }
+
+  synced(view.before, "before");
+  assert.equal(view.during.bar, true, JSON.stringify(view.during));
+  assert.match(view.during.apply.text, /Apply sync/);
+  assert.match(view.during.cancel.text, /Cancel/);
+  within(view.during.apply, view.innerWidth, view.innerHeight);
+  within(view.during.cancel, view.innerWidth, view.innerHeight);
+  synced(view.after, "after");
+  within(view.before.cancel, view.innerWidth, view.innerHeight);
+  assert.equal(view.before.cancel.hit, true, JSON.stringify(view.before.cancel));
 });

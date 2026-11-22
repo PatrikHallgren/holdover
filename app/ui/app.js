@@ -3187,6 +3187,7 @@ function lanRail() {
   return `${pending}
     ${lanSelf(view)}
     ${lanStatusBlock(view)}
+    ${peers ? `<section class="ho-peers"><h3>${esc(t("lan-peers"))}</h3><ul class="ho-list">${peers}</ul></section>` : ""}
     <div class="ho-field"><div class="head"><label for="lan-name">${esc(t("lan-name"))}</label></div>
       <input id="lan-name" value="${esc(lanName || view.name || "")}" maxlength="40" title="${esc(t("lan-name-tip"))}" />
     </div>
@@ -3210,8 +3211,7 @@ function lanRail() {
       <input id="lan-host" value="${esc(lanHost)}" title="${esc(t("lan-address-tip"))}" />
     </div>
     <label class="ho-check"><input type="checkbox" id="lan-include" title="${esc(t("lan-include-tip"))}" ${lanInclude ? "checked" : ""} /> ${esc(t("lan-include"))}</label>
-    ${view.mode === "preview" ? "" : `<button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>`}
-    ${peers ? `<h3>${esc(t("lan-peers"))}</h3><ul class="ho-list">${peers}</ul>` : ""}`;
+    ${view.mode === "preview" ? "" : `<button type="button" class="ho-btn" id="lan-stop">${esc(t("lan-stop"))}</button>`}`;
 }
 
 function lanPreviewActions() {
