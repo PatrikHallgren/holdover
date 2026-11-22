@@ -182,6 +182,38 @@ impl LanHub {
         }
     }
 
+    fn sync_in_progress(&self) -> bool {
+        if self.dialing.load(Ordering::SeqCst) != 0 || self.serving.load(Ordering::SeqCst) != 0 {
+            return true;
+        }
+        if self
+            .session
+            .lock()
+            .map(|slot| slot.is_some())
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        self.shared
+            .lock()
+            .map(|view| {
+                view.mode == "preview"
+                    || matches!(
+                        view.message.as_str(),
+                        "sync-reaching" | "sync-applying" | "sync-serving"
+                    )
+            })
+            .unwrap_or(false)
+    }
+
+    fn note_busy(&self) {
+        if let Ok(mut view) = self.shared.lock() {
+            view.code = "sync-busy".into();
+            view.detail = "already in progress".into();
+        }
+        lan_log_detail("sync-begin", "sync-busy", "already in progress");
+    }
+
     pub fn cancel(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
         self.abandon_sync();
         let mode = self
@@ -199,11 +231,22 @@ impl LanHub {
                 view.pending_fp.clear();
                 view.code.clear();
                 view.detail.clear();
+                view.message.clear();
             }
-        } else if mode == "preview" {
-            if let Ok(mut view) = self.shared.lock() {
-                view.preview = None;
+        } else if let Ok(mut view) = self.shared.lock() {
+            if view.mode == "preview" {
                 view.mode = "idle".into();
+            }
+            view.preview = None;
+            if matches!(
+                view.message.as_str(),
+                "sync-reaching" | "sync-serving" | "sync-applying"
+            ) {
+                view.message.clear();
+            }
+            if view.code.starts_with("sync-") {
+                view.code.clear();
+                view.detail.clear();
             }
         }
         self.ensure_listener(store)
@@ -486,6 +529,10 @@ impl LanHub {
         spki: &str,
         include_location: bool,
     ) -> Result<(), String> {
+        if self.sync_in_progress() {
+            self.note_busy();
+            return Err("sync-busy".into());
+        }
         let (identity, peers) = {
             let guard = store
                 .lock()
@@ -525,6 +572,10 @@ impl LanHub {
             include_location,
             bound,
         } = start;
+        if self.sync_in_progress() {
+            self.note_busy();
+            return;
+        }
         self.abandon_sync();
         let generation = self.sync_gen.fetch_add(1, Ordering::SeqCst) + 1;
         self.dialing.store(generation, Ordering::SeqCst);
@@ -563,6 +614,9 @@ impl LanHub {
             }
             match outcome {
                 Ok(Ok(session)) => {
+                    if sync_gen.load(Ordering::SeqCst) != generation {
+                        return;
+                    }
                     let used_host = session.peer().host.clone();
                     let used_port = session.peer().port;
                     let preview = preview_value(&session.preview);
@@ -897,7 +951,9 @@ fn serve_inbound(
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| {
         let mut catalog = ArcCatalog::new(store)?;
         accepted
-            .serve(&mut catalog, &dialing, &serving)
+            .serve(&mut catalog, &dialing, &serving, |stage| {
+                lan_log_detail("sync-serve", "ok", &format!("stage={stage}"));
+            })
             .map_err(|err| err.code)
     }));
     match outcome {
@@ -1523,7 +1579,12 @@ mod tests {
             })
             .unwrap();
         store.set_meta("lan_port", "41189").unwrap();
-        let stable_free = std::net::TcpListener::bind("0.0.0.0:43720").is_ok();
+        let probe = std::net::TcpListener::bind("0.0.0.0:43720");
+        let stable_free = probe.is_ok();
+        drop(probe);
+        if !stable_free {
+            return;
+        }
         let store = Arc::new(Mutex::new(store));
         let mut hub = LanHub::default();
         hub.listen(store.clone()).unwrap();
@@ -1872,6 +1933,16 @@ mod tests {
             !phone_view["preview"]["rows"].as_array().unwrap().is_empty(),
             "the phone preview was empty: {phone_view}"
         );
+        let again = phone_hub.sync_begin(
+            phone_store.clone(),
+            "100.64.0.9",
+            DEFAULT_PORT,
+            &desk_key.spki_hex,
+            false,
+        );
+        assert_eq!(again, Err("sync-busy".into()));
+        let kept = phone_hub.status(&phone_store.lock().unwrap()).unwrap();
+        assert_eq!(kept["mode"], "preview", "{kept}");
         let desk_started = std::time::Instant::now();
         let desk_view = desk_hub.status(&desk_store.lock().unwrap()).unwrap();
         assert!(
@@ -1910,6 +1981,116 @@ mod tests {
         phone_hub.session_cancel();
         phone_hub.stop();
         desk_hub.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_half_open_incoming_session_does_not_block_a_phone_sync() {
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-half-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let phone = Store::open(&dir.join("phone.db")).unwrap();
+        let desk = Store::open(&dir.join("desk.db")).unwrap();
+        phone
+            .save_rifle(&json!({
+                "label": "Pocket rifle",
+                "sight_height": "38 mm",
+                "twist": "1:8",
+            }))
+            .unwrap();
+        let phone_key = phone.lan_identity().unwrap();
+        let desk_key = desk.lan_identity().unwrap();
+        desk.save_peer(&holdover_lan::Peer {
+            device_id: phone_key.device_id.clone(),
+            name: phone_key.name.clone(),
+            spki_hex: phone_key.spki_hex.clone(),
+            spki: phone_key.spki,
+            host: "100.64.0.8".into(),
+            port: DEFAULT_PORT,
+        })
+        .unwrap();
+        let phone_store = Arc::new(Mutex::new(phone));
+        let desk_store = Arc::new(Mutex::new(desk));
+        let mut desk_hub = LanHub::default();
+        let port = desk_hub.listen_for_test(desk_store.clone()).unwrap();
+        let stale = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        thread::sleep(Duration::from_millis(150));
+        let mut phone_hub = LanHub::default();
+        let started = std::time::Instant::now();
+        phone_hub.begin_sync_for_test(
+            phone_store.clone(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+            desk_key.spki,
+            &desk_key.spki_hex,
+            Duration::from_secs(4),
+        );
+        let view = wait_view(&phone_hub, &phone_store, |view| {
+            view["mode"] == "preview" || !view["code"].as_str().unwrap_or("").is_empty()
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "a half-open incoming session pinned the listener for {:?}",
+            started.elapsed()
+        );
+        assert_eq!(view["mode"], "preview", "{view}");
+        drop(stale);
+        phone_hub.session_cancel();
+        phone_hub.stop();
+        desk_hub.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cancel_during_a_handshake_returns_immediately() {
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let phone = Store::open(&dir.join("phone.db")).unwrap();
+        let desk_key = holdover_lan::new_identity("desk", "Bench").unwrap();
+        let phone_store = Arc::new(Mutex::new(phone));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let held = thread::spawn(move || {
+            let _socket = listener.accept();
+            thread::sleep(Duration::from_secs(3));
+        });
+        let mut hub = LanHub::default();
+        hub.begin_sync_for_test(
+            phone_store.clone(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+            desk_key.spki,
+            &desk_key.spki_hex,
+            Duration::from_secs(2),
+        );
+        let reaching = hub.status(&phone_store.lock().unwrap()).unwrap();
+        assert_eq!(reaching["message"], "sync-reaching");
+        let started = std::time::Instant::now();
+        hub.cancel(phone_store.clone()).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(300),
+            "cancel waited on the handshake"
+        );
+        let view = hub.status(&phone_store.lock().unwrap()).unwrap();
+        assert_ne!(view["message"], "sync-reaching", "{view}");
+        thread::sleep(Duration::from_millis(500));
+        let later = hub.status(&phone_store.lock().unwrap()).unwrap();
+        assert_ne!(later["mode"], "preview", "{later}");
+        hub.stop();
+        let _ = held.join();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

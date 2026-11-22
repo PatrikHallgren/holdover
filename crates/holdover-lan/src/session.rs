@@ -504,7 +504,7 @@ impl SyncListener {
         let accepted = self.accept_sync(timeout)?;
         let dialing = AtomicU64::new(0);
         let serving = AtomicUsize::new(0);
-        accepted.serve(catalog, &dialing, &serving)
+        accepted.serve(catalog, &dialing, &serving, |_| {})
     }
 }
 
@@ -523,7 +523,9 @@ impl AcceptedSync {
         catalog: &mut C,
         dialing: &AtomicU64,
         serving: &AtomicUsize,
+        stage: impl Fn(&str),
     ) -> Result<(), LanError> {
+        stage("accept");
         let tcp = self.tcp;
         if self.tailscale_only && !stream_is_tailscale(&tcp) {
             drop(tcp);
@@ -552,6 +554,7 @@ impl AcceptedSync {
             )?;
             return Err(LanError::new("unauthorized"));
         }
+        stage("hello");
         let remote_id = hello.get("device_id").and_then(Value::as_str).unwrap_or("");
         let local_id = catalog.device_id();
         // When both sides dial, the smaller device id stays the initiator.
@@ -560,12 +563,6 @@ impl AcceptedSync {
             write_json(&mut tls, &json!({"t": "sync-refuse", "code": "sync-yield"}))?;
             return Err(LanError::new("sync-yield"));
         }
-        if serving.fetch_add(1, Ordering::SeqCst) > 0 {
-            serving.fetch_sub(1, Ordering::SeqCst);
-            write_json(&mut tls, &json!({"t": "sync-refuse", "code": "sync-busy"}))?;
-            return Err(LanError::new("sync-busy"));
-        }
-        let _serving = Serving(serving);
         let schema = hello.get("schema").and_then(Value::as_i64).unwrap_or(0);
         if schema > LAN_SCHEMA {
             write_json(
@@ -599,15 +596,30 @@ impl AcceptedSync {
             &json!({"t": "sync-hello", "schema": LAN_SCHEMA, "device_id": self.identity.device_id}),
         )?;
         let remote_msg = read_json(&mut tls)?;
+        if remote_msg.get("t").and_then(Value::as_str) != Some("snapshot") {
+            return Err(LanError::new("disconnected"));
+        }
         let remote = parse_library(remote_msg.get("library").unwrap_or(&Value::Null))?;
         let local = stripped(&catalog.library()?, include_location);
+        // A connection that has not reached a preview must not hold the
+        // listener's only session. The slot is taken here, after the short
+        // handshake, so a half-open socket cannot pin the next sync.
+        if serving.fetch_add(1, Ordering::SeqCst) > 0 {
+            serving.fetch_sub(1, Ordering::SeqCst);
+            write_json(&mut tls, &json!({"t": "sync-refuse", "code": "sync-busy"}))?;
+            return Err(LanError::new("sync-busy"));
+        }
+        let _serving = Serving(serving);
         write_json(
             &mut tls,
             &json!({"t": "snapshot", "library": library_value(&local)}),
         )?;
+        stage("snapshot");
+        stage("preview");
         let _ = tls.sock.set_read_timeout(Some(PREVIEW_WAIT));
         let _ = tls.sock.set_write_timeout(Some(PREVIEW_WAIT));
         let choice_msg = read_json(&mut tls)?;
+        stage("choices");
         if choice_msg.get("t").and_then(Value::as_str) == Some("abort") {
             return Err(LanError::new(
                 choice_msg
@@ -902,6 +914,14 @@ fn open_sync_connected<C: Catalog>(
         &json!({"t": "snapshot", "library": library_value(&local)}),
     )?;
     let remote_msg = read_json(&mut tls)?;
+    if remote_msg.get("t").and_then(Value::as_str) == Some("sync-refuse") {
+        return Err(LanError::new(
+            remote_msg
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("disconnected"),
+        ));
+    }
     if remote_msg.get("t").and_then(Value::as_str) != Some("snapshot") {
         return Err(LanError::new("disconnected"));
     }

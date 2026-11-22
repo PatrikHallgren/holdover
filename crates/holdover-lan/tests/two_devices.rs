@@ -866,7 +866,7 @@ fn both_devices_pressing_sync_finish_with_one_preview() {
             match listener.accept_sync(Duration::from_millis(200)) {
                 Ok(accepted) => {
                     return accepted
-                        .serve(&mut library, &dialing, &serving)
+                        .serve(&mut library, &dialing, &serving, |_| {})
                         .map(|_| "served".to_string())
                         .map_err(|err| err.code);
                 }
@@ -886,7 +886,7 @@ fn both_devices_pressing_sync_finish_with_one_preview() {
             match listener.accept_sync(Duration::from_millis(200)) {
                 Ok(accepted) => {
                     return accepted
-                        .serve(&mut library, &dialing, &serving)
+                        .serve(&mut library, &dialing, &serving, |_| {})
                         .map(|_| "served".to_string())
                         .map_err(|err| err.code);
                 }
