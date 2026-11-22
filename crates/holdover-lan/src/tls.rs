@@ -274,8 +274,31 @@ pub fn connect_tls(
     stream
         .conn
         .complete_io(&mut stream.sock)
-        .map_err(|_| LanError::new("pair-pin"))?;
+        .map_err(|err| handshake_error(&err))?;
     Ok(stream)
+}
+
+/// A verifier rejection is a pin mismatch. Every other handshake failure
+/// (a reset, a timeout, an alert) stays `tls`, so the phone does not call
+/// a dropped socket a different device.
+fn handshake_error(err: &std::io::Error) -> LanError {
+    let mut text = err.to_string();
+    let mut source = std::error::Error::source(err);
+    let mut guard = 0;
+    while let Some(inner) = source {
+        if guard > 8 {
+            break;
+        }
+        guard += 1;
+        text.push(' ');
+        text.push_str(&inner.to_string());
+        source = std::error::Error::source(inner);
+    }
+    if text.contains("pair-pin") {
+        LanError::new("pair-pin")
+    } else {
+        LanError::new("tls")
+    }
 }
 
 pub fn peer_spki_of(certs: Option<&[CertificateDer<'_>]>) -> Result<[u8; 32], LanError> {

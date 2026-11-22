@@ -3356,7 +3356,12 @@ function bindLan() {
     });
   });
   document.querySelectorAll("[data-lan-forget]").forEach((button) => {
-    button.addEventListener("click", () => lanAct({ action: "forget", spki: button.dataset.lanForget }));
+    button.addEventListener("click", () => {
+      const row = button.closest("li");
+      const name = row && row.querySelector("span") ? row.querySelector("span").textContent : "";
+      if (!window.confirm(tf("lan-forget-confirm", { name }))) return;
+      lanAct({ action: "forget", spki: button.dataset.lanForget });
+    });
   });
   document.querySelectorAll("[data-lan-field]").forEach((button) => {
     button.addEventListener("click", () => {

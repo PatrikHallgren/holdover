@@ -865,6 +865,7 @@ lan-include-tip = Send latitude and longitude. Rifle serials stay on the device 
 lan-stop = Cancel
 lan-peers = Paired devices
 lan-forget = Forget
+lan-forget-confirm = Forget { $name }? This device will have to pair again before it can sync.
 lan-apply = Apply sync
 lan-apply-tip = Write the preview. Every conflict needs a choice first. A failure leaves this library unchanged.
 lan-nothing = Nothing in this sync changes the library.

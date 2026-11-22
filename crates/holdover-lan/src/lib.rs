@@ -21,7 +21,8 @@ pub use identity::{
 };
 pub use session::{
     join_pair, join_pair_with, open_sync, open_sync_many, preview_value, AcceptedSync, Catalog,
-    ClientSync, Library, PairWait, Peer, SyncListener, PREVIEW_WAIT, SYNC_HANDSHAKE,
+    ClientSync, Library, ListenerDoor, PairWait, Peer, Pending, SyncListener, PREVIEW_WAIT,
+    SYNC_HANDSHAKE,
 };
 pub use tls::LanError;
 
