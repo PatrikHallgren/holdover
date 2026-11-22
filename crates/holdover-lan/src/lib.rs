@@ -11,12 +11,13 @@ mod session;
 mod tls;
 
 pub use discover::{
-    advertise, browse, host_kind, host_rank, is_tailscale, local_hosts, sort_hosts,
-    tailscale_hosts, Advertisement, Found, DEFAULT_PORT, SERVICE_TYPE,
+    advertise, browse, host_kind, host_rank, is_tailscale, is_tailscale_ipv6, local_hosts,
+    sort_hosts, tailscale_hosts, tailscale_ipv6_only, Advertisement, Found, DEFAULT_PORT,
+    SERVICE_TYPE,
 };
 pub use identity::{
     decode_qr_image, identity_from_parts, new_identity, offer_qr, offer_qr_png, parse_offer,
-    unix_now, Identity, Offer,
+    pin_from_hex, unix_now, Identity, Offer,
 };
 pub use session::{
     join_pair, join_pair_with, open_sync, open_sync_many, preview_value, Catalog, ClientSync,

@@ -308,18 +308,9 @@ fn one_sided(row: &Stamped, push: bool) -> LanRow {
     } else {
         MergeStatus::New
     };
-    let merged = if is_deleted(&row.record) && push {
-        None
-    } else {
-        Some(row.clone())
-    };
     // A tombstone that only the initiator has must still be written on the
     // responder, so the delete propagates. `merged` stays Some for that.
-    let merged = if push && is_deleted(&row.record) {
-        Some(row.clone())
-    } else {
-        merged
-    };
+    let merged = Some(row.clone());
     LanRow {
         id: row.record.id.clone(),
         kind: row.record.kind.clone(),
@@ -916,6 +907,76 @@ mod tests {
         let commit = lan_commit(&preview, &picks).unwrap();
         assert_eq!(commit.writes[0].record.body["label"], "Theirs");
         assert_eq!(commit.writes[0].record.body["notes"], "old");
+    }
+
+    #[test]
+    fn keep_mine_is_the_initiator_only_when_that_library_is_first() {
+        let initiator = row(
+            "r",
+            "desk",
+            2,
+            "2026-11-01T00:00:02.000Z",
+            json!({"label": "Initiator", "notes": "old"}),
+            &[
+                ("label", "desk", 2, "2026-11-01T00:00:02.000Z"),
+                ("notes", "desk", 1, "2026-11-01T00:00:01.000Z"),
+            ],
+        );
+        let responder = row(
+            "r",
+            "phone",
+            2,
+            "2026-11-01T00:00:03.000Z",
+            json!({"label": "Responder", "notes": "old"}),
+            &[
+                ("label", "phone", 2, "2026-11-01T00:00:03.000Z"),
+                ("notes", "desk", 1, "2026-11-01T00:00:01.000Z"),
+            ],
+        );
+        let ancestor = row(
+            "r",
+            "desk",
+            1,
+            "2026-11-01T00:00:01.000Z",
+            json!({"label": "Shared", "notes": "old"}),
+            &[
+                ("label", "desk", 1, "2026-11-01T00:00:01.000Z"),
+                ("notes", "desk", 1, "2026-11-01T00:00:01.000Z"),
+            ],
+        );
+        let bases = BTreeMap::from([("r".into(), base_for(&ancestor))]);
+        // Both sides call lan_preview(initiator, responder).
+        let agreed = lan_preview(
+            std::slice::from_ref(&initiator),
+            std::slice::from_ref(&responder),
+            &bases,
+            &bases,
+        );
+        let swapped = lan_preview(
+            std::slice::from_ref(&responder),
+            std::slice::from_ref(&initiator),
+            &bases,
+            &bases,
+        );
+        assert_eq!(agreed.rows[0].status, MergeStatus::Conflict);
+        assert_eq!(
+            agreed.rows[0].local.as_ref().unwrap().record.body["label"],
+            "Initiator"
+        );
+        assert_eq!(
+            swapped.rows[0].local.as_ref().unwrap().record.body["label"],
+            "Responder"
+        );
+        let mut mine = BTreeMap::new();
+        mine.insert("r".into(), LanChoice::KeepMine);
+        let kept = lan_commit(&agreed, &mine).unwrap();
+        let reversed = lan_commit(&swapped, &mine).unwrap();
+        assert!(kept.writes.is_empty());
+        assert!(reversed.writes.is_empty());
+        assert_ne!(
+            agreed.rows[0].local.as_ref().unwrap().record.body["label"],
+            swapped.rows[0].local.as_ref().unwrap().record.body["label"]
+        );
     }
 
     #[test]

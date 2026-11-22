@@ -12,9 +12,10 @@ use holdover_core::{field_values, merge_private, FieldStamp, LanChoice, LanCommi
 #[cfg(test)]
 use holdover_lan::open_sync;
 use holdover_lan::{
-    decode_qr_image, host_kind, is_tailscale, join_pair_with, new_identity, offer_qr,
-    open_sync_many, parse_offer, preview_value, sort_hosts, tailscale_hosts, unix_now, Catalog,
-    ClientSync, Identity, Library, PairWait, Peer, SyncListener, DEFAULT_PORT, PREVIEW_WAIT,
+    decode_qr_image, host_kind, is_tailscale, is_tailscale_ipv6, join_pair_with, new_identity,
+    offer_qr, open_sync_many, parse_offer, pin_from_hex, preview_value, sort_hosts,
+    tailscale_hosts, tailscale_ipv6_only, unix_now, Catalog, ClientSync, Identity, Library,
+    PairWait, Peer, SyncListener, DEFAULT_PORT, PREVIEW_WAIT,
 };
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
@@ -42,7 +43,6 @@ struct LanView {
     code: String,
     detail: String,
     preview: Option<Value>,
-    found: Vec<Value>,
 }
 
 impl Default for LanView {
@@ -59,7 +59,6 @@ impl Default for LanView {
             code: String::new(),
             detail: String::new(),
             preview: None,
-            found: Vec::new(),
         }
     }
 }
@@ -95,10 +94,10 @@ impl LanHub {
             "code": view.code,
             "detail": view.detail,
             "preview": view.preview,
-            "found": view.found,
             "name": store.lan_name()?,
             "peers": peers,
             "tailscale": tailscale_hosts(),
+            "tailscale_ipv6": tailscale_ipv6_only(),
             "listen_port": DEFAULT_PORT,
             "listening": view.mode == "listen" && view.port == DEFAULT_PORT,
         }))
@@ -192,9 +191,19 @@ impl LanHub {
     pub fn pair_start(&mut self, store: Arc<Mutex<Store>>) -> Result<(), String> {
         let hosts = tailscale_hosts();
         if hosts.is_empty() {
-            self.fail_visible("no-tailscale", "no tailscale");
-            lan_log_detail("pair-start", "no-tailscale", "host=none port=43720");
-            return Err("no-tailscale".into());
+            let code = if tailscale_ipv6_only() {
+                "tailscale-ipv6"
+            } else {
+                "no-tailscale"
+            };
+            let detail = if code == "tailscale-ipv6" {
+                "ipv6-only tailscale"
+            } else {
+                "no tailscale"
+            };
+            self.fail_visible(code, detail);
+            lan_log_detail("pair-start", code, "host=none port=43720");
+            return Err(code.into());
         }
         self.stop();
         let stop = Arc::new(AtomicBool::new(false));
@@ -410,6 +419,8 @@ impl LanHub {
         }
         if let Some(host) = tails.first() {
             lan_log("listen", "ok", host, DEFAULT_PORT);
+        } else if tailscale_ipv6_only() {
+            lan_log_detail("listen", "tailscale-ipv6", "host=none port=43720");
         } else {
             lan_log_detail("listen", "no-tailscale", "host=none port=43720");
         }
@@ -450,12 +461,7 @@ impl LanHub {
             .and_then(|items| items.iter().find(|peer| peer["spki"] == spki));
         let addresses = sync_addresses(host, saved);
         if addresses.is_empty() || spki_pin(spki).is_err() {
-            let typed = host.trim();
-            let (code, detail) = if typed.is_empty() {
-                ("need-tailscale", "no tailscale".to_string())
-            } else {
-                ("no-tailscale", format!("tried {typed}:43720 no tailscale"))
-            };
+            let (code, detail) = missing_tailscale(host.trim());
             self.fail_visible(code, &detail);
             lan_log_detail("sync-begin", code, &detail);
             return Err(code.into());
@@ -556,19 +562,20 @@ impl LanHub {
 }
 
 fn spki_pin(spki: &str) -> Result<[u8; 32], String> {
-    // Reuse the offer parser's hex check via a one-field offer would drag a token in.
-    // pin_from_hex is crate-private, so decode here.
-    if spki.len() != 64 || !spki.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("unauthorized".into());
+    pin_from_hex(spki).map_err(|_| "unauthorized".into())
+}
+
+fn missing_tailscale(typed: &str) -> (&'static str, String) {
+    if is_tailscale_ipv6(typed) {
+        (
+            "tailscale-ipv6",
+            format!("tried {typed}:43720 ipv6-only tailscale"),
+        )
+    } else if typed.is_empty() {
+        ("need-tailscale", "no tailscale".to_string())
+    } else {
+        ("no-tailscale", format!("tried {typed}:43720 no tailscale"))
     }
-    let mut pin = [0u8; 32];
-    let bytes = spki.as_bytes();
-    for index in 0..32 {
-        let hi = (bytes[index * 2] as char).to_digit(16).unwrap();
-        let lo = (bytes[index * 2 + 1] as char).to_digit(16).unwrap();
-        pin[index] = ((hi << 4) | lo) as u8;
-    }
-    Ok(pin)
 }
 
 fn pair_loop(
@@ -1045,12 +1052,6 @@ impl Store {
         blobs: &[(String, Vec<u8>)],
         include_location: bool,
     ) -> Result<(), String> {
-        for (hash, bytes) in blobs {
-            let written = self.put_blob(bytes)?;
-            if written != *hash {
-                return Err("blob".into());
-            }
-        }
         let tx = self
             .conn
             .unchecked_transaction()
@@ -1103,6 +1104,14 @@ impl Store {
             bundle::write_base(&tx, id, &stored)?;
         }
         tx.commit().map_err(|err| err.to_string())?;
+        // PDF and photograph bytes land after the commit, by hash, matching a
+        // bundle import. A rollback then leaves no new blob file.
+        for (hash, bytes) in blobs {
+            let written = self.put_blob(bytes)?;
+            if written != *hash {
+                return Err("blob".into());
+            }
+        }
         Ok(())
     }
 }
@@ -1130,6 +1139,99 @@ mod tests {
         );
         assert!(sync_addresses("localhost", None).is_empty());
         assert!(sync_addresses("", None).is_empty());
+        assert!(sync_addresses("fd7a:115c:a1e0::1", None).is_empty());
+        let (code, detail) = missing_tailscale("fd7a:115c:a1e0::1");
+        assert_eq!(code, "tailscale-ipv6");
+        assert!(detail.contains("ipv6-only tailscale"));
+        assert!(!detail.contains("no tailscale"));
+        assert_eq!(missing_tailscale("192.168.1.9").0, "no-tailscale");
+        assert_eq!(missing_tailscale("").0, "need-tailscale");
+        assert!(is_tailscale_ipv6("[fd7a:115c:a1e0:abcd::1]"));
+        assert!(!is_tailscale_ipv6("fd7a:115c:a1df::1"));
+        assert!(!is_tailscale_ipv6("100.64.0.2"));
+    }
+
+    #[test]
+    fn a_rolled_back_apply_leaves_no_new_blob() {
+        use sha2::{Digest, Sha256};
+
+        let dir = std::env::temp_dir().join(format!(
+            "holdover-lan-blob-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("desk.db")).unwrap();
+        {
+            let extra = rusqlite::Connection::open(dir.join("desk.db")).unwrap();
+            extra
+                .execute_batch(
+                    "CREATE TRIGGER fail_apply BEFORE INSERT ON records
+                     BEGIN SELECT RAISE(ABORT, 'forced'); END;",
+                )
+                .unwrap();
+        }
+        let bytes = b"%PDF-1.4 rollback";
+        let hash = {
+            const HEX: &[u8; 16] = b"0123456789abcdef";
+            let digest = Sha256::digest(bytes);
+            let mut text = String::with_capacity(64);
+            for byte in digest {
+                text.push(HEX[(byte >> 4) as usize] as char);
+                text.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+            text
+        };
+        let broken = LanCommit {
+            writes: vec![Stamped {
+                record: holdover_core::SyncRecord {
+                    id: "would-roll-back".into(),
+                    kind: "rifle".into(),
+                    created_at: "2026-11-12T00:00:00.000Z".into(),
+                    updated_at: "2026-11-12T00:00:00.000Z".into(),
+                    revision: 1,
+                    deleted_at: None,
+                    device_id: "desk".into(),
+                    body: json!({}),
+                },
+                fields: BTreeMap::new(),
+            }],
+            bases: Vec::new(),
+        };
+        assert!(store
+            .lan_apply(&broken, &[(hash.clone(), bytes.to_vec())], false)
+            .is_err());
+        let blob = dir.join("desk.blobs").join(&hash);
+        assert!(!blob.exists(), "a rolled-back apply left a blob file");
+        {
+            let extra = rusqlite::Connection::open(dir.join("desk.db")).unwrap();
+            extra.execute_batch("DROP TRIGGER fail_apply;").unwrap();
+        }
+        let kept = LanCommit {
+            writes: vec![Stamped {
+                record: holdover_core::SyncRecord {
+                    id: "ok".into(),
+                    kind: "rifle".into(),
+                    created_at: "2026-11-12T00:00:00.000Z".into(),
+                    updated_at: "2026-11-12T00:00:00.000Z".into(),
+                    revision: 1,
+                    deleted_at: None,
+                    device_id: "desk".into(),
+                    body: json!({"label": "Kept"}),
+                },
+                fields: BTreeMap::new(),
+            }],
+            bases: Vec::new(),
+        };
+        store
+            .lan_apply(&kept, &[(hash.clone(), bytes.to_vec())], false)
+            .unwrap();
+        assert!(blob.is_file(), "a committed apply did not store the blob");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1180,7 +1282,12 @@ mod tests {
         assert_eq!(second, first, "the second listen opened a new port");
         if tailscale_hosts().is_empty() {
             let err = hub.pair_start(store.clone()).unwrap_err();
-            assert_eq!(err, "no-tailscale");
+            let expected = if tailscale_ipv6_only() {
+                "tailscale-ipv6"
+            } else {
+                "no-tailscale"
+            };
+            assert_eq!(err, expected);
             assert!(hub.status(&store.lock().unwrap()).unwrap()["listening"]
                 .as_bool()
                 .unwrap());

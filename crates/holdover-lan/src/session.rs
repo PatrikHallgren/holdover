@@ -562,6 +562,10 @@ impl SyncListener {
             ));
         }
         let choices = parse_choices(choice_msg.get("choices").unwrap_or(&json!({})))?;
+        // Swapped on purpose. `remote` is the initiator's library and `local` is
+        // this device, so the call is lan_preview(initiator, responder). That
+        // matches open_sync_connected and keeps keep-mine / take-theirs the
+        // same choice on both sides.
         let preview = lan_preview(&remote.records, &local.records, &remote.bases, &local.bases);
         let commit = match lan_commit(&preview, &choices) {
             Ok(commit) => commit,
@@ -1312,6 +1316,28 @@ fn _deleted(record: &SyncRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::socket_for;
+
+    #[test]
+    fn serve_one_previews_the_initiator_library_first() {
+        let source = include_str!("session.rs");
+        let serve = source.split("pub fn serve_one").nth(1).expect("serve_one");
+        let body = serve
+            .split("fn open_sync_connected")
+            .next()
+            .unwrap_or(serve);
+        assert!(
+            body.contains(
+                "lan_preview(&remote.records, &local.records, &remote.bases, &local.bases)"
+            ),
+            "swapping these arguments would make keep-mine mean the other library"
+        );
+        assert!(
+            !body.contains(
+                "lan_preview(&local.records, &remote.records, &local.bases, &remote.bases)"
+            ),
+            "serve_one must not preview its own library first"
+        );
+    }
 
     #[test]
     fn an_ipv6_host_is_bracketed_before_the_port() {

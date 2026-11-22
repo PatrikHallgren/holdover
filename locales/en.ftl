@@ -885,6 +885,7 @@ lan-disconnected = The connection closed before the sync was applied. Nothing wa
 lan-tls = The connection was not a paired, encrypted Holdover session. Nothing was written.
 lan-ready = Sync ready over Tailscale at { $where }:{ $port }.
 lan-no-tailscale = This device has no Tailscale address. Turn Tailscale on. Nothing is listening for a sync.
+lan-tailscale-ipv6 = IPv6-only Tailscale is not supported. This device needs a 100.x address. Nothing was written.
 lan-need-tailscale = This paired device has no Tailscale address. Type its 100.x address or MagicDNS name. Nothing was written.
 lan-port-busy = Port 43720 is already in use on this device, so it is not listening. Nothing was synced.
 lan-sync-reaching = Reaching the paired Holdover over Tailscale.

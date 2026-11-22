@@ -3107,7 +3107,8 @@ function lanSelf(view) {
   const tails = (view && view.tailscale) || [];
   const port = String((view && view.listen_port) || 43720);
   if (!tails.length) {
-    return `<p class="error" role="alert" data-lan-self>${esc(t("lan-no-tailscale"))}</p>`;
+    const key = view && view.tailscale_ipv6 ? "lan-tailscale-ipv6" : "lan-no-tailscale";
+    return `<p class="error" role="alert" data-lan-self>${esc(t(key))}</p>`;
   }
   if (!(view && view.listening)) return "";
   const name = (view && view.name) || "";

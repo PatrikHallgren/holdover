@@ -1,8 +1,8 @@
 # Milestone 10 checklist
 
-Version 1.5.5, desktop package revision 1. `versionCode` is 1005005. Pairing was confirmed on 1.5.2 (`versionCode` 1005002, desktop package 1.5.2-1). 1.5.3 and 1.5.4 were installed. 1.5.4 listens on 43720, and the phone's last sync dialed `100.x:43720` and got `refused` when the desktop was not sitting on Ready. 1.5.5 keeps that listener up while the desktop app is open and dials only the Tailscale address. 1.5.0-1 was 1005000 and 1.5.0 revision 2 was 1005001. The usual formula for 1.5.1 is also 1005001, which is already installed, so that number was skipped. No tag and no release are created here.
+Version 1.5.6, desktop package revision 1. `versionCode` is 1005006, above the installed 1005005. Pairing was confirmed on 1.5.2 (`versionCode` 1005002, desktop package 1.5.2-1). 1.5.3 and 1.5.4 were installed. 1.5.4 listens on 43720, and the phone's last sync dialed `100.x:43720` and got `refused` when the desktop was not sitting on Ready. 1.5.5 keeps that listener up while the desktop app is open and dials only the Tailscale address. Desktop-to-OnePlus 13 sync over Tailscale passed on 1.5.5 (2026-11-12). 1.5.0-1 was 1005000 and 1.5.0 revision 2 was 1005001. The usual formula for 1.5.1 is also 1005001, which is already installed, so that number was skipped. No tag and no release are created here.
 
-This checklist is for a person with Tailscale running on the desktop and the phone. The automated tests do not do these steps. They run two libraries on one machine. Pairing on the OnePlus 13 and the Omarchy desktop passed on 1.5.2. A physical sync has not passed, and a real `.holdover` round-trip on the phone has not been done either. Wi-Fi discovery is not part of this path. The desktop firewall already allows the Tailscale interface, so no new firewall rule is required.
+This checklist is for a person with Tailscale running on the desktop and the phone. The automated tests do not do these steps. They run two libraries on one machine. Pairing on the OnePlus 13 and the Omarchy desktop passed on 1.5.2. Desktop-to-OnePlus 13 sync over Tailscale passed on 1.5.5 (2026-11-12). Same-item conflicts, offline/cancel, and a real `.holdover` round-trip were not run on the devices; automated tests cover them. Wi-Fi discovery is not part of this path. The desktop firewall already allows the Tailscale interface, so no new firewall rule is required. IPv6-only Tailscale (`fd7a:115c:a1e0::/48`) is not dialed.
 
 The phone install has to be signed with the same key as the 1.4.0 sideload (`versionCode` 1004001). That key stays on the omawork computer. CI signs with `packaging/android/ci-test.keystore` only. A CI APK will not update the phone.
 
@@ -30,6 +30,6 @@ The phone install has to be signed with the same key as the 1.4.0 sideload (`ver
 
 ## What this pass did not do
 
-- Install 1.5.5 (`versionCode` 1005005) on the OnePlus 13 and on the Omarchy desktop. 1.5.4 is installed on both. Pairing on 1.5.2 passed. The 1.5.4 listener stayed on 43720, and the phone dial of that Tailscale port was refused when the desktop was not on Ready.
-- Finish a sync between the phone and the Omarchy desktop. That has not passed.
-- Confirm a `.holdover` file copied onto the phone and back.
+- Install 1.5.6 (`versionCode` 1005006) on the OnePlus 13 or the Omarchy desktop. 1.5.5 is the build where desktop-to-OnePlus 13 sync over Tailscale passed (2026-11-12).
+- Run same-item conflicts, offline/cancel, or a `.holdover` round-trip on the devices. Automated tests cover those.
+- Add IPv6-only Tailscale. A device with only `fd7a:115c:a1e0::/48` gets a message that it is not supported.
